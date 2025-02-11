@@ -1,0 +1,48 @@
+name: Publish Docker Image
+
+on:
+  push:
+    branches:
+      - 'master'
+
+jobs:
+  build_push_to_registry:
+    name: Build and Push Docker Image to Docker Hub
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.9.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3.3.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5.6.1
+        with:
+          images: phd59fr/gobastion
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6.13.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Push latest (for latest first)
+        if: success()
+        run: |
+          docker pull phd59fr/gobastion:latest
+          docker tag phd59fr/gobastion:latest phd59fr/gobastion:latest
+          docker push phd59fr/gobastion:latest
