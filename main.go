@@ -122,6 +122,7 @@ func main() {
 		&models.GroupEgressKey{},
 		&models.SelfAccess{},
 		&models.GroupAccess{},
+		&models.Aliases{},
 	)
 	if err != nil {
 		logger.Error("Failed to auto-migrate models", slog.Any("error", err))
@@ -350,14 +351,27 @@ func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, c
 		if err := commands.SelfListAccesses(db, currentUser); err != nil {
 			logger.Error(err.Error())
 		}
-	case "selfAddPersonalAccess":
-		if err := commands.SelfAddPersonalAccess(db, currentUser, args); err != nil {
+	case "selfAddAccess":
+		if err := commands.SelfAddAccess(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
-	case "selfDelPersonalAccess":
-		if err := commands.SelfDelPersonalAccess(db, currentUser, args); err != nil {
+	case "selfDelAccess":
+		if err := commands.SelfDelAccess(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
+	case "selfAddAlias":
+		if err := commands.SelfAddAlias(db, currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
+	case "selfDelAlias":
+		if err := commands.SelfDelAlias(db, currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
+	case "selfListAliases":
+		if err := commands.SelfListAliases(db, currentUser); err != nil {
+			logger.Error(err.Error())
+		}
+
 	// Account commands
 	case "accountList":
 		commands.AccountList(db, currentUser)
@@ -383,12 +397,12 @@ func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, c
 		if err := commands.AccountDelete(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
-	case "accountAddPersonalAccess":
-		if err := commands.AccountAddPersonalAccess(db, currentUser, args); err != nil {
+	case "accountAddAccess":
+		if err := commands.AccountAddAccess(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
-	case "accountDelPersonalAccess":
-		if err := commands.AccountDelPersonalAccess(db, currentUser, args); err != nil {
+	case "accountDelAccess":
+		if err := commands.AccountDelAccess(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
 	case "accountListAccess":
@@ -436,6 +450,18 @@ func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, c
 		}
 	case "groupListAccess":
 		if err := commands.GroupListAccess(db, currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
+	case "groupAddAlias":
+		if err := commands.GroupAddAlias(db, currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
+	case "groupDelAlias":
+		if err := commands.GroupDelAlias(db, currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
+	case "groupListAliases":
+		if err := commands.GroupListAliases(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
 	case "whoHasAccessTo":

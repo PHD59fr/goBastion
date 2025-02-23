@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"goBastion/utils"
 
@@ -580,5 +581,141 @@ func checkGroupPrivileges(db *gorm.DB, currentUser *models.User, groupID uuid.UU
 	if !(userGroup.IsOwner() || userGroup.IsACLKeeper() || userGroup.IsGateKeeper()) {
 		return fmt.Errorf("access denied: insufficient privileges")
 	}
+	return nil
+}
+
+func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupAddAlias", flag.ContinueOnError)
+	var groupName, alias, hostname string
+	fs.StringVar(&groupName, "group", "", "Group name")
+	fs.StringVar(&alias, "alias", "", "Alias")
+	fs.StringVar(&hostname, "hostname", "", "Host name")
+	if err := fs.Parse(args); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return err
+	}
+	if strings.TrimSpace(groupName) == "" || strings.TrimSpace(alias) == "" || strings.TrimSpace(hostname) == "" {
+		fmt.Println("Usage: groupAddHost --group <group_name> --alias <alias> --hostname <host_name>")
+		return nil
+	}
+
+	var group models.Group
+	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
+		fmt.Printf("Group '%s' not found.\n", groupName)
+		return nil
+	}
+
+	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
+		return err
+	}
+
+	newHost := models.Aliases{
+		ResolveTo: alias,
+		Host:      hostname,
+		GroupID:   &group.ID,
+		UserID:    nil,
+	}
+
+	if err := db.Create(&newHost).Error; err != nil {
+		return fmt.Errorf("error adding alias: %v", err)
+	}
+
+	fmt.Println("Alias added successfully.")
+	return nil
+}
+
+func GroupDelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupDelAlias", flag.ContinueOnError)
+	var groupName, hostID string
+	fs.StringVar(&groupName, "group", "", "Group name")
+	fs.StringVar(&hostID, "id", "", "Alias ID")
+	if err := fs.Parse(args); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return err
+	}
+	if strings.TrimSpace(groupName) == "" || strings.TrimSpace(hostID) == "" {
+		fmt.Println("Usage: groupDelAlias --group <group_name> --id <alias_id>")
+		return nil
+	}
+
+	var group models.Group
+	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
+		fmt.Printf("Group '%s' not found.\n", groupName)
+		return nil
+	}
+
+	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
+		return err
+	}
+
+	parsedID, err := uuid.Parse(hostID)
+	if err != nil {
+		return fmt.Errorf("invalid alias ID format: %v", err)
+	}
+
+	var host models.Aliases
+	if err := db.Where("id = ? AND group_id = ?", parsedID, group.ID).First(&host).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fmt.Println("No alias found with the given ID for the current group.")
+			return nil
+		}
+		return fmt.Errorf("database error: %v", err)
+	}
+
+	if err := db.Delete(&host).Error; err != nil {
+		return fmt.Errorf("error deleting alias: %v", err)
+	}
+
+	fmt.Println("Alias deleted successfully.")
+	return nil
+}
+
+func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupListAliases", flag.ContinueOnError)
+	var groupName string
+	fs.StringVar(&groupName, "group", "", "Group name")
+	if err := fs.Parse(args); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return err
+	}
+	if strings.TrimSpace(groupName) == "" {
+		fmt.Println("Usage: groupListAliases --group <group_name>")
+		return nil
+	}
+
+	var group models.Group
+	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
+		fmt.Printf("Group '%s' not found.\n", groupName)
+		return nil
+	}
+
+	if !currentUser.IsAdmin() {
+		var userGroup models.UserGroup
+		if err := db.Where("user_id = ? AND group_id = ?", currentUser.ID, group.ID).First(&userGroup).Error; err != nil {
+			fmt.Println("Access denied: you are not a member of this group.")
+			return nil
+		}
+	}
+
+	var hosts []models.Aliases
+	if err := db.Where("group_id = ?", group.ID).Find(&hosts).Error; err != nil {
+		return fmt.Errorf("error retrieving hosts: %v", err)
+	}
+
+	if len(hosts) == 0 {
+		fmt.Println("No aliases found.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tAlias\tHostname\tAdded At")
+	for _, host := range hosts {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			host.ID.String(),
+			host.ResolveTo,
+			host.Host,
+			host.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	_ = w.Flush()
 	return nil
 }

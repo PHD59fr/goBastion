@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"goBastion/utils/sshkey"
 	"goBastion/utils/sync"
@@ -226,8 +227,8 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
-func SelfAddPersonalAccess(db *gorm.DB, user *models.User, args []string) error {
-	fs := flag.NewFlagSet("selfAddPersonalAccess", flag.ContinueOnError)
+func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
+	fs := flag.NewFlagSet("selfAddAccess", flag.ContinueOnError)
 	var server, username, comment string
 	var port int64
 	fs.StringVar(&server, "server", "", "Server name")
@@ -241,7 +242,7 @@ func SelfAddPersonalAccess(db *gorm.DB, user *models.User, args []string) error 
 	}
 
 	if strings.TrimSpace(server) == "" || strings.TrimSpace(username) == "" || port <= 0 {
-		fmt.Println("Usage: selfAddPersonalAccess --server <server> --username <username> --port <port> --comment <comment>")
+		fmt.Println("Usage: selfAddAccess --server <server> --username <username> --port <port> --comment <comment>")
 		return nil
 	}
 
@@ -269,8 +270,8 @@ func SelfAddPersonalAccess(db *gorm.DB, user *models.User, args []string) error 
 	return nil
 }
 
-func SelfDelPersonalAccess(db *gorm.DB, user *models.User, args []string) error {
-	fs := flag.NewFlagSet("selfDelPersonalAccess", flag.ContinueOnError)
+func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
+	fs := flag.NewFlagSet("selfDelAccess", flag.ContinueOnError)
 	var accessID uuid.UUID
 	fs.Func("id", "Access ID", func(s string) error {
 		parsedID, err := uuid.Parse(s)
@@ -286,7 +287,7 @@ func SelfDelPersonalAccess(db *gorm.DB, user *models.User, args []string) error 
 	}
 
 	if accessID == uuid.Nil {
-		fmt.Println("Usage: selfDelPersonalAccess --id <access_id>")
+		fmt.Println("Usage: selfDelAccess --id <access_id>")
 		return nil
 	}
 
@@ -304,5 +305,95 @@ func SelfDelPersonalAccess(db *gorm.DB, user *models.User, args []string) error 
 	}
 
 	fmt.Println("Personal access deleted successfully.")
+	return nil
+}
+
+func SelfAddAlias(db *gorm.DB, user *models.User, args []string) error {
+	fs := flag.NewFlagSet("selfAddAlias", flag.ContinueOnError)
+	var alias, hostname string
+	fs.StringVar(&alias, "alias", "", "Alias")
+	fs.StringVar(&hostname, "hostname", "", "Host name")
+	if err := fs.Parse(args); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return err
+	}
+
+	if strings.TrimSpace(alias) == "" || strings.TrimSpace(hostname) == "" {
+		fmt.Println("Usage: selfAddAlias --alias <alias> --hostname <host_name>")
+		return nil
+	}
+
+	newHost := models.Aliases{
+		ResolveTo: alias,
+		Host:      hostname,
+		UserID:    &user.ID,
+		GroupID:   nil,
+	}
+
+	if err := db.Create(&newHost).Error; err != nil {
+		return fmt.Errorf("error adding host: %v", err)
+	}
+
+	fmt.Printf("Alias added successfully\n")
+	return nil
+}
+
+func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
+	fs := flag.NewFlagSet("selfDelAlias", flag.ContinueOnError)
+	var hostID string
+	fs.StringVar(&hostID, "id", "", "Alias ID")
+	if err := fs.Parse(args); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return err
+	}
+
+	if strings.TrimSpace(hostID) == "" {
+		fmt.Println("Usage: selfDelAlias --id <alias_id>")
+		return nil
+	}
+
+	parsedID, err := uuid.Parse(hostID)
+	if err != nil {
+		return fmt.Errorf("invalid host ID format: %v", err)
+	}
+
+	var host models.Aliases
+	result := db.Where("id = ? AND user_id = ?", parsedID, user.ID).First(&host)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		fmt.Println("No host found with the given ID for the current user.")
+		return nil
+	} else if result.Error != nil {
+		return fmt.Errorf("database error: %v", result.Error)
+	}
+
+	if err := db.Delete(&host).Error; err != nil {
+		return fmt.Errorf("error deleting host: %v", err)
+	}
+
+	fmt.Println("Alias deleted successfully\n")
+	return nil
+}
+
+func SelfListAliases(db *gorm.DB, user *models.User) error {
+	var hosts []models.Aliases
+	result := db.Where("user_id = ?", user.ID).Find(&hosts)
+	if result.Error != nil {
+		return fmt.Errorf("error retrieving hosts: %v", result.Error)
+	}
+
+	if len(hosts) == 0 {
+		fmt.Println("No alias found.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tAlias\tHostname\tAdded At")
+	for _, host := range hosts {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			host.ID.String(),
+			host.ResolveTo,
+			host.Host,
+			host.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	_ = w.Flush()
 	return nil
 }
