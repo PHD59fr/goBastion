@@ -55,6 +55,9 @@ func SshConnection(user models.User, access models.AccessRight) error {
 
 	fmt.Println("Connecting ...")
 	if err = cmd.Run(); err != nil {
+		if err.Error() == "exit status 130" {
+			return nil
+		}
 		return fmt.Errorf("error connecting SSH: %v", err)
 	}
 	return nil

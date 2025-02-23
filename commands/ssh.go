@@ -3,15 +3,16 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"goBastion/utils/sshConnector"
 	"log/slog"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"goBastion/models"
 	"goBastion/utils"
-	"goBastion/utils/sshConnector"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -51,6 +52,12 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 				continue
 			}
 			fmt.Printf("- "+utils.BgGreenB("%s")+" - ID: %s "+utils.FgBlueB("%s-%d")+" [%s]...\n", access.Source, access.KeyId.String(), strings.ToUpper(access.KeyType), access.KeySize, access.KeyUpdatedAt.Format("2006-01-02"))
+
+			if access.Type == "self" {
+				db.Model(&models.SelfAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now())
+			} else {
+				db.Model(&models.GroupAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now())
+			}
 			err = sshConnector.SshConnection(user, access)
 			if err != nil {
 				fmt.Printf("Key verification failed: %v\n", err)
@@ -94,9 +101,11 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 			}
 			access := models.AccessRight{
 				Source:         "admin-group-" + ga.Group.Name,
+				ID:             ga.ID,
 				Username:       ga.Username,
 				Server:         ga.Server,
 				Port:           ga.Port,
+				Type:           "group",
 				KeyId:          groupEgressKey.ID,
 				KeyType:        groupEgressKey.Type,
 				KeySize:        groupEgressKey.Size,
@@ -114,10 +123,12 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 				return nil, fmt.Errorf("error retrieving self egress key for user %v: %v", sa.UserID, err)
 			}
 			access := models.AccessRight{
+				ID:             sa.ID,
 				Source:         "admin-account-" + sa.Username,
 				Username:       sa.Username,
 				Server:         sa.Server,
 				Port:           sa.Port,
+				Type:           "self",
 				KeyId:          selfEgressKey.ID,
 				KeyType:        selfEgressKey.Type,
 				KeySize:        selfEgressKey.Size,
@@ -166,10 +177,12 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 			return nil, fmt.Errorf("error retrieving group egress key for group %v: %v", ga.GroupID, err)
 		}
 		access := models.AccessRight{
+			ID:             ga.ID,
 			Source:         "group-" + ga.Group.Name,
 			Username:       ga.Username,
 			Server:         ga.Server,
 			Port:           ga.Port,
+			Type:           "group",
 			KeyId:          groupEgressKey.ID,
 			KeyType:        groupEgressKey.Type,
 			KeySize:        groupEgressKey.Size,
@@ -187,10 +200,12 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 			return nil, fmt.Errorf("error retrieving self egress key for user %v: %v", sa.UserID, err)
 		}
 		access := models.AccessRight{
+			ID:             sa.ID,
 			Source:         "account-" + sa.Username,
 			Username:       sa.Username,
 			Server:         sa.Server,
 			Port:           sa.Port,
+			Type:           "self",
 			KeyId:          selfEgressKey.ID,
 			KeyType:        selfEgressKey.Type,
 			KeySize:        selfEgressKey.Size,
