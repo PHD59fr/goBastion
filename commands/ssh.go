@@ -26,8 +26,17 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
 	hostname, _ := os.Hostname()
 
+	forcedHost, err := resolveForcedHost(db, user, sshHost)
+	if err != nil {
+		return fmt.Errorf("error searching host: %v", err)
+	}
+
 	loginHostname := user.Username + "@" + hostname
 	fmt.Printf("⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(sshUser+"@"+sshHost+":"+sshPort))
+
+	if forcedHost.Host != "" {
+		sshHost = forcedHost.Host
+	}
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort)
 	if err != nil {
@@ -229,4 +238,40 @@ func parseSSHCommand(command string) (user, host, port string, err error) {
 		return user, host, port, nil
 	}
 	return "", "", "", errors.New("invalid format")
+}
+
+func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (models.Aliases, error) {
+	host := models.Aliases{}
+
+	err := db.
+		Where("LOWER(resolve_from) = ? AND user_id = ?", strings.ToLower(forcedHostname), user.ID).
+		First(&host).Error
+	if err == nil {
+		return host, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return host, fmt.Errorf("error retrieving user host: %v", err)
+	}
+
+	var groupIDs []uuid.UUID
+	err = db.Model(&models.UserGroup{}).
+		Where("user_id = ?", user.ID).
+		Pluck("group_id", &groupIDs).Error
+	if err != nil {
+		return host, fmt.Errorf("error retrieving user groups: %v", err)
+	}
+
+	if len(groupIDs) == 0 {
+		return host, nil
+	}
+
+	err = db.
+		Where("LOWER(resolve_from) = ? AND group_id IN (?)", strings.ToLower(forcedHostname), groupIDs).
+		First(&host).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return host, nil
+	} else if err != nil {
+		return host, fmt.Errorf("error retrieving group host: %v", err)
+	}
+
+	return host, nil
 }

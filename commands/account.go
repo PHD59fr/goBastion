@@ -45,10 +45,10 @@ func AccountList(db *gorm.DB, currentUser *models.User) {
 
 		groupsInfo := ""
 		for _, ug := range userGroups {
-			groupsInfo += fmt.Sprintf("  - %s - %s) ", ug.Group.Name, utils.GetGrades(ug))
+			groupsInfo += fmt.Sprintf("\n   %s - %s", ug.Group.Name, utils.GetGrades(ug))
 		}
 		if groupsInfo != "" {
-			groupsInfo = fmt.Sprintf(", Groups: %s", groupsInfo)
+			groupsInfo = fmt.Sprintf("Groups: %s", groupsInfo)
 		}
 		fmt.Printf("  ID: %s\n", u.ID)
 		fmt.Printf("  Username: %s\n", u.Username)
@@ -56,7 +56,7 @@ func AccountList(db *gorm.DB, currentUser *models.User) {
 		fmt.Printf("  Created At: %s\n", u.CreatedAt.Format("2006-01-02 15:04:05"))
 		fmt.Printf("  Last Login: %s\n", u.LastLoginAt)
 		fmt.Printf("  Last Login From: %s\n", u.LastLoginFrom)
-		fmt.Printf("  Groups: %s\n", groupsInfo)
+		fmt.Printf("  %s\n", groupsInfo)
 	}
 }
 
@@ -400,12 +400,12 @@ func WhoHasAccessTo(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
-func AccountAddPersonalAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	if !currentUser.IsAdmin() {
 		fmt.Println("Access denied: you must be an admin to add personal access.")
 		return nil
 	}
-	fs := flag.NewFlagSet("accountAddPersonalAccess", flag.ContinueOnError)
+	fs := flag.NewFlagSet("accountAddAccess", flag.ContinueOnError)
 
 	var targetUser, server, username, comment string
 	var port int64
@@ -425,7 +425,7 @@ func AccountAddPersonalAccess(db *gorm.DB, currentUser *models.User, args []stri
 	}
 
 	if strings.TrimSpace(server) == "" || strings.TrimSpace(username) == "" || port <= 0 {
-		fmt.Println("Usage: accountAddPersonalAccess --user <username> --server <sshserver> --username <sshusername> --port <sshport> --comment <comment>")
+		fmt.Println("Usage: accountAddAccess --user <username> --server <sshserver> --username <sshusername> --port <sshport> --comment <comment>")
 		return nil
 	}
 
@@ -441,12 +441,12 @@ func AccountAddPersonalAccess(db *gorm.DB, currentUser *models.User, args []stri
 	return nil
 }
 
-func AccountDelPersonalAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+func AccountDelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	if !currentUser.IsAdmin() {
 		fmt.Println("Access denied: you must be an admin to delete personal access.")
 		return nil
 	}
-	fs := flag.NewFlagSet("accountDelPersonalAccess", flag.ContinueOnError)
+	fs := flag.NewFlagSet("accountDelAccess", flag.ContinueOnError)
 	var accessID string
 	fs.StringVar(&accessID, "access", "", "Access ID to remove")
 	if err := fs.Parse(args); err != nil {
@@ -454,7 +454,7 @@ func AccountDelPersonalAccess(db *gorm.DB, currentUser *models.User, args []stri
 		return err
 	}
 	if strings.TrimSpace(accessID) == "" {
-		fmt.Println("Usage: accountDelPersonalAccess --access <access_id>")
+		fmt.Println("Usage: accountDelAccess --access <access_id>")
 		return nil
 	}
 	if err := db.Where("id = ?", accessID).Delete(&models.SelfAccess{}).Error; err != nil {

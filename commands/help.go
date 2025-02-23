@@ -32,8 +32,13 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 
 	fmt.Println(fgCyan("│") + fgWhite("    Server accesses (personal):"))
 	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfListAccesses", "List your personal accesses")
-	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfAddPersonalAccess", "Add a personal access")
-	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfDelPersonalAccess", "Delete a personal access")
+	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfAddAccess", "Add a personal access")
+	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfDelAccess", "Delete a personal access")
+
+	fmt.Println(fgCyan("│") + fgWhite("    Server alias (personal):"))
+	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfListAliases", "List your personal aliases")
+	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfAddAlias", "Add a personal alias")
+	fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "selfDelAlias", "Delete a personal alias")
 
 	// Account Management
 	if user.IsAdmin() {
@@ -50,8 +55,8 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "accountListEgressKeys", "List account egress keys")
 		fmt.Println(fgCyan("│") + fgWhite("    Account accesses:"))
 		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "accountListAccess", "List account accesses")
-		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "accountAddPersonalAccess", "Add access to an account")
-		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "accountDelPersonalAccess", "Remove access from an account")
+		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "accountAddAccess", "Add access to an account")
+		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "accountDelAccess", "Remove access from an account")
 		fmt.Printf(fgCyan("│ %s %-25s %s\n"), fgGreen("     -"), "whoHasAccessTo", "List accounts with access to a server")
 	}
 

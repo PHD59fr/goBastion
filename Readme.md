@@ -42,27 +42,30 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🗝️ `selfListEgressKeys`    | ✅ **Work** |
 | 🗝️ `selfGenerateEgressKey` | ✅ **Work** |
 | 📋 `selfListAccesses`       | ✅ **Work** |
-| ➕ `selfAddPersonalAccess`   | ✅ **Work** |
-| ❌ `selfDelPersonalAccess`   | ✅ **Work** |
+| ➕ `selfAddAccess`           | ✅ **Work** |
+| ❌ `selfDelAccess`           | ✅ **Work** |
+| 📋 `selfListAlias`          | ✅ **Work** |
+| ➕ `selfAddAlias`            | ✅ **Work** |
+| ❌ `selfDelAlias`            | ✅ **Work** |
 
 ---
 
 ### 🛠️ **Admin Commands**
 
 #### **Account Management**
-| Command                      | Status     |
-|------------------------------|------------|
-| 📋 `accountList`             | ✅ **Work** |
-| ℹ️ `accountInfo`             | ✅ **Work** |
-| ➕ `accountCreate`            | ✅ **Work** |
-| ❌ `accountDelete`            | ✅ **Work** |
-| ✏️ `accountModify`           | ✅ **Work** |
+| Command              | Status     |
+|----------------------|------------|
+| 📋 `accountList`     | ✅ **Work** |
+| ℹ️ `accountInfo`     | ✅ **Work** |
+| ➕ `accountCreate`    | ✅ **Work** |
+| ❌ `accountDelete`    | ✅ **Work** |
+| ✏️ `accountModify`   | ✅ **Work** |
 | 🗝️ `accountListIngressKeys` | ✅ **Work** |
-| 🗝️ `accountListEgressKeys`  | ✅ **Work** |
-| 📋 `accountListAccesses`     | ✅ **Work** |
-| ➕ `accountAddPersonalAccess` | ✅ **Work** |
-| ❌ `accountDelPersonalAccess` | ✅ **Work** |
-| 📋 `whoHasAccessTo`          | ✅ **Work** |
+| 🗝️ `accountListEgressKeys` | ✅ **Work** |
+| 📋 `accountListAccesses` | ✅ **Work** |
+| ➕ `accountAddAccess` | ✅ **Work** |
+| ❌ `accountDelAccess` | ✅ **Work** |
+| 📋 `whoHasAccessTo`  | ✅ **Work** |
 
 
 
