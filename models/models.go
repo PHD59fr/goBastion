@@ -200,10 +200,12 @@ func (ga *GroupAccess) BeforeCreate(*gorm.DB) (err error) {
 }
 
 type AccessRight struct {
+	ID             uuid.UUID
 	Source         string // "account", "group", "admin"
 	Username       string
 	Server         string
 	Port           int64
+	Type           string
 	KeyId          uuid.UUID
 	KeyType        string
 	KeySize        int
