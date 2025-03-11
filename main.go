@@ -319,6 +319,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logge
 		executeCommand(db, currentUser, logger, cmd, args)
 	}, wrappedCompleter,
 		prompt.OptionPrefix(currentUser.Username+"@"+bastionName+":"+promptSymbol),
+		prompt.OptionPrefixTextColor(prompt.DarkGreen),
 		prompt.OptionAddKeyBind(tabKeyBinding),
 		prompt.OptionAddKeyBind(escKeyBinding),
 	)
