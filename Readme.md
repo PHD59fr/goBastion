@@ -2,12 +2,9 @@
 
 **goBastion** is a tool for managing SSH access, user roles, and keys on a bastion host. The project is currently under active development, and contributions are welcome!
 
----
+🔗 **GitHub Repository**: [https://github.com/phd59fr/goBastion](https://github.com/phd59fr/goBastion)  
+🐳 **Docker Hub Image**: [https://hub.docker.com/r/phd59fr/gobastion](https://hub.docker.com/r/phd59fr/gobastion)
 
-## ⚠️ **Work in Progress**
-
-This project is a work in progress and may change frequently. Some features may not be fully implemented or stable yet.
-Big task to do: refactor the code, clean up error handling, and ensure proper return values.
 ---
 
 ## ✨ **Key Concept – Database as the Source of Truth**
@@ -33,74 +30,69 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 
 ## 🔍 **Features Overview**
 
-### 🔐 **Self Commands**
-| Command                     | Status     |
+### 👤 **Self Commands (Manage Your Own Account)**
+| Command                     | Description |
 |-----------------------------|------------|
-| 🗝️ `selfListIngressKeys`   | ✅ **Work** |
-| ➕ `selfAddIngressKey`       | ✅ **Work** |
-| ❌ `selfDelIngressKey`       | ✅ **Work** |
-| 🗝️ `selfListEgressKeys`    | ✅ **Work** |
-| 🗝️ `selfGenerateEgressKey` | ✅ **Work** |
-| 📋 `selfListAccesses`       | ✅ **Work** |
-| ➕ `selfAddAccess`           | ✅ **Work** |
-| ❌ `selfDelAccess`           | ✅ **Work** |
-| 📋 `selfListAlias`          | ✅ **Work** |
-| ➕ `selfAddAlias`            | ✅ **Work** |
-| ❌ `selfDelAlias`            | ✅ **Work** |
+| 🗝️ `selfListIngressKeys`   | List your ingress SSH keys (keys for connecting to the bastion). |
+| ➕ `selfAddIngressKey`       | Add a new ingress SSH key. |
+| ❌ `selfDelIngressKey`       | Delete an ingress SSH key. |
+| 🗝️ `selfListEgressKeys`    | List your egress SSH keys (keys for connecting from the bastion to servers). |
+| 🗝️ `selfGenerateEgressKey` | Generate a new egress SSH key. |
+| 📋 `selfListAccesses`       | List your personal server accesses. |
+| ➕ `selfAddAccess`           | Add access to a personal server. |
+| ❌ `selfDelAccess`           | Remove access to a personal server. |
+| 📋 `selfListAliases`        | List your personal SSH aliases. |
+| ➕ `selfAddAlias`            | Add a personal SSH alias. |
+| ❌ `selfDelAlias`            | Delete a personal SSH alias. |
 
 ---
 
-### 🛠️ **Admin Commands**
-
-#### **Account Management**
-| Command              | Status     |
-|----------------------|------------|
-| 📋 `accountList`     | ✅ **Work** |
-| ℹ️ `accountInfo`     | ✅ **Work** |
-| ➕ `accountCreate`    | ✅ **Work** |
-| ❌ `accountDelete`    | ✅ **Work** |
-| ✏️ `accountModify`   | ✅ **Work** |
-| 🗝️ `accountListIngressKeys` | ✅ **Work** |
-| 🗝️ `accountListEgressKeys` | ✅ **Work** |
-| 📋 `accountListAccesses` | ✅ **Work** |
-| ➕ `accountAddAccess` | ✅ **Work** |
-| ❌ `accountDelAccess` | ✅ **Work** |
-| 📋 `whoHasAccessTo`  | ✅ **Work** |
-
-
-
----
-
-#### **Group Management**
-| Command                      | Status     |
+### 🦸 **Admin Commands (Manage Other Accounts)**
+| Command                      | Description |
 |------------------------------|------------|
-| ℹ️ `groupInfo`               | ✅ **Work** |
-| 📋 `groupList`               | ✅ **Work** |
-| ➕ `groupCreate`              | ✅ **Work** |
-| ❌ `groupDelete`              | ✅ **Work** |
-| ➕ `groupAddMember`           | ✅ **Work** |
-| ❌ `groupDelMember`           | ✅ **Work** |
-| 🗝️ `groupGenerateEgressKey` | ✅ **Work** |
-| 🗝️ `groupListEgressKeys`    | ✅ **Work** |
-| ➕ `groupAddAccess`           | ✅ **Work** |
-| ❌ `groupDelAccess`           | ✅ **Work** |
-| 📋 `groupListAccess`         | ✅ **Work** |
+| 📋 `accountList`             | List all user accounts. |
+| ℹ️ `accountInfo`             | Show detailed information about a user account. |
+| ➕ `accountCreate`            | Create a new user account. |
+| ❌ `accountDelete`            | Delete a user account. |
+| ✏️ `accountModify`           | Modify a user account (promote/demote to admin/user). |
+| 🗝️ `accountListIngressKeys`  | List the ingress SSH keys of a user. |
+| 🗝️ `accountListEgressKeys`   | List the egress SSH keys of a user. |
+| 📋 `accountListAccesses`     | List all server accesses of a user. |
+| ➕ `accountAddAccess`         | Grant a user access to a server. |
+| ❌ `accountDelAccess`         | Remove a user's access to a server. |
+| 📋 `whoHasAccessTo`          | Show all users with access to a specific server. |
+
+---
+
+### 👥 **Group Management**
+| Command                      | Description |
+|------------------------------|------------|
+| ℹ️ `groupInfo`               | Show detailed information about a group. |
+| 📋 `groupList`               | List all groups. |
+| ➕ `groupCreate`              | Create a new group. |
+| ❌ `groupDelete`              | Delete a group. |
+| ➕ `groupAddMember`           | Add a user to a group. |
+| ❌ `groupDelMember`           | Remove a user from a group. |
+| 🗝️ `groupGenerateEgressKey` | Generate a new egress SSH key for the group. |
+| 🗝️ `groupListEgressKeys`    | List all egress SSH keys associated with a group. |
+| 📋 `groupListAccess`         | List all accesses assigned to a group. |
+| ➕ `groupAddAccess`           | Grant access to a group. |
+| ❌ `groupDelAccess`           | Remove access from a group. |
 
 ---
 
 ### 📜 **Misc Commands**
-| Command   | Status     |
+| Command   | Description |
 |-----------|------------|
-| ❓ `help`  | ✅ **Work** |
-| ℹ️ `info` | ✅ **Work** |
-| 🚪 `exit` | ✅ **Work** |
+| ❓ `help`  | Display the help menu with available commands. |
+| ℹ️ `info` | Show application version and details. |
+| 🚪 `exit` | Exit the application. |
 
 ---
 
+## 📥 **Installation**
 
-## 🛠️ **Installation**
-
-1. Clone the repository or use the docker image phd59fr/gobastion:latest(step 3):
+1. Clone the repository:
    ```sh
    git clone https://github.com/phd59fr/goBastion.git
    cd goBastion
@@ -109,32 +101,35 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 2. Build the Docker container:
    ```sh
    docker build -t gobastion .
-    ```
+   ```
+
 3. Run the Docker container:
    ```sh
    docker run --name gobastion --hostname goBastion -d -p 2222:22 gobastion:latest
    ```
-   You can use the docker hub image:
+   You can also use the official **Docker Hub** image:
    ```sh
-    docker run --name gobastion --hostname goBastion -d -p 2222:22 phd59fr/gobastion:latest
-    ```
+   docker run --name gobastion --hostname goBastion -d -p 2222:22 phd59fr/gobastion:latest
+   ```
    (optional) 3a. Launch the container with a volume to persist the database and ttyrec:
    ```sh
-    docker run --name gobastion --hostname goBastion -d -p 2222:22 -v /path/to/your/volume:/var/lib/goBastion -v /path/to/your/volume:/app/ttyrec  gobastion:latest
+   docker run --name gobastion --hostname goBastion -d -p 2222:22 -v /path/to/your/volume:/var/lib/goBastion -v /path/to/your/volume:/app/ttyrec gobastion:latest
    ```
+
 4. Create the first user:
    ```sh
    docker exec -it gobastion /app/goBastion --firstInstall
    ```
-   (optional) 4a. Restore your bastion from a database (require 3a):
+   (optional) 4a. Restore your bastion from a database (requires 3a):
    ```sh
    docker exec -it gobastion /app/goBastion --restore
    ```
+
 5. Connect to the bastion host (interactive mode):
    ```sh
    ssh -tp 2222 user@localhost
    ```
-   (optional) 5a. Connect to the bastion host with command (non-interactive mode):
+   (optional) 5a. Connect to the bastion host with a command (non-interactive mode):
    ```sh
    ssh -tp 2222 user@localhost -- -osh selfListIngressKeys
    ```
@@ -142,6 +137,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
    ```sh
    ssh -tp 2222 user@localhost -- user@targethost (ssh options supported)
    ```
+
 ---
 
 ## 🤝 **Contributing**
