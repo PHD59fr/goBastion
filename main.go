@@ -164,7 +164,6 @@ func main() {
 				logger.Error("Error restoring from db: " + err.Error())
 				return
 			}
-			logger.Info("Users restored from db successfully!")
 			return
 		}
 
