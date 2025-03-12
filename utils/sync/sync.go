@@ -40,7 +40,7 @@ func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
 		return fmt.Errorf("error reading HOME directory: %w", err)
 	}
 	if len(homeFiles) > 0 {
-		return fmt.Errorf("home directory is not empty, operation aborted")
+		return nil
 	}
 
 	var users []models.User

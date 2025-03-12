@@ -34,4 +34,4 @@ RUN chmod u+s /app/goBastion
 
 EXPOSE 22
 
-CMD /bin/busybox syslogd -n -O /dev/stdout & /usr/sbin/sshd -D
+CMD /bin/busybox syslogd -n -O /dev/stdout & /app/goBastion -restore ; /usr/sbin/sshd -D

@@ -120,22 +120,23 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
    ```sh
    docker exec -it gobastion /app/goBastion --firstInstall
    ```
-   (optional) 4a. Restore your bastion from a database (requires 3a):
+
+5. Simplified usage with an Alias (Optional):
    ```sh
-   docker exec -it gobastion /app/goBastion --restore
+   alias gobastion='ssh -tp 2222 user@localhost --'
    ```
 
-5. Connect to the bastion host (interactive mode):
+6. Connect to the bastion host (interactive mode):
    ```sh
-   ssh -tp 2222 user@localhost
+   ssh -tp 2222 user@localhost (or alias gobastion)
    ```
    (optional) 5a. Connect to the bastion host with a command (non-interactive mode):
    ```sh
-   ssh -tp 2222 user@localhost -- -osh selfListIngressKeys
+   ssh -tp 2222 user@localhost -- -osh selfListIngressKeys (or alias gobastion -osh selfListIngressKeys)
    ```
    (optional) 5b. Connect to the target host through the bastion:
    ```sh
-   ssh -tp 2222 user@localhost -- user@targethost (ssh options supported)
+   ssh -tp 2222 user@localhost -- user@targethost (ssh options supported) (or alias gobastion user@targethost)
    ```
 
 ---
