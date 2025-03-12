@@ -24,8 +24,6 @@ RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -i 's|^Subsystem sftp.*|#Subsystem sftp internal-sftp|' /etc/ssh/sshd_config \
     && echo 'ForceCommand /app/goBastion "$SSH_ORIGINAL_COMMAND"' >> /etc/ssh/sshd_config
 
-RUN ssh-keygen -A
-
 COPY --from=builder /app/goBastion /app/goBastion
 COPY --from=builder /usr/local/bin/ttyrec /usr/local/bin/ttyrec
 

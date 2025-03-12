@@ -123,6 +123,7 @@ func main() {
 		&models.SelfAccess{},
 		&models.GroupAccess{},
 		&models.Aliases{},
+		&models.SshHostKey{},
 	)
 	if err != nil {
 		logger.Error("Failed to auto-migrate models", slog.Any("error", err))
@@ -150,13 +151,18 @@ func main() {
 	currentUsername := sysUser.Username
 
 	if !isSSHConnection() && currentUsername == "root" {
-		restoreFlag := flag.Bool("restore", false, "Import from db")
+		restoreFlag := flag.Bool("restore", false, "Import users, ssh host keys, from db")
 		firstInstallFlag := flag.Bool("firstInstall", false, "First install")
 
 		flag.Parse()
 		if *restoreFlag {
+			if err = sync.RestoreSSHHostKeys(db); err != nil {
+				logger.Error("Error restoring ssh host keys: " + err.Error())
+				return
+			}
+
 			if err = sync.AddSystemUsersFromSystemToDb(db); err != nil {
-				logger.Error("Error syncing users from system")
+				logger.Error("Error syncing users from system" + err.Error())
 				return
 			}
 

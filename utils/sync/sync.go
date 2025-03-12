@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"goBastion/utils"
+	"goBastion/utils/sshHostKey"
 	"goBastion/utils/system"
 	"log/slog"
 	"os"
@@ -163,6 +164,17 @@ func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 	}
 	if err = system.ChownDir(user, sshDir); err != nil {
 		return fmt.Errorf("error changing ownership of %s: %w", sshDir, err)
+	}
+	return nil
+}
+
+func RestoreSSHHostKeys(db *gorm.DB) error {
+	if err := sshHostKey.RestoreSSHHostKeys(db); err != nil {
+		return err
+	}
+
+	if err := sshHostKey.GenerateSSHHostKeys(db); err != nil {
+		return err
 	}
 	return nil
 }
