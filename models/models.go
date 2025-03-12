@@ -238,3 +238,9 @@ func (h *Aliases) BeforeCreate(tx *gorm.DB) (err error) {
 	}
 	return nil
 }
+
+type SshHostKey struct {
+	Type       string `gorm:"primaryKey"`
+	PrivateKey []byte
+	PublicKey  []byte
+}
