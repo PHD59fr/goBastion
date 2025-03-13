@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"goBastion/utils/sshHostKey"
 	"log"
 	"log/slog"
 	"os"
@@ -152,6 +153,7 @@ func main() {
 
 	if !isSSHConnection() && currentUsername == "root" {
 		restoreFlag := flag.Bool("restore", false, "Import users, ssh host keys, from db")
+		regenerateSSHHostKeysFlag := flag.Bool("regenerateSSHHostKeys", false, "Force regenerate SSH host keys")
 		firstInstallFlag := flag.Bool("firstInstall", false, "First install")
 
 		flag.Parse()
@@ -168,6 +170,14 @@ func main() {
 
 			if err = sync.CreateUsersFromDB(db, *logger); err != nil {
 				logger.Error("Error restoring from db: " + err.Error())
+				return
+			}
+			return
+		}
+
+		if *regenerateSSHHostKeysFlag {
+			if err = sshHostKey.GenerateSSHHostKeys(db, true); err != nil {
+				logger.Error("Error regenerating ssh host keys: " + err.Error())
 				return
 			}
 			return

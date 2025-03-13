@@ -2,6 +2,7 @@ package sshHostKey
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"os"
 	"os/exec"
@@ -23,9 +24,15 @@ func sshKeysExist() bool {
 	return false
 }
 
-func GenerateSSHHostKeys(db *gorm.DB) error {
-	if sshKeysExist() {
+func GenerateSSHHostKeys(db *gorm.DB, force bool) error {
+	if sshKeysExist() && !force {
 		return nil
+	}
+
+	if force {
+		if err := removeSSHHostKeys(); err != nil {
+			return fmt.Errorf("error removing existing SSH keys: %v", err)
+		}
 	}
 
 	cmd := exec.Command("ssh-keygen", "-A")
@@ -65,6 +72,23 @@ func saveSSHHostKeys(db *gorm.DB) error {
 	return nil
 }
 
+func removeSSHHostKeys() error {
+	pattern := "/etc/ssh/ssh_host_*"
+
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("error finding SSH host key files: %v", err)
+	}
+
+	for _, file := range files {
+		if err = os.Remove(file); err != nil {
+			return fmt.Errorf("error deleting %s: %v", file, err)
+		}
+	}
+
+	return nil
+}
+
 func RestoreSSHHostKeys(db *gorm.DB) error {
 	var keys []models.SshHostKey
 	result := db.Find(&keys)
@@ -74,7 +98,7 @@ func RestoreSSHHostKeys(db *gorm.DB) error {
 	}
 
 	if len(keys) == 0 {
-		return GenerateSSHHostKeys(db)
+		return GenerateSSHHostKeys(db, false)
 	}
 
 	for _, key := range keys {
