@@ -173,7 +173,7 @@ func RestoreSSHHostKeys(db *gorm.DB) error {
 		return err
 	}
 
-	if err := sshHostKey.GenerateSSHHostKeys(db); err != nil {
+	if err := sshHostKey.GenerateSSHHostKeys(db, false); err != nil {
 		return err
 	}
 	return nil
