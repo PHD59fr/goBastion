@@ -43,7 +43,7 @@ func createFirstAdminUser(db *gorm.DB) error {
 	}
 
 	if userCount == 0 {
-		if err := sync.AddSystemUsersFromSystemToDb(db); err != nil {
+		if err := sync.CreateSystemUsersFromSystemToDb(db); err != nil {
 			return fmt.Errorf("error syncing users from system: %w", err)
 		}
 
@@ -125,11 +125,19 @@ func main() {
 		&models.GroupAccess{},
 		&models.Aliases{},
 		&models.SshHostKey{},
+		&models.KnownHostsEntry{},
 	)
 	if err != nil {
 		logger.Error("Failed to auto-migrate models", slog.Any("error", err))
 		return
 	}
+
+	// Create a partial unique index for active entries only (Not supported by GORM)
+	db.Exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS unique_user_entry 
+    ON known_hosts_entries(user_id, entry) 
+    WHERE deleted_at IS NULL;
+`)
 
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -158,12 +166,12 @@ func main() {
 
 		flag.Parse()
 		if *restoreFlag {
-			if err = sync.RestoreSSHHostKeys(db); err != nil {
+			if err = sync.RestoreBastionSSHHostKeys(db); err != nil {
 				logger.Error("Error restoring ssh host keys: " + err.Error())
 				return
 			}
 
-			if err = sync.AddSystemUsersFromSystemToDb(db); err != nil {
+			if err = sync.CreateSystemUsersFromSystemToDb(db); err != nil {
 				logger.Error("Error syncing users from system" + err.Error())
 				return
 			}

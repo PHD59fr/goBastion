@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"goBastion/utils/sshConnector"
+	"goBastion/utils/sync"
 	"log/slog"
 	"os"
 	"regexp"
@@ -61,9 +62,11 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 			err = sshConnector.SshConnection(user, access)
 			if err != nil {
 				fmt.Printf("Key verification failed: %v\n", err)
-			} else {
-				return nil
 			}
+			if err = sync.KnownHostsEntriesFromSystemToDb(db, &user); err != nil {
+				return fmt.Errorf("error syncing known hosts: %v", err)
+			}
+			return nil
 		}
 	}
 
