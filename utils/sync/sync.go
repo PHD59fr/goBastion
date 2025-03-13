@@ -3,6 +3,7 @@ package sync
 import (
 	"bufio"
 	"fmt"
+	"goBastion/models"
 	"goBastion/utils"
 	"goBastion/utils/sshHostKey"
 	"goBastion/utils/system"
@@ -11,9 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
-	"goBastion/models"
-
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -28,6 +29,7 @@ func CreateUserFromDB(db *gorm.DB, user models.User) error {
 		if err = IngressKeyFromDB(db, user); err != nil {
 			return fmt.Errorf("error syncing ingress keys for %s: %w", user.Username, err)
 		}
+
 	} else {
 		return fmt.Errorf("user %s already exists", user.Username)
 	}
@@ -61,6 +63,11 @@ func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
 		if err = IngressKeyFromDB(db, u); err != nil {
 			return fmt.Errorf("error syncing ingress keys for %s: %w", u.Username, err)
 		}
+
+		if err = KnownHostsFromDB(db, &u); err != nil {
+			return fmt.Errorf("error syncing known_hosts for %s: %w", u.Username, err)
+		}
+
 		if err = system.UpdateSudoers(&u); err != nil {
 			return fmt.Errorf("error updating sudoers: %w", err)
 		}
@@ -69,7 +76,7 @@ func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
 	return nil
 }
 
-func AddSystemUsersFromSystemToDb(db *gorm.DB) error {
+func CreateSystemUsersFromSystemToDb(db *gorm.DB) error {
 	// Only on fresh install
 	var userCount int64
 	if err := db.Model(&models.User{}).Where("system_user = ?", true).Count(&userCount).Error; err != nil {
@@ -168,7 +175,115 @@ func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 	return nil
 }
 
-func RestoreSSHHostKeys(db *gorm.DB) error {
+func KnownHostsFromDB(db *gorm.DB, user *models.User) error {
+	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+
+	var entries []models.KnownHostsEntry
+	if err := db.Where("user_id = ?", user.ID).Find(&entries).Error; err != nil {
+		return fmt.Errorf("failed to retrieve known_hosts entries from DB: %v", err)
+	}
+
+	if len(entries) == 0 {
+		if err := os.Remove(knownHostsPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove known_hosts file: %v", err)
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("failed to create SSH directory: %v", err)
+	}
+
+	var lines []string
+	for _, entry := range entries {
+		lines = append(lines, entry.Entry)
+	}
+	knownHostsContent := strings.Join(lines, "\n") + "\n"
+
+	if err := os.WriteFile(knownHostsPath, []byte(knownHostsContent), 0600); err != nil {
+		return fmt.Errorf("failed to write known_hosts file: %v", err)
+	}
+	return nil
+}
+
+func KnownHostsEntriesFromSystemToDb(db *gorm.DB, user *models.User) error {
+
+	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+
+	file, err := os.Open(knownHostsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return db.Where("user_id = ?", user.ID).Delete(&models.KnownHostsEntry{}).Error
+		}
+		return fmt.Errorf("failed to open known_hosts: %v", err)
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	existingEntries := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		existingEntries[line] = true
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading known_hosts file: %v", err)
+	}
+
+	var dbEntries []models.KnownHostsEntry
+	if err := db.Where("user_id = ?", user.ID).Find(&dbEntries).Error; err != nil {
+		return fmt.Errorf("failed to fetch known_hosts entries from DB: %v", err)
+	}
+
+	var entriesToInsert []models.KnownHostsEntry
+	dbEntriesMap := make(map[string]uuid.UUID)
+
+	for _, entry := range dbEntries {
+		dbEntriesMap[entry.Entry] = entry.ID
+	}
+
+	for entry := range existingEntries {
+		if _, exists := dbEntriesMap[entry]; !exists {
+			entriesToInsert = append(entriesToInsert, models.KnownHostsEntry{
+				ID:        uuid.New(),
+				UserID:    user.ID,
+				Entry:     entry,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+		}
+	}
+
+	var entriesToDelete []uuid.UUID
+	for entry, id := range dbEntriesMap {
+		if _, exists := existingEntries[entry]; !exists {
+			entriesToDelete = append(entriesToDelete, id)
+		}
+	}
+
+	if len(entriesToInsert) > 0 {
+		if err := db.Create(&entriesToInsert).Error; err != nil {
+			return fmt.Errorf("failed to insert known_hosts entries: %v", err)
+		}
+	}
+
+	if len(entriesToDelete) > 0 {
+		if err := db.Where("id IN (?)", entriesToDelete).Delete(&models.KnownHostsEntry{}).Error; err != nil {
+			return fmt.Errorf("failed to delete old known_hosts entries: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func RestoreBastionSSHHostKeys(db *gorm.DB) error {
 	if err := sshHostKey.RestoreSSHHostKeys(db); err != nil {
 		return err
 	}

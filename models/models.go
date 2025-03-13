@@ -244,3 +244,18 @@ type SshHostKey struct {
 	PrivateKey []byte
 	PublicKey  []byte
 }
+
+type KnownHostsEntry struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+	UserID    uuid.UUID `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
+	Entry     string    `gorm:"not null;uniqueIndex:idx_user_entry"`
+	User      User      `gorm:"foreignKey:UserID"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt gorm.DeletedAt `gorm:"index"`
+}
+
+func (khe *KnownHostsEntry) BeforeCreate(*gorm.DB) (err error) {
+	khe.ID = uuid.New()
+	return nil
+}
