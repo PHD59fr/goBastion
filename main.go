@@ -488,6 +488,15 @@ func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, c
 		if err := commands.GroupListAliases(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
 		}
+
+	case "ttyList":
+		if err := commands.TtyList(currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
+	case "ttyPlay":
+		if err := commands.TtyPlay(currentUser, args); err != nil {
+			logger.Error(err.Error())
+		}
 	case "whoHasAccessTo":
 		if err := commands.WhoHasAccessTo(db, currentUser, args); err != nil {
 			logger.Error(err.Error())
