@@ -26,6 +26,7 @@ RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
 
 COPY --from=builder /app/goBastion /app/goBastion
 COPY --from=builder /usr/local/bin/ttyrec /usr/local/bin/ttyrec
+COPY --from=builder /usr/local/bin/ttyplay /usr/local/bin/ttyplay
 
 RUN chown root:root /app/goBastion
 RUN chmod u+s /app/goBastion

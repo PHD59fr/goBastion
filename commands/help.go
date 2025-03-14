@@ -34,6 +34,10 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfAddAlias", "Add a personal alias")
 	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfDelAlias", "Delete a personal alias")
 
+	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    TTY sessions:"))
+	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "ttyList", "List recorded tty sessions")
+	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "ttyPlay", "Read a recorded tty session")
+
 	// Account Management
 	if user.IsAdmin() {
 		fmt.Println(utils.FgCyan("│"))
@@ -75,7 +79,10 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupListAccess", "List access of the group")
 		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupAddAccess", "Add access to a group")
 		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupDelAccess", "Remove access from a group")
-
+		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Group alias (group):"))
+		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupAddAlias", "Add a group alias")
+		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupDelAlias", "Delete a group alias")
+		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupListAliases", "List group aliases")
 	}
 
 	// Misc commands

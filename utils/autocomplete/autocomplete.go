@@ -12,7 +12,6 @@ import (
 func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 	text := d.TextBeforeCursor()
 	tokens := strings.Fields(text)
-
 	filterAlreadyUsed := func(sugs []prompt.Suggest) []prompt.Suggest {
 		var result []prompt.Suggest
 		for _, s := range sugs {
@@ -22,20 +21,44 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		}
 		return result
 	}
-
 	if len(tokens) > 0 {
 		cmd := tokens[0]
 		switch cmd {
+
 		// Self commands
+		case "selfListIngressKeys":
+			return []prompt.Suggest{}
 		case "selfAddIngressKey":
 			sugs := []prompt.Suggest{
 				{Text: "--key", Description: "SSH public key"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "selfDelIngressKey":
+			sugs := []prompt.Suggest{
+				{Text: "--id", Description: "SSH public key ID"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "selfGenerateEgressKey":
 			sugs := []prompt.Suggest{
 				{Text: "--type", Description: "Key type (e.g., rsa, ed25519)"},
 				{Text: "--size", Description: "Key size (e.g., 2048)"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "selfListEgressKeys":
+			return []prompt.Suggest{}
+		case "selfListAccesses":
+			return []prompt.Suggest{}
+		case "selfAddAccess":
+			sugs := []prompt.Suggest{
+				{Text: "--server", Description: "Server name"},
+				{Text: "--username", Description: "SSH username"},
+				{Text: "--port", Description: "Port number"},
+				{Text: "--comment", Description: "Comment"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "selfDelAccess":
+			sugs := []prompt.Suggest{
+				{Text: "--id", Description: "Access ID"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "selfAddAlias":
@@ -49,8 +72,12 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--id", Description: "Alias ID"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "selfListAliases":
+			return []prompt.Suggest{}
 
 		// Account commands
+		case "accountList":
+			return []prompt.Suggest{}
 		case "accountInfo":
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username"},
@@ -113,10 +140,16 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--access", Description: "Access ID"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+
 		// Group commands
 		case "groupInfo":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "groupList":
+			sugs := []prompt.Suggest{
+				{Text: "--all", Description: "Show all groups"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupCreate":
@@ -135,9 +168,24 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--group", Description: "Group name"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "groupList":
+		case "groupAddAccess":
 			sugs := []prompt.Suggest{
-				{Text: "--all", Description: "Show all groups"},
+				{Text: "--group", Description: "Group name"},
+				{Text: "--server", Description: "SSH Server"},
+				{Text: "--port", Description: "SSH Port"},
+				{Text: "--username", Description: "SSH username"},
+				{Text: "--comment", Description: "Comment"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "groupDelAccess":
+			sugs := []prompt.Suggest{
+				{Text: "--group", Description: "Group name"},
+				{Text: "--access", Description: "Access ID to remove"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "groupListAccess":
+			sugs := []prompt.Suggest{
+				{Text: "--group", Description: "Group name"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupAddMember":
@@ -175,26 +223,6 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--group", Description: "Group name"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "groupAddAccess":
-			sugs := []prompt.Suggest{
-				{Text: "--group", Description: "Group name"},
-				{Text: "--server", Description: "SSH Server"},
-				{Text: "--port", Description: "SSH Port"},
-				{Text: "--username", Description: "SSH username"},
-				{Text: "--comment", Description: "Comment"},
-			}
-			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "groupDelAccess":
-			sugs := []prompt.Suggest{
-				{Text: "--group", Description: "Group name"},
-				{Text: "--access", Description: "Access ID to remove"},
-			}
-			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "groupListAccess":
-			sugs := []prompt.Suggest{
-				{Text: "--group", Description: "Group name"},
-			}
-			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupAddAlias":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
@@ -207,17 +235,35 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--id", Description: "Alias ID"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "groupListHost":
+		case "groupListAliases":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		// Miscellaneous commands
+
+		// TTY commands
+		case "ttyList":
+			var sugs []prompt.Suggest
+			sugs = append(sugs, prompt.Suggest{Text: "--startDate", Description: "Start date"})
+			sugs = append(sugs, prompt.Suggest{Text: "--endDate", Description: "End date"})
+			if user.Role == "admin" {
+				sugs = append(sugs, prompt.Suggest{Text: "--user", Description: "Username (admin only)"})
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "ttyPlay":
+			var sugs2 []prompt.Suggest
+			if user.Role == "admin" {
+				sugs2 = append(sugs2, prompt.Suggest{Text: "--user", Description: "Username (admin only)"})
+			}
+			sugs2 = append(sugs2, prompt.Suggest{Text: "--file", Description: "File name"})
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs2), d.GetWordBeforeCursor(), true)
 		case "whoHasAccessTo":
 			sugs := []prompt.Suggest{
 				{Text: "--server", Description: "Server"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+
+		// Miscellanous commands
 		case "help":
 			return []prompt.Suggest{}
 		case "info":
@@ -226,7 +272,6 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			return []prompt.Suggest{}
 		}
 	}
-
 	defaultSuggestions := []prompt.Suggest{
 		{Text: "selfListIngressKeys", Description: "List your ingress keys"},
 		{Text: "selfAddIngressKey", Description: "Add an ingress key"},
@@ -240,6 +285,7 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		{Text: "selfDelAlias", Description: "Delete an alias"},
 		{Text: "selfListAliases", Description: "List your aliases"},
 		{Text: "accountInfo", Description: "Show account info"},
+		{Text: "accountList", Description: "List all accounts"},
 		{Text: "accountListIngressKeys", Description: "List account ingress keys"},
 		{Text: "groupInfo", Description: "Show group info"},
 		{Text: "groupList", Description: "List groups"},
@@ -248,7 +294,6 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		{Text: "info", Description: "Show application info"},
 		{Text: "exit", Description: "Exit the application"},
 	}
-
 	var groupSuggestions []prompt.Suggest
 	if user.Role == "admin" {
 		groupSuggestions = []prompt.Suggest{
@@ -278,10 +323,8 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		}
 	}
 	suggestions := append(defaultSuggestions, groupSuggestions...)
-
 	if user.Role == "admin" {
 		adminSuggestions := []prompt.Suggest{
-			{Text: "accountList", Description: "List all accounts"},
 			{Text: "accountListAccess", Description: "List account accesses"},
 			{Text: "accountCreate", Description: "Create an account"},
 			{Text: "accountModify", Description: "Modify an account"},
@@ -289,11 +332,12 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			{Text: "accountListEgressKeys", Description: "List account egress keys"},
 			{Text: "accountAddAccess", Description: "Add access to an account"},
 			{Text: "accountDelAccess", Description: "Remove access from an account"},
+			{Text: "ttyList", Description: "List recorded tty sessions"},
+			{Text: "ttyPlay", Description: "Read a recorded tty session"},
 			{Text: "whoHasAccessTo", Description: "List access for a server"},
 		}
 		suggestions = append(suggestions, adminSuggestions...)
 	}
-
 	sort.Slice(suggestions, func(i, j int) bool {
 		return suggestions[i].Text < suggestions[j].Text
 	})
