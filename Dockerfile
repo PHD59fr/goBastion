@@ -30,7 +30,9 @@ COPY --from=builder /usr/local/bin/ttyplay /usr/local/bin/ttyplay
 
 RUN chown root:root /app/goBastion
 RUN chmod u+s /app/goBastion
+RUN touch /goBastion.log && chmod 644 /goBastion.log
+
 
 EXPOSE 22
 
-CMD /bin/busybox syslogd -n -O /dev/stdout & /app/goBastion -restore ; /usr/sbin/sshd -D
+CMD /bin/busybox syslogd -n -O /goBastion.log & /app/goBastion -restore ; /usr/sbin/sshd -D & tail -f /goBastion.log

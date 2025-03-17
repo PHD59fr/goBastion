@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"goBastion/utils/sshHostKey"
-	"log"
-	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
@@ -18,7 +16,10 @@ import (
 	"goBastion/models"
 	"goBastion/utils"
 	"goBastion/utils/autocomplete"
+	"goBastion/utils/logger"
 	"goBastion/utils/sync"
+
+	"log/slog"
 
 	"github.com/c-bata/go-prompt"
 	"github.com/glebarez/sqlite"
@@ -87,13 +88,18 @@ func createFirstAdminUser(db *gorm.DB) error {
 }
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	log, err := logger.NewLogger()
+	if err != nil {
+		fmt.Println("Error initializing logger:", err)
+		return
+	}
 
 	dbDir := "/var/lib/goBastion"
 	if err := os.MkdirAll(dbDir, 0777); err != nil {
-		logger.Error("Failed to create DB directory", slog.String("directory", dbDir), slog.Any("error", err))
+		log.Error("Failed to create DB directory",
+			slog.String("directory", dbDir),
+			slog.Any("error", err),
+		)
 	}
 
 	dbPath := filepath.Join(dbDir, "bastion.db")
@@ -104,13 +110,15 @@ func main() {
 		LogLevel:      gormLogger.Silent,
 		Colorful:      true,
 	}
-	dbLogger := gormLogger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), gormLoggerConfig)
+	dbLogger := gormLogger.New(logger.NewGormLogger(log), gormLoggerConfig)
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: dbLogger,
 	})
 	if err != nil {
-		logger.Error("Failed to connect to database", slog.Any("error", err))
+		log.Error("Failed to connect to database",
+			slog.Any("error", err),
+		)
 		return
 	}
 
@@ -128,11 +136,12 @@ func main() {
 		&models.KnownHostsEntry{},
 	)
 	if err != nil {
-		logger.Error("Failed to auto-migrate models", slog.Any("error", err))
+		log.Error("Failed to auto-migrate models",
+			slog.Any("error", err),
+		)
 		return
 	}
 
-	// Create a partial unique index for active entries only (Not supported by GORM)
 	db.Exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS unique_user_entry 
     ON known_hosts_entries(user_id, entry) 
@@ -141,7 +150,9 @@ func main() {
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		logger.Error("Failed to get generic database object", slog.Any("error", err))
+		log.Error("Failed to get generic database object",
+			slog.Any("error", err),
+		)
 		return
 	}
 	sqlDB.SetMaxOpenConns(2)
@@ -155,7 +166,9 @@ func main() {
 
 	sysUser, err := user.Current()
 	if err != nil {
-		logger.Error("Error fetching current system user", slog.Any("error", err))
+		log.Error("Error fetching current system user",
+			slog.Any("error", err),
+		)
 	}
 	currentUsername := sysUser.Username
 
@@ -167,17 +180,23 @@ func main() {
 		flag.Parse()
 		if *restoreFlag {
 			if err = sync.RestoreBastionSSHHostKeys(db); err != nil {
-				logger.Error("Error restoring ssh host keys: " + err.Error())
+				log.Error("Error restoring ssh host keys",
+					slog.Any("error", err),
+				)
 				return
 			}
 
 			if err = sync.CreateSystemUsersFromSystemToDb(db); err != nil {
-				logger.Error("Error syncing users from system" + err.Error())
+				log.Error("Error syncing users from system",
+					slog.Any("error", err),
+				)
 				return
 			}
 
-			if err = sync.CreateUsersFromDB(db, *logger); err != nil {
-				logger.Error("Error restoring from db: " + err.Error())
+			if err = sync.CreateUsersFromDB(db, *log); err != nil {
+				log.Error("Error restoring from db",
+					slog.Any("error", err),
+				)
 				return
 			}
 			return
@@ -185,7 +204,9 @@ func main() {
 
 		if *regenerateSSHHostKeysFlag {
 			if err = sshHostKey.GenerateSSHHostKeys(db, true); err != nil {
-				logger.Error("Error regenerating ssh host keys: " + err.Error())
+				log.Error("Error regenerating ssh host keys",
+					slog.Any("error", err),
+				)
 				return
 			}
 			return
@@ -193,7 +214,9 @@ func main() {
 
 		if *firstInstallFlag {
 			if err = createFirstAdminUser(db); err != nil {
-				logger.Error("Error creating first user: " + err.Error())
+				log.Error("Error creating first user",
+					slog.Any("error", err),
+				)
 			}
 			return
 		}
@@ -206,24 +229,24 @@ func main() {
 		return
 	}
 
-	if !preConnectionCheck(db, currentUser) {
+	if !preConnectionCheck(db, currentUser, log) {
 		return
 	}
 
 	if len(os.Args) == 1 {
-		runInteractiveMode(db, &currentUser, *logger)
+		runInteractiveMode(db, &currentUser, log)
 	} else {
 		cmd := os.Args[1]
 		args := os.Args[2:]
 		if strings.TrimSpace(cmd) == "" {
-			runInteractiveMode(db, &currentUser, *logger)
+			runInteractiveMode(db, &currentUser, log)
 		} else {
-			runNonInteractiveMode(db, &currentUser, *logger, cmd, args)
+			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 		}
 	}
 }
 
-func preConnectionCheck(db *gorm.DB, currentUser models.User) bool {
+func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) bool {
 	if os.Getuid() == 0 {
 		fmt.Println("You cannot run this program as root.")
 		os.Exit(1)
@@ -268,12 +291,13 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User) bool {
 	return true
 }
 
-func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logger, command string, args []string) {
+func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, command string, args []string) {
 	if command == "-osh" {
 		if len(args) < 1 {
 			fmt.Println("Usage: -osh <command> <args>")
 			fmt.Println("Entering interactive mode.")
-			runInteractiveMode(db, currentUser, logger)
+			runInteractiveMode(db, currentUser, log)
+			return
 		}
 	}
 
@@ -281,17 +305,19 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Lo
 		parts := strings.Split(command, "-osh")
 		command = parts[1]
 		commandParts := strings.Split(command, " ")
-		command = commandParts[1]
-		args = commandParts[2:]
-		executeCommand(db, currentUser, logger, command, args)
+		if len(commandParts) > 1 {
+			command = commandParts[1]
+			args = commandParts[2:]
+		}
+		executeCommand(db, currentUser, log, command, args)
 	} else {
-		if err := commands.SSHConnect(db, *currentUser, logger, command); err != nil {
+		if err := commands.SSHConnect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
 		}
 	}
 }
 
-func runInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logger) {
+func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger) {
 	defer resetStdIn()
 	fmt.Println(utils.FgBlueB("Type 'help' to display available commands, 'tab' to autocomplete, 'exit' to quit."))
 
@@ -303,8 +329,6 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logge
 		}
 		return []prompt.Suggest{}
 	}
-
-	var p *prompt.Prompt
 
 	tabKeyBinding := prompt.KeyBind{
 		Key: prompt.Tab,
@@ -331,7 +355,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logge
 
 	bastionName, _ := os.Hostname()
 
-	p = prompt.New(func(in string) {
+	p := prompt.New(func(in string) {
 		showCompletions = false
 		tokens := strings.Fields(in)
 		if len(tokens) == 0 {
@@ -339,7 +363,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logge
 		}
 		cmd := tokens[0]
 		args := tokens[1:]
-		executeCommand(db, currentUser, logger, cmd, args)
+		executeCommand(db, currentUser, log, cmd, args)
 	}, wrappedCompleter,
 		prompt.OptionPrefix(currentUser.Username+"@"+bastionName+":"+promptSymbol),
 		prompt.OptionPrefixTextColor(prompt.DarkGreen),
@@ -349,7 +373,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, logger slog.Logge
 	p.Run()
 }
 
-func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, cmd string, args []string) {
+func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) {
 	resetStdIn() // Mandatory! Otherwise, the terminal may be left in an unusable state.
 	switch cmd {
 	// Self commands
@@ -357,45 +381,44 @@ func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, c
 		commands.SelfListIngressKeys(db, currentUser)
 	case "selfAddIngressKey":
 		if err := commands.SelfAddIngressKey(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfAddIngressKey error", slog.String("error", err.Error()))
 		}
 	case "selfDelIngressKey":
 		if err := commands.SelfDelIngressKey(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfDelIngressKey error", slog.String("error", err.Error()))
 		}
 	case "selfGenerateEgressKey":
 		if err := commands.SelfGenerateEgressKey(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfGenerateEgressKey error", slog.String("error", err.Error()))
 		}
 	case "selfListEgressKeys":
 		if err := commands.SelfListEgressKeys(db, currentUser); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfListEgressKeys error", slog.String("error", err.Error()))
 		}
 	case "selfListAccesses":
 		if err := commands.SelfListAccesses(db, currentUser); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfListAccesses error", slog.String("error", err.Error()))
 		}
 	case "selfAddAccess":
 		if err := commands.SelfAddAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfAddAccess error", slog.String("error", err.Error()))
 		}
 	case "selfDelAccess":
 		if err := commands.SelfDelAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfDelAccess error", slog.String("error", err.Error()))
 		}
 	case "selfAddAlias":
 		if err := commands.SelfAddAlias(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfAddAlias error", slog.String("error", err.Error()))
 		}
 	case "selfDelAlias":
 		if err := commands.SelfDelAlias(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfDelAlias error", slog.String("error", err.Error()))
 		}
 	case "selfListAliases":
 		if err := commands.SelfListAliases(db, currentUser); err != nil {
-			logger.Error(err.Error())
+			log.Error("selfListAliases error", slog.String("error", err.Error()))
 		}
-
 	// Account commands
 	case "accountList":
 		commands.AccountList(db, currentUser)
@@ -403,103 +426,103 @@ func executeCommand(db *gorm.DB, currentUser *models.User, logger slog.Logger, c
 		commands.AccountInfo(db, currentUser, args)
 	case "accountCreate":
 		if err := commands.AccountCreate(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountCreate error", slog.String("error", err.Error()))
 		}
 	case "accountListIngressKeys":
 		if err := commands.AccountListIngressKeys(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountListIngressKeys error", slog.String("error", err.Error()))
 		}
 	case "accountListEgressKeys":
 		if err := commands.AccountListEgressKeys(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountListEgressKeys error", slog.String("error", err.Error()))
 		}
 	case "accountModify":
 		if err := commands.AccountModify(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountModify error", slog.String("error", err.Error()))
 		}
 	case "accountDelete":
 		if err := commands.AccountDelete(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountDelete error", slog.String("error", err.Error()))
 		}
 	case "accountAddAccess":
 		if err := commands.AccountAddAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountAddAccess error", slog.String("error", err.Error()))
 		}
 	case "accountDelAccess":
 		if err := commands.AccountDelAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountDelAccess error", slog.String("error", err.Error()))
 		}
 	case "accountListAccess":
 		if err := commands.AccountListAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("accountListAccess error", slog.String("error", err.Error()))
 		}
 	// Group commands
 	case "groupInfo":
 		if err := commands.GroupInfo(db, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupInfo error", slog.String("error", err.Error()))
 		}
 	case "groupList":
 		commands.GroupList(db, currentUser, args)
 	case "groupCreate":
 		if err := commands.GroupCreate(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupCreate error", slog.String("error", err.Error()))
 		}
 	case "groupDelete":
 		if err := commands.GroupDelete(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupDelete error", slog.String("error", err.Error()))
 		}
 	case "groupAddAccess":
 		if err := commands.GroupAddAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupAddAccess error", slog.String("error", err.Error()))
 		}
 	case "groupDelAccess":
 		if err := commands.GroupDelAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupDelAccess error", slog.String("error", err.Error()))
 		}
 	case "groupAddMember":
 		if err := commands.GroupAddMember(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupAddMember error", slog.String("error", err.Error()))
 		}
 	case "groupDelMember":
 		if err := commands.GroupDelMember(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupDelMember error", slog.String("error", err.Error()))
 		}
 	case "groupGenerateEgressKey":
 		if err := commands.GroupGenerateEgressKey(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupGenerateEgressKey error", slog.String("error", err.Error()))
 		}
 	case "groupListEgressKeys":
 		if err := commands.GroupListEgressKeys(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupListEgressKeys error", slog.String("error", err.Error()))
 		}
 	case "groupListAccess":
 		if err := commands.GroupListAccess(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupListAccess error", slog.String("error", err.Error()))
 		}
 	case "groupAddAlias":
 		if err := commands.GroupAddAlias(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupAddAlias error", slog.String("error", err.Error()))
 		}
 	case "groupDelAlias":
 		if err := commands.GroupDelAlias(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupDelAlias error", slog.String("error", err.Error()))
 		}
 	case "groupListAliases":
 		if err := commands.GroupListAliases(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("groupListAliases error", slog.String("error", err.Error()))
 		}
-
+	// Command "TTY"
 	case "ttyList":
 		if err := commands.TtyList(currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("ttyList error", slog.String("error", err.Error()))
 		}
 	case "ttyPlay":
 		if err := commands.TtyPlay(currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("ttyPlay error", slog.String("error", err.Error()))
 		}
 	case "whoHasAccessTo":
 		if err := commands.WhoHasAccessTo(db, currentUser, args); err != nil {
-			logger.Error(err.Error())
+			log.Error("whoHasAccessTo error", slog.String("error", err.Error()))
 		}
 	// Miscellaneous Commands
 	case "help":
