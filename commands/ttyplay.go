@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"goBastion/models"
 	"goBastion/utils"
+	"goBastion/utils/console"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,21 +24,40 @@ func TtyList(u *models.User, args []string) error {
 	}
 	fs.StringVar(&startDateStr, "startDate", "", "From date (YYYY-MM-DD)")
 	fs.StringVar(&endDateStr, "endDate", "", "To date (YYYY-MM-DD)")
+	var flagOutput bytes.Buffer
+	fs.SetOutput(&flagOutput)
+
 	if err := fs.Parse(args); err != nil {
-		fmt.Printf("Error parsing flags: %v\n", err)
-		fmt.Println("Usage: ttyList", adminUsage(u))
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session List",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage Error", Body: []string{"Usage: ttyList [--user <username>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}},
+			},
+		})
 		return err
 	}
+
 	if !u.IsAdmin() {
 		username = u.Username
 	}
 	if username == "" {
 		username = u.Username
 	}
+
 	baseDir := fmt.Sprintf("/app/ttyrec/%s/", strings.ToLower(username))
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
-		return fmt.Errorf("user %s hasn't recorded any sessions", username)
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session List",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User %s hasn't recorded any sessions.", username)}},
+			},
+		})
+		return err
 	}
+
+	var output []string
 	err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -59,7 +80,7 @@ func TtyList(u *models.User, args []string) error {
 			if len(filesByDate) == 0 {
 				return nil
 			}
-			fmt.Println(utils.FgBlue("* " + serverIP))
+			output = append(output, utils.FgCyanB("* "+serverIP))
 			var sortedDates []string
 			for date := range filesByDate {
 				sortedDates = append(sortedDates, date)
@@ -73,7 +94,7 @@ func TtyList(u *models.User, args []string) error {
 					datePrefix = "└── "
 					nextPrefix = "    "
 				}
-				fmt.Println(datePrefix + utils.FgCyan(date))
+				output = append(output, datePrefix+utils.FgBlue(date))
 				sort.Strings(filesByDate[date])
 				for j, file := range filesByDate[date] {
 					isLastFile := j == len(filesByDate[date])-1
@@ -81,11 +102,19 @@ func TtyList(u *models.User, args []string) error {
 					if isLastFile {
 						filePrefix = nextPrefix + "└── "
 					}
-					fmt.Println(filePrefix + file)
+					output = append(output, filePrefix+file)
 				}
 			}
 		}
 		return nil
+	})
+
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "TTY Session List",
+		BlockType: "success",
+		Sections: []console.SectionContent{
+			{SubTitle: fmt.Sprintf("Sessions for %s", username), Body: output},
+		},
 	})
 	return err
 }
@@ -98,39 +127,83 @@ func TtyPlay(u *models.User, args []string) error {
 		fs.StringVar(&username, "user", "", "Username (admin only)")
 	}
 	fs.StringVar(&file, "file", "", "TTY recording file")
-	if err := fs.Parse(args); err != nil {
-		fmt.Printf("Error parsing flags: %v\n", err)
-		fmt.Println("Usage: ttyPlay", adminUsage(u))
+	var flagOutput bytes.Buffer
+	fs.SetOutput(&flagOutput)
+
+	if err := fs.Parse(args); err != nil || file == "" {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage Error", Body: []string{"Usage: ttyPlay --file <file> [--user <username>]"}},
+			},
+		})
 		return err
 	}
-	if !u.IsAdmin() {
+
+	if !u.IsAdmin() || username == "" {
 		username = u.Username
 	}
-	if file == "" {
-		fmt.Println("Usage: ttyPlay", adminUsage(u))
-		return nil
-	}
+
 	re := regexp.MustCompile(`^[^.]+\.(?P<server>[^_:]+)(?::\d+)?_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ttyrec$`)
 	matches := re.FindStringSubmatch(file)
 	if len(matches) < 2 {
-		fmt.Println("Invalid file format.")
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Invalid File Format", Body: []string{"The specified file has an invalid format."}},
+			},
+		})
 		return nil
 	}
+
 	server := matches[1]
 	baseDir := fmt.Sprintf("/app/ttyrec/%s/%s/", strings.ToLower(username), server)
 	ttyFile := filepath.Join(baseDir, file)
+
 	if _, err := os.Stat(ttyFile); os.IsNotExist(err) {
-		fmt.Printf("Specified ttyrec file does not exist: %s\n", ttyFile)
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "TTY Session Not Found", Body: []string{fmt.Sprintf("Specified TTY Session does not exist")}},
+			},
+		})
 		return nil
 	}
+
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "TTY Session Playback",
+		BlockType: "info",
+		Sections: []console.SectionContent{
+			{SubTitle: "Playback Started", Body: []string{fmt.Sprintf("Playing file: %s", file)}},
+		},
+	})
+
 	cmd := exec.Command("ttyplay", ttyFile)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("Failed to play ttyrec file: %v\n", err)
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Playback Error", Body: []string{fmt.Sprintf("Failed to play ttyrec file: %v", err)}},
+			},
+		})
 		return err
 	}
+
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "TTY Session Playback",
+		BlockType: "success",
+		Sections: []console.SectionContent{
+			{SubTitle: "Playback Completed", Body: []string{fmt.Sprintf("Finished playing file: %s", file)}},
+		},
+	})
+
 	return nil
 }
 
@@ -141,11 +214,4 @@ func extractDate(fileName string) (string, bool) {
 		return matches[1], true
 	}
 	return "", false
-}
-
-func adminUsage(u *models.User) string {
-	if u.IsAdmin() {
-		return "[--user <username>] --file <ttyrec_file>"
-	}
-	return "--file <ttyrec_file>"
 }
