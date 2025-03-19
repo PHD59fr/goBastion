@@ -2,98 +2,223 @@ package commands
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
+
 	"goBastion/models"
 	"goBastion/utils"
+	"goBastion/utils/console"
 
 	"gorm.io/gorm"
 )
 
+func stripANSI(s string) string {
+	ansiRegex := regexp.MustCompile("\x1b\\[[0-9;]*m")
+	return ansiRegex.ReplaceAllString(s, "")
+}
+
+func splitCommandLine(line string) (string, string) {
+	re := regexp.MustCompile(`\s{2,}`)
+	parts := re.Split(line, 2)
+	if len(parts) < 2 {
+		return line, ""
+	}
+	return parts[0], parts[1]
+}
+
 func DisplayHelp(db *gorm.DB, user models.User) {
-	fmt.Println(utils.FgCyan("╭───goBastion──────────────────────────────────────────────"))
-	fmt.Println(utils.FgCyan("│ ") + utils.FgGreen("▶ help"))
-	fmt.Println(utils.FgCyan("├──────────────────────────────────────────────────────────"))
+	var sections []console.SectionContent
 
-	// Manage your account
-	fmt.Println(utils.FgCyan("│") + utils.FgYellowB(" > MANAGE YOUR ACCOUNT"))
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Ingress (you → bastion):"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfListIngressKeys", "List your ingress keys")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfAddIngressKey", "Add a new ingress key")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfDelIngressKey", "Delete an ingress key")
+	// MANAGE YOUR ACCOUNT
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "> MANAGE YOUR ACCOUNT",
+		SubTitleColor: utils.FgYellowB,
+		SubSubTitle:   " Ingress (you → bastion):",
+		Body: []string{
+			" " + utils.FgGreen("-") + " selfListIngressKeys       List your ingress keys",
+			" " + utils.FgGreen("-") + " selfAddIngressKey         Add a new ingress key",
+			" " + utils.FgGreen("-") + " selfDelIngressKey         Delete an ingress key",
+		},
+	})
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "",
+		SubTitleColor: utils.FgYellowB,
+		SubSubTitle:   " Egress (bastion → server):",
+		Body: []string{
+			" " + utils.FgGreen("-") + " selfListEgressKeys        List your egress keys",
+			" " + utils.FgGreen("-") + " selfGenerateEgressKey     Generate a new egress key",
+		},
+	})
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "",
+		SubTitleColor: utils.FgYellowB,
+		SubSubTitle:   " Server accesses (personal):",
+		Body: []string{
+			" " + utils.FgGreen("-") + " selfListAccesses          List your personal accesses",
+			" " + utils.FgGreen("-") + " selfAddAccess             Add a personal access",
+			" " + utils.FgGreen("-") + " selfDelAccess             Delete a personal access",
+		},
+	})
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "",
+		SubTitleColor: utils.FgYellowB,
+		SubSubTitle:   " Server alias (personal):",
+		Body: []string{
+			" " + utils.FgGreen("-") + " selfListAliases           List your personal aliases",
+			" " + utils.FgGreen("-") + " selfAddAlias              Add a personal alias",
+			" " + utils.FgGreen("-") + " selfDelAlias              Delete a personal alias",
+		},
+	})
 
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Egress (bastion → server):"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfListEgressKeys", "List your egress keys")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfGenerateEgressKey", "Generate a new egress key")
+	// TTY SESSIONS
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "> TTY SESSIONS",
+		SubTitleColor: utils.FgCyanB,
+		SubSubTitle:   "",
+		Body: []string{
+			" " + utils.FgGreen("-") + " ttyList                   List recorded tty sessions",
+			" " + utils.FgGreen("-") + " ttyPlay                   Read a recorded tty session",
+		},
+	})
 
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Server accesses (personal):"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfListAccesses", "List your personal accesses")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfAddAccess", "Add a personal access")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfDelAccess", "Delete a personal access")
-
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Server alias (personal):"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfListAliases", "List your personal aliases")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfAddAlias", "Add a personal alias")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "selfDelAlias", "Delete a personal alias")
-
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    TTY sessions:"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "ttyList", "List recorded tty sessions")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "ttyPlay", "Read a recorded tty session")
-
-	// Account Management
+	// MANAGE OTHER ACCOUNTS (admin only)
 	if user.IsAdmin() {
-		fmt.Println(utils.FgCyan("│"))
-		fmt.Println(utils.FgCyan("│") + utils.FgRedB(" > MANAGE OTHER ACCOUNTS (admin only)"))
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Accounts:"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountList", "List all accounts")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountInfo", "Show account info")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountCreate", "Create a new account")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountModify", "Modify to admin or user an account")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountDelete", "Delete an account")
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Account keys:"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountListIngressKeys", "List account ingress keys")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountListEgressKeys", "List account egress keys")
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Account accesses:"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountListAccess", "List account accesses")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountAddAccess", "Add access to an account")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "accountDelAccess", "Remove access from an account")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "whoHasAccessTo", "List accounts with access to a server")
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "> MANAGE OTHER ACCOUNTS (admin only)",
+			SubTitleColor: utils.FgRedB,
+			SubSubTitle:   " Accounts:",
+			Body: []string{
+				" " + utils.FgGreen("-") + " accountList             List all accounts",
+				" " + utils.FgGreen("-") + " accountInfo             Show account info",
+				" " + utils.FgGreen("-") + " accountCreate           Create a new account",
+				" " + utils.FgGreen("-") + " accountModify           Modify an account",
+				" " + utils.FgGreen("-") + " accountDelete           Delete an account",
+			},
+		})
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgRedB,
+			SubSubTitle:   " Account keys:",
+			Body: []string{
+				" " + utils.FgGreen("-") + " accountListIngressKeys  List account ingress keys",
+				" " + utils.FgGreen("-") + " accountListEgressKeys   List account egress keys",
+			},
+		})
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgRedB,
+			SubSubTitle:   " Account accesses:",
+			Body: []string{
+				" " + utils.FgGreen("-") + " accountListAccess       List account accesses",
+				" " + utils.FgGreen("-") + " accountAddAccess        Add access to an account",
+				" " + utils.FgGreen("-") + " accountDelAccess        Remove access from an account",
+				" " + utils.FgGreen("-") + " whoHasAccessTo          List accounts with access to a server",
+			},
+		})
 	}
 
-	// Groups Management
-	fmt.Println(utils.FgCyan("│"))
-	fmt.Println(utils.FgCyan("│") + utils.FgMagentaB(" > MANAGE GROUPS"))
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Groups:"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupInfo", "Show group info")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupList", "List groups")
+	// MANAGE GROUPS
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "> MANAGE GROUPS",
+		SubTitleColor: utils.FgMagentaB,
+		SubSubTitle:   " Groups:",
+		Body: []string{
+			" " + utils.FgGreen("-") + " groupInfo               Show group info",
+			" " + utils.FgGreen("-") + " groupList               List groups",
+		},
+	})
 	if user.IsAdmin() {
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupCreate", "Create a new group")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupDelete", "Delete a group")
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgMagentaB,
+			SubSubTitle:   "",
+			Body: []string{
+				" " + utils.FgGreen("-") + " groupCreate             Create a new group",
+				" " + utils.FgGreen("-") + " groupDelete             Delete a group",
+			},
+		})
 	}
 	if user.IsAdmin() || isGroupManager(db, user) {
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Group member management:"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupAddMember", "Add a member to a group")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupDelMember", "Remove a member from a group")
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Group egress keys:"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupGenerateEgressKey", "Generate a new group egress key")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupListEgressKeys", "List group egress keys")
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Group accesses:"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupListAccess", "List access of the group")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupAddAccess", "Add access to a group")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupDelAccess", "Remove access from a group")
-		fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Group alias (group):"))
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupAddAlias", "Add a group alias")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupDelAlias", "Delete a group alias")
-		fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "groupListAliases", "List group aliases")
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgWhiteB,
+			SubSubTitle:   " Group member management:",
+			Body: []string{
+				" " + utils.FgGreen("-") + " groupAddMember          Add a member to a group",
+				" " + utils.FgGreen("-") + " groupDelMember          Remove a member from a group",
+			},
+		})
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgWhiteB,
+			SubSubTitle:   " Group egress keys:",
+			Body: []string{
+				" " + utils.FgGreen("-") + " groupGenerateEgressKey  Generate a new group egress key",
+				" " + utils.FgGreen("-") + " groupListEgressKeys     List group egress keys",
+			},
+		})
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgWhiteB,
+			SubSubTitle:   " Group accesses:",
+			Body: []string{
+				" " + utils.FgGreen("-") + " groupListAccess         List access of the group",
+				" " + utils.FgGreen("-") + " groupAddAccess          Add access to a group",
+				" " + utils.FgGreen("-") + " groupDelAccess          Remove access from a group",
+			},
+		})
+	}
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "",
+		SubTitleColor: utils.FgWhiteB,
+		SubSubTitle:   " Group alias (group):",
+		Body: []string{
+			" " + utils.FgGreen("-") + " groupAddAlias           Add a group alias",
+			" " + utils.FgGreen("-") + " groupDelAlias           Delete a group alias",
+			" " + utils.FgGreen("-") + " groupListAliases        List group aliases",
+		},
+	})
+
+	// MISC COMMANDS
+	sections = append(sections, console.SectionContent{
+		SubTitle:      "> MISC COMMANDS",
+		SubTitleColor: utils.FgWhiteB,
+		SubSubTitle:   " Basic commands:",
+		Body: []string{
+			" " + utils.FgGreen("-") + " help                   Display this help message",
+			" " + utils.FgGreen("-") + " info                   Show application info",
+			" " + utils.FgGreen("-") + " exit                   Exit the application",
+		},
+	})
+
+	globalMaxCmdLen := 0
+	for _, section := range sections {
+		for _, line := range section.Body {
+			cmd, _ := splitCommandLine(line)
+			visibleCmd := strings.TrimSpace(stripANSI(cmd))
+			if len(visibleCmd) > globalMaxCmdLen {
+				globalMaxCmdLen = len(visibleCmd)
+			}
+		}
 	}
 
-	// Misc commands
-	fmt.Println(utils.FgCyan("│"))
-	fmt.Println(utils.FgCyan("│") + utils.FgYellowB(" > MISC COMMANDS"))
-	fmt.Println(utils.FgCyan("│") + utils.FgWhite("    Basic commands:"))
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "help", "Display this help message")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "info", "Show application info")
-	fmt.Printf(utils.FgCyan("│ %s %-25s %s\n"), utils.FgGreen("     -"), "exit", "Exit the application")
+	for i, section := range sections {
+		for j, line := range section.Body {
+			cmd, desc := splitCommandLine(line)
+			visibleCmd := strings.TrimSpace(stripANSI(cmd))
+			pad := globalMaxCmdLen - len(visibleCmd)
+			alignedLine := cmd + strings.Repeat(" ", pad) + "  " + desc
+			sections[i].Body[j] = alignedLine
+		}
+	}
 
-	fmt.Println(utils.FgCyan("╰──────────────────────────────────────────────────────────"))
+	helpBlock := console.ContentBlock{
+		Title:     "▶ help",
+		BlockType: "help",
+		Sections:  sections,
+		Footer:    "",
+	}
+	console.DisplayBlock(helpBlock)
 }
 
 func isGroupManager(db *gorm.DB, user models.User) bool {

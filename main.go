@@ -421,9 +421,13 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		}
 	// Account commands
 	case "accountList":
-		commands.AccountList(db, currentUser)
+		if err := commands.AccountList(db, currentUser); err != nil {
+			log.Error("accountList error", slog.String("error", err.Error()))
+		}
 	case "accountInfo":
-		commands.AccountInfo(db, currentUser, args)
+		if err := commands.AccountInfo(db, currentUser, args); err != nil {
+			log.Error("accountInfo error", slog.String("error", err.Error()))
+		}
 	case "accountCreate":
 		if err := commands.AccountCreate(db, currentUser, args); err != nil {
 			log.Error("accountCreate error", slog.String("error", err.Error()))

@@ -1,0 +1,94 @@
+package console
+
+import (
+	"fmt"
+	"strings"
+
+	"goBastion/utils"
+)
+
+type ContentBlock struct {
+	Title     string
+	BlockType string
+	Sections  []SectionContent
+	Footer    string
+}
+
+type SectionContent struct {
+	SubTitle      string
+	SubTitleColor func(a ...interface{}) string
+	SubSubTitle   string
+	Body          []string
+}
+
+func getTitleColor(blockType string) func(a ...interface{}) string {
+	switch strings.ToLower(blockType) {
+	case "error":
+		return utils.FgRedB
+	case "success":
+		return utils.FgGreenB
+	case "warning":
+		return utils.FgYellowB
+	case "info":
+		return utils.FgCyanB
+	case "help":
+		return utils.FgGreenB
+	default:
+		return utils.FgGreenB
+	}
+}
+
+func getFrameColor(blockType string) func(a ...interface{}) string {
+	switch strings.ToLower(blockType) {
+	case "error":
+		return utils.FgRed
+	case "success":
+		return utils.FgGreen
+	case "warning":
+		return utils.FgYellow
+	case "info":
+		return utils.FgCyan
+	case "help":
+		return utils.FgCyan
+	default:
+		return utils.FgCyan
+	}
+}
+
+func DisplayBlock(block ContentBlock) {
+	if !strings.HasPrefix(block.Title, "▶") {
+		block.Title = "▶ " + block.Title
+	}
+	titleColor := getTitleColor(block.BlockType)
+	frameColor := getFrameColor(block.BlockType)
+	fmt.Println(frameColor("╭───goBastion──────────────────────────────────────────────"))
+	fmt.Println(frameColor("│ ") + titleColor(block.Title))
+	fmt.Println(frameColor("├──────────────────────────────────────────────────────────"))
+	for i, section := range block.Sections {
+		space := "│ "
+		// Si la section possède un sous-titre, cela signifie un nouveau bloc, donc on insère un saut de ligne (sauf pour la première)
+		if section.SubTitle != "" {
+			if i > 0 {
+				fmt.Println(frameColor("│"))
+			}
+			if section.SubTitleColor != nil {
+				fmt.Println(frameColor(space) + section.SubTitleColor(section.SubTitle))
+			} else {
+				fmt.Println(frameColor(space) + utils.FgYellowB(section.SubTitle))
+			}
+		}
+		// Affichage du sous-sous-titre (toujours sur une nouvelle ligne)
+		if section.SubSubTitle != "" {
+			fmt.Println(frameColor(space+"  ") + utils.FgWhiteB(section.SubSubTitle))
+		}
+		// Affichage du contenu
+		for _, line := range section.Body {
+			fmt.Println(frameColor(space+"    ") + utils.FgWhite(line))
+		}
+	}
+	if block.Footer != "" {
+		fmt.Println(frameColor("├──────────────────────────────────────────────────────────"))
+		fmt.Println(frameColor("│ ") + utils.FgWhite(block.Footer))
+	}
+	fmt.Println(frameColor("╰──────────────────────────────────────────────────────────"))
+}
