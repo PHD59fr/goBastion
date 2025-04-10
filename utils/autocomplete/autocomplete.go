@@ -74,6 +74,11 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "selfListAliases":
 			return []prompt.Suggest{}
+		case "selfRemoveHostFromKnownHosts":
+			sugs := []prompt.Suggest{
+				{Text: "--host", Description: "Host to remove from known_hosts"},
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 
 		// Account commands
 		case "accountList":
@@ -284,6 +289,7 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		{Text: "selfAddAlias", Description: "Add an alias"},
 		{Text: "selfDelAlias", Description: "Delete an alias"},
 		{Text: "selfListAliases", Description: "List your aliases"},
+		{Text: "selfRemoveHostFromKnownHosts", Description: "Remove a host from known_hosts"},
 		{Text: "accountInfo", Description: "Show account info"},
 		{Text: "accountList", Description: "List all accounts"},
 		{Text: "accountListIngressKeys", Description: "List account ingress keys"},

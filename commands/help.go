@@ -45,8 +45,9 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		SubTitleColor: utils.FgYellowB,
 		SubSubTitle:   " Egress (bastion → server):",
 		Body: []string{
-			" " + utils.FgGreen("-") + " selfListEgressKeys        List your egress keys",
-			" " + utils.FgGreen("-") + " selfGenerateEgressKey     Generate a new egress key",
+			" " + utils.FgGreen("-") + " selfListEgressKeys             List your egress keys",
+			" " + utils.FgGreen("-") + " selfGenerateEgressKey          Generate a new egress key",
+			" " + utils.FgGreen("-") + " selfRemoveHostFromKnownHosts   Remove Host to Known_hosts file",
 		},
 	})
 	sections = append(sections, console.SectionContent{

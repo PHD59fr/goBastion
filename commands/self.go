@@ -740,3 +740,81 @@ func SelfListAliases(db *gorm.DB, user *models.User) error {
 	console.DisplayBlock(block)
 	return nil
 }
+
+func SelfRemoveHostFromKnownHosts(args []string) error {
+	fs := flag.NewFlagSet("removeHost", flag.ContinueOnError)
+	var hostname string
+	fs.StringVar(&hostname, "host", "", "Hostname or IP to remove from known_hosts")
+
+	if err := fs.Parse(args); err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: removeHost --host <hostname_or_ip>"}},
+			},
+		})
+		return err
+	}
+
+	if strings.TrimSpace(hostname) == "" {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage", Body: []string{"removeHost --host <hostname_or_ip>"}},
+			},
+		})
+		return nil
+	}
+
+	cmd := exec.Command("ssh-keygen", "-R", hostname)
+	var stdoutBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stdoutBuf
+
+	if err := cmd.Run(); err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Error", Body: []string{fmt.Sprintf("Command failed: %v", err)}},
+			},
+		})
+		return fmt.Errorf("failed to run ssh-keygen for host %s: %v", hostname, err)
+	}
+
+	output := stdoutBuf.String()
+
+	if strings.Contains(output, "found: line") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "success",
+			Sections: []console.SectionContent{
+				{SubTitle: "Success", Body: []string{fmt.Sprintf("Host '%s' successfully removed from known_hosts.", hostname)}},
+			},
+		})
+		return nil
+	}
+
+	if strings.Contains(output, "not found in") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "warning",
+			Sections: []console.SectionContent{
+				{SubTitle: "Info", Body: []string{fmt.Sprintf("Host '%s' was not found in known_hosts.", hostname)}},
+			},
+		})
+		return nil
+	}
+
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "Remove Host from known_hosts",
+		BlockType: "info",
+		Sections: []console.SectionContent{
+			{SubTitle: "Output", Body: []string{output}},
+		},
+	})
+
+	return nil
+}
