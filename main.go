@@ -419,6 +419,11 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		if err := commands.SelfListAliases(db, currentUser); err != nil {
 			log.Error("selfListAliases error", slog.String("error", err.Error()))
 		}
+	case "selfRemoveHostFromKnownHosts":
+		if err := commands.SelfRemoveHostFromKnownHosts(args); err != nil {
+			log.Error("selfRemoveHostFromKnownHosts error", slog.String("error", err.Error()))
+		}
+
 	// Account commands
 	case "accountList":
 		if err := commands.AccountList(db, currentUser); err != nil {

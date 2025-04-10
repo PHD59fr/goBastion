@@ -740,3 +740,56 @@ func SelfListAliases(db *gorm.DB, user *models.User) error {
 	console.DisplayBlock(block)
 	return nil
 }
+
+func SelfRemoveHostFromKnownHosts(args []string) error {
+	fs := flag.NewFlagSet("removeHost", flag.ContinueOnError)
+	var hostname string
+	fs.StringVar(&hostname, "host", "", "Hostname or IP to remove from known_hosts")
+
+	if err := fs.Parse(args); err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: removeHost --host <hostname_or_ip>"}},
+			},
+		})
+		return err
+	}
+
+	if strings.TrimSpace(hostname) == "" {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage", Body: []string{"removeHost --host <hostname_or_ip>"}},
+			},
+		})
+		return nil
+	}
+
+	cmd := exec.Command("ssh-keygen", "-R", hostname)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Host from known_hosts",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Error", Body: []string{fmt.Sprintf("Failed to remove host from known_hosts: %v", err)}},
+			},
+		})
+		return fmt.Errorf("failed to remove host %s from known_hosts: %v", hostname, err)
+	}
+
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "Remove Host from known_hosts",
+		BlockType: "success",
+		Sections: []console.SectionContent{
+			{SubTitle: "Success", Body: []string{fmt.Sprintf("Host '%s' successfully removed from known_hosts.", hostname)}},
+		},
+	})
+
+	return nil
+}
