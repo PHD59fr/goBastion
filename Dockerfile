@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine as builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ RUN git clone https://github.com/ovh/ovh-ttyrec.git /tmp/ovh-ttyrec && \
 
 FROM alpine:latest
 
-RUN apk add --no-cache openssh bash sudo
+RUN apk add --no-cache bash gzip openssh sudo busybox
 
 RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
@@ -32,7 +32,9 @@ RUN chown root:root /app/goBastion
 RUN chmod u+s /app/goBastion
 RUN touch /goBastion.log && chmod 644 /goBastion.log
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 22
 
-CMD /bin/busybox syslogd -n -O /goBastion.log & /app/goBastion -restore ; /usr/sbin/sshd -D & tail -f /goBastion.log
+CMD ["/entrypoint.sh"]
