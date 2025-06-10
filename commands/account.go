@@ -152,21 +152,24 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return err
 	}
-	groupsInfo := ""
-	for _, ug := range userGroups {
-		groupsInfo += fmt.Sprintf("\n   %s - %s", ug.Group.Name, utils.GetGrades(ug))
-	}
-	if groupsInfo == "" {
-		groupsInfo = "None"
-	}
+
 	infoLines := []string{
 		fmt.Sprintf("Username: %s", user.Username),
 		fmt.Sprintf("Role: %s", user.Role),
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("Last Login: %s", user.LastLoginAt),
 		fmt.Sprintf("Last Login From: %s", user.LastLoginFrom),
-		fmt.Sprintf("Groups: %s", groupsInfo),
+		fmt.Sprintf("Groups:"),
 	}
+
+	if len(userGroups) == 0 {
+		infoLines = append(infoLines, "User isn't a member of any groups. :(")
+	} else {
+		for _, ug := range userGroups {
+			infoLines = append(infoLines, fmt.Sprintf("		* %s - %s", ug.Group.Name, utils.GetGrades(ug)))
+		}
+	}
+
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Info",
 		BlockType: "success",
