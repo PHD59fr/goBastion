@@ -237,6 +237,7 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupDelAlias":
 			sugs := []prompt.Suggest{
+				{Text: "--group", Description: "Group name"},
 				{Text: "--id", Description: "Alias ID"},
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
@@ -311,6 +312,9 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			{Text: "groupAddAccess", Description: "Add access to a group"},
 			{Text: "groupDelAccess", Description: "Remove access from a group"},
 			{Text: "groupListAccess", Description: "List group accesses"},
+			{Text: "groupAddAlias", Description: "Add an alias to a group"},
+			{Text: "groupDelAlias", Description: "Delete an alias from a group"},
+			{Text: "groupListAliases", Description: "List group aliases"},
 		}
 	} else if isGroupMember(user) {
 		groupSuggestions = []prompt.Suggest{
@@ -324,6 +328,9 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "groupListAccess", Description: "List group accesses"},
 				{Text: "groupAddMember", Description: "Add a member to a group"},
 				{Text: "groupDelMember", Description: "Remove a member from a group"},
+				{Text: "groupAddAlias", Description: "Add an alias to a group"},
+				{Text: "groupDelAlias", Description: "Delete an alias from a group"},
+				{Text: "groupListAliases", Description: "List group aliases"},
 				{Text: "groupGenerateEgressKey", Description: "Generate group egress key"},
 			}...)
 		}
