@@ -169,16 +169,30 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 			},
 		})
 	}
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "",
-		SubTitleColor: utils.FgWhiteB,
-		SubSubTitle:   " Group alias (group):",
-		Body: []string{
-			" " + utils.FgGreen("-") + " groupAddAlias           Add a group alias",
-			" " + utils.FgGreen("-") + " groupDelAlias           Delete a group alias",
-			" " + utils.FgGreen("-") + " groupListAliases        List group aliases",
-		},
-	})
+
+	// GROUP ALIASES
+	bodyGroupAlias := []string{}
+
+	if isGroupManager(db, user) {
+		bodyGroupAlias = append(bodyGroupAlias,
+			" "+utils.FgGreen("-")+" groupAddAlias           Add a group alias",
+			" "+utils.FgGreen("-")+" groupDelAlias           Delete a group alias",
+			" "+utils.FgGreen("-")+" groupListAliases        List group aliases",
+		)
+	} else if isGroupMember(db, user) {
+		bodyGroupAlias = append(bodyGroupAlias,
+			" "+utils.FgGreen("-")+" groupListAliases        List group aliases",
+		)
+	}
+
+	if len(bodyGroupAlias) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgWhiteB,
+			SubSubTitle:   " Group alias (group):",
+			Body:          bodyGroupAlias,
+		})
+	}
 
 	// MISC COMMANDS
 	sections = append(sections, console.SectionContent{
@@ -228,6 +242,14 @@ func isGroupManager(db *gorm.DB, user models.User) bool {
 		return false
 	}
 	return userGroup.IsOwner() || userGroup.IsACLKeeper() || userGroup.IsGateKeeper()
+}
+
+func isGroupMember(db *gorm.DB, user models.User) bool {
+	var userGroup models.UserGroup
+	if err := db.Where("user_id = ?", user.ID).First(&userGroup).Error; err != nil {
+		return false
+	}
+	return userGroup.IsMember() || userGroup.IsOwner() || userGroup.IsACLKeeper() || userGroup.IsGateKeeper()
 }
 
 func DisplayInfo() {

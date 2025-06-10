@@ -88,6 +88,18 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return nil
 	}
+
+	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pubKey)); err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Ingress Key",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Error", Body: []string{"Invalid SSH public key."}},
+			},
+		})
+		return fmt.Errorf("invalid ssh key: %w", err)
+	}
+
 	if err := CreateDBIngressKey(db, user, pubKey); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Ingress Key",
