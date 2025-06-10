@@ -145,7 +145,7 @@ func TtyPlay(u *models.User, args []string) error {
 		username = u.Username
 	}
 
-	re := regexp.MustCompile(`^[^.]+\.(?P<server>[^_:]+)(?::\d+)?_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ttyrec$`)
+	re := regexp.MustCompile(`^[^.]+\.(?P<server>[^_:]+)(?::\d+)?_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ttyrec.gz$`)
 	matches := re.FindStringSubmatch(file)
 	if len(matches) < 2 {
 		console.DisplayBlock(console.ContentBlock{
@@ -181,7 +181,7 @@ func TtyPlay(u *models.User, args []string) error {
 		},
 	})
 
-	cmd := exec.Command("ttyplay", ttyFile)
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("zcat %s | ttyplay", ttyFile))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -200,7 +200,7 @@ func TtyPlay(u *models.User, args []string) error {
 			return err
 		}
 	}
-
+	fmt.Printf("\n")
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "TTY Session Playback",
 		BlockType: "success",
