@@ -61,7 +61,6 @@ func AccountList(db *gorm.DB, currentUser *models.User) error {
 		}
 
 		userInfo := []string{
-			fmt.Sprintf("ID: %s", u.ID),
 			fmt.Sprintf("Username: %s", u.Username),
 			fmt.Sprintf("Role: %s", u.Role),
 			fmt.Sprintf("Created At: %s", u.CreatedAt.Format("2006-01-02 15:04:05")),
@@ -154,6 +153,7 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	}
 
 	infoLines := []string{
+		fmt.Sprintf("ID: %s", user.ID.String()),
 		fmt.Sprintf("Username: %s", user.Username),
 		fmt.Sprintf("Role: %s", user.Role),
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
