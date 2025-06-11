@@ -58,6 +58,71 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		}
 		return isGroupManager && target == ""
 
+	case "groupListAccesses":
+		if u.IsAdmin() {
+			return true
+		}
+
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+
+		isGroupManager := false
+
+		for _, ug := range userGroups {
+			if ug.IsOwner() {
+				isGroupManager = true
+			}
+			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
+				return true
+			}
+		}
+		return isGroupManager && target == ""
+
+	case "groupAddAlias", "groupDelAlias":
+		if u.IsAdmin() {
+			return true
+		}
+
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		isGroupManager := false
+
+		for _, ug := range userGroups {
+			if ug.IsOwner() {
+				isGroupManager = true
+			}
+			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
+				return true
+			}
+		}
+		return isGroupManager && target == ""
+
+	case "groupListAliases":
+		if u.IsAdmin() {
+			return true
+		}
+
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+
+		isGroupManager := false
+
+		for _, ug := range userGroups {
+			if ug.IsOwner() {
+				isGroupManager = true
+			}
+			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
+				return true
+			}
+		}
+		return isGroupManager && target == ""
+
 	case "groupAddMember", "groupDelMember":
 		if u.IsAdmin() {
 			return true
@@ -106,27 +171,6 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 
 	case "groupInfo", "groupList":
 		return true
-	case "groupListAccesses":
-		if u.IsAdmin() {
-			return true
-		}
-
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() {
-				isGroupManager = true
-			}
-			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
 
 	case "groupListEgressKeys":
 		return true

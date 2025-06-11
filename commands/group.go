@@ -689,7 +689,7 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "List Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListAccess --group <groupName>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListAccesses --group <groupName>"}}},
 		})
 		return err
 	}

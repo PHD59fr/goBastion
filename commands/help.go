@@ -116,23 +116,6 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		})
 	}
 
-	// TTY SESSIONS
-	var ttyBody []string
-	if hasPerm("ttyList") {
-		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions")
-	}
-	if hasPerm("ttyPlay") {
-		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyPlay                   Replay a recorded tty session")
-	}
-	if len(ttyBody) > 0 {
-		sections = append(sections, console.SectionContent{
-			SubTitle:      "> TTY SESSIONS",
-			SubTitleColor: utils.FgCyanB,
-			SubSubTitle:   "",
-			Body:          ttyBody,
-		})
-	}
-
 	// MANAGE OTHER ACCOUNTS
 	var manageAccountsBody []string
 	if hasPerm("accountList") {
@@ -251,17 +234,17 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 
 	// GROUP EGRESS KEYS
 	var groupEgressBody []string
-	if hasPerm("groupGenerateEgressKey") {
-		groupEgressBody = append(groupEgressBody, " "+utils.FgGreen("-")+" groupGenerateEgressKey  Generate a new group egress key")
-	}
 	if hasPerm("groupListEgressKeys") {
 		groupEgressBody = append(groupEgressBody, " "+utils.FgGreen("-")+" groupListEgressKeys     List group egress keys")
+	}
+	if hasPerm("groupGenerateEgressKey") {
+		groupEgressBody = append(groupEgressBody, " "+utils.FgGreen("-")+" groupGenerateEgressKey  Generate a new group egress key")
 	}
 	if len(groupEgressBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgWhiteB,
-			SubSubTitle:   " Group egress keys:",
+			SubSubTitle:   " Group egress (bastion → server):",
 			Body:          groupEgressBody,
 		})
 	}
@@ -303,6 +286,23 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 			SubTitleColor: utils.FgWhiteB,
 			SubSubTitle:   " Group alias (group):",
 			Body:          bodyGroupAlias,
+		})
+	}
+
+	// TTY SESSIONS
+	var ttyBody []string
+	if hasPerm("ttyList") {
+		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions")
+	}
+	if hasPerm("ttyPlay") {
+		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyPlay                   Replay a recorded tty session")
+	}
+	if len(ttyBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "> TTY SESSIONS",
+			SubTitleColor: utils.FgCyanB,
+			SubSubTitle:   "",
+			Body:          ttyBody,
 		})
 	}
 
