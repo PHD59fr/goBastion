@@ -152,11 +152,11 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			"ttyList": {
 				{Text: "--startDate", Description: "Start date"},
 				{Text: "--endDate", Description: "End date"},
-				{Text: "--user", Description: "Username (optional)"},
+				{Text: "--user", Description: "Username (Admin only)"},
 			},
 			"ttyPlay": {
-				{Text: "--user", Description: "Username (optional)"},
 				{Text: "--file", Description: "File name"},
+				{Text: "--user", Description: "Username (Admin only)"},
 			},
 			"whoHasAccessTo": {
 				{Text: "--server", Description: "Server"},

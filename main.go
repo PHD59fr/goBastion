@@ -574,6 +574,7 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		}},
 		"ttyPlay": {"ttyPlay", func() {
 			if err := commands.TtyPlay(db, currentUser, args); err != nil {
+				resetStdIn() // Due to the nature of ttyPlay, we need to reset stdin to avoid terminal issues.
 				log.Error("ttyPlay error", slog.String("error", err.Error()))
 			}
 		}},

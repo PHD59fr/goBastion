@@ -29,12 +29,17 @@ func TtyList(db *gorm.DB, u *models.User, args []string) error {
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
+	bodyUsage := []string{"Usage: ttyList [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}
+	if u.IsAdmin() {
+		bodyUsage = []string{"Usage: ttyList [--user <username>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}
+	}
+
 	if err := fs.Parse(args); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session List",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Usage: ttyList [--user <username>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}},
+				{SubTitle: "Usage Error", Body: bodyUsage},
 			},
 		})
 		return err
@@ -140,12 +145,17 @@ func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
+	bodyUsage := []string{"Usage: ttyPlay --file <file>"}
+	if u.IsAdmin() {
+		bodyUsage = []string{"Usage: ttyPlay --file <file> [--user <username>]"}
+	}
+
 	if err := fs.Parse(args); err != nil || file == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Usage: ttyPlay --file <file> [--user <username>]"}},
+				{SubTitle: "Usage Error", Body: bodyUsage},
 			},
 		})
 		return err

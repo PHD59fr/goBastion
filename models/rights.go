@@ -162,7 +162,13 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if u.IsAdmin() {
 			return true
 		}
-		return target == u.Username
+		if target == "" {
+			return true
+		}
+		if target == u.Username {
+			return true
+		}
+		return false
 
 	// Misc
 	case "help":
