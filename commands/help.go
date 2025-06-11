@@ -12,14 +12,17 @@ import (
 	"gorm.io/gorm"
 )
 
+var (
+	ansiRegex  = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	spaceRegex = regexp.MustCompile(`\s{2,}`)
+)
+
 func stripANSI(s string) string {
-	ansiRegex := regexp.MustCompile("\x1b\\[[0-9;]*m")
 	return ansiRegex.ReplaceAllString(s, "")
 }
 
 func splitCommandLine(line string) (string, string) {
-	re := regexp.MustCompile(`\s{2,}`)
-	parts := re.Split(line, 2)
+	parts := spaceRegex.Split(line, 2)
 	if len(parts) < 2 {
 		return line, ""
 	}
@@ -29,162 +32,271 @@ func splitCommandLine(line string) (string, string) {
 func DisplayHelp(db *gorm.DB, user models.User) {
 	var sections []console.SectionContent
 
+	hasPerm := func(perm string) bool {
+		return user.CanDo(db, perm, "")
+	}
+
 	// MANAGE YOUR ACCOUNT
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "> MANAGE YOUR ACCOUNT",
-		SubTitleColor: utils.FgYellowB,
-		SubSubTitle:   " Ingress (you → bastion):",
-		Body: []string{
-			" " + utils.FgGreen("-") + " selfListIngressKeys       List your ingress keys",
-			" " + utils.FgGreen("-") + " selfAddIngressKey         Add a new ingress key",
-			" " + utils.FgGreen("-") + " selfDelIngressKey         Delete an ingress key",
-		},
-	})
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "",
-		SubTitleColor: utils.FgYellowB,
-		SubSubTitle:   " Egress (bastion → server):",
-		Body: []string{
-			" " + utils.FgGreen("-") + " selfListEgressKeys             List your egress keys",
-			" " + utils.FgGreen("-") + " selfGenerateEgressKey          Generate a new egress key",
-			" " + utils.FgGreen("-") + " selfRemoveHostFromKnownHosts   Remove host from Known_hosts file",
-		},
-	})
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "",
-		SubTitleColor: utils.FgYellowB,
-		SubSubTitle:   " Server accesses (personal):",
-		Body: []string{
-			" " + utils.FgGreen("-") + " selfListAccesses          List your personal accesses",
-			" " + utils.FgGreen("-") + " selfAddAccess             Add a personal access",
-			" " + utils.FgGreen("-") + " selfDelAccess             Delete a personal access",
-		},
-	})
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "",
-		SubTitleColor: utils.FgYellowB,
-		SubSubTitle:   " Server alias (personal):",
-		Body: []string{
-			" " + utils.FgGreen("-") + " selfListAliases           List your personal aliases",
-			" " + utils.FgGreen("-") + " selfAddAlias              Add a personal alias",
-			" " + utils.FgGreen("-") + " selfDelAlias              Delete a personal alias",
-		},
-	})
+	var manageyouraccountBody []string
+	if hasPerm("selfListIngressKeys") {
+		manageyouraccountBody = append(manageyouraccountBody, " "+utils.FgGreen("-")+" selfListIngressKeys       List your ingress keys")
+	}
+	if hasPerm("selfAddIngressKey") {
+		manageyouraccountBody = append(manageyouraccountBody, " "+utils.FgGreen("-")+" selfAddIngressKey         Add a new ingress key")
+	}
+	if hasPerm("selfDelIngressKey") {
+		manageyouraccountBody = append(manageyouraccountBody, " "+utils.FgGreen("-")+" selfDelIngressKey         Delete an ingress key")
+	}
+	if len(manageyouraccountBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "> MANAGE YOUR ACCOUNT",
+			SubTitleColor: utils.FgYellowB,
+			SubSubTitle:   " Ingress (you → bastion):",
+			Body:          manageyouraccountBody,
+		})
+	}
+
+	// EGRESS KEYS
+	var egressBody []string
+	if hasPerm("selfListEgressKeys") {
+		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfListEgressKeys             List your egress keys")
+	}
+	if hasPerm("selfGenerateEgressKey") {
+		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfGenerateEgressKey          Generate a new egress key")
+	}
+	if hasPerm("selfRemoveHostFromKnownHosts") {
+		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfRemoveHostFromKnownHosts   Remove host from Known_hosts file")
+	}
+	if len(egressBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgYellowB,
+			SubSubTitle:   " Egress (bastion → server):",
+			Body:          egressBody,
+		})
+	}
+
+	// Server accesses (personal)
+	var accessesBody []string
+	if hasPerm("selfListAccesses") {
+		accessesBody = append(accessesBody, " "+utils.FgGreen("-")+" selfListAccesses          List your personal accesses")
+	}
+	if hasPerm("selfAddAccess") {
+		accessesBody = append(accessesBody, " "+utils.FgGreen("-")+" selfAddAccess             Add a personal access")
+	}
+	if hasPerm("selfDelAccess") {
+		accessesBody = append(accessesBody, " "+utils.FgGreen("-")+" selfDelAccess             Delete a personal access")
+	}
+	if len(accessesBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgYellowB,
+			SubSubTitle:   " Server accesses (personal):",
+			Body:          accessesBody,
+		})
+	}
+
+	// Server alias (personal)
+	var aliasesBody []string
+	if hasPerm("selfListAliases") {
+		aliasesBody = append(aliasesBody, " "+utils.FgGreen("-")+" selfListAliases           List your personal aliases")
+	}
+	if hasPerm("selfAddAlias") {
+		aliasesBody = append(aliasesBody, " "+utils.FgGreen("-")+" selfAddAlias              Add a personal alias")
+	}
+	if hasPerm("selfDelAlias") {
+		aliasesBody = append(aliasesBody, " "+utils.FgGreen("-")+" selfDelAlias              Delete a personal alias")
+	}
+	if len(aliasesBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgYellowB,
+			SubSubTitle:   " Server alias (personal):",
+			Body:          aliasesBody,
+		})
+	}
 
 	// TTY SESSIONS
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "> TTY SESSIONS",
-		SubTitleColor: utils.FgCyanB,
-		SubSubTitle:   "",
-		Body: []string{
-			" " + utils.FgGreen("-") + " ttyList                   List recorded tty sessions",
-			" " + utils.FgGreen("-") + " ttyPlay                   Replay a recorded tty session",
-		},
-	})
-
-	// MANAGE OTHER ACCOUNTS (admin only)
-	if user.IsAdmin() {
+	var ttyBody []string
+	if hasPerm("ttyList") {
+		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions")
+	}
+	if hasPerm("ttyPlay") {
+		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyPlay                   Replay a recorded tty session")
+	}
+	if len(ttyBody) > 0 {
 		sections = append(sections, console.SectionContent{
-			SubTitle:      "> MANAGE OTHER ACCOUNTS (admin only)",
+			SubTitle:      "> TTY SESSIONS",
+			SubTitleColor: utils.FgCyanB,
+			SubSubTitle:   "",
+			Body:          ttyBody,
+		})
+	}
+
+	// MANAGE OTHER ACCOUNTS
+	manageAccountsBody := []string{}
+	if hasPerm("accountList") {
+		manageAccountsBody = append(manageAccountsBody, " "+utils.FgGreen("-")+" accountList             List all accounts")
+	}
+	if hasPerm("accountInfo") {
+		manageAccountsBody = append(manageAccountsBody, " "+utils.FgGreen("-")+" accountInfo             Show account info")
+	}
+	if hasPerm("accountCreate") {
+		manageAccountsBody = append(manageAccountsBody, " "+utils.FgGreen("-")+" accountCreate           Create a new account")
+	}
+	if hasPerm("accountModify") {
+		manageAccountsBody = append(manageAccountsBody, " "+utils.FgGreen("-")+" accountModify           Modify an account")
+	}
+	if hasPerm("accountDelete") {
+		manageAccountsBody = append(manageAccountsBody, " "+utils.FgGreen("-")+" accountDelete           Delete an account")
+	}
+	if len(manageAccountsBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "> MANAGE OTHER ACCOUNTS",
 			SubTitleColor: utils.FgRedB,
 			SubSubTitle:   " Accounts:",
-			Body: []string{
-				" " + utils.FgGreen("-") + " accountList             List all accounts",
-				" " + utils.FgGreen("-") + " accountInfo             Show account info",
-				" " + utils.FgGreen("-") + " accountCreate           Create a new account",
-				" " + utils.FgGreen("-") + " accountModify           Modify an account",
-				" " + utils.FgGreen("-") + " accountDelete           Delete an account",
-			},
+			Body:          manageAccountsBody,
 		})
+	}
+
+	// ACCOUNT KEYS
+	accountKeysBody := []string{}
+	if hasPerm("accountListIngressKeys") {
+		accountKeysBody = append(accountKeysBody, " "+utils.FgGreen("-")+" accountListIngressKeys  List account ingress keys")
+	}
+	if hasPerm("accountListEgressKeys") {
+		accountKeysBody = append(accountKeysBody, " "+utils.FgGreen("-")+" accountListEgressKeys   List account egress keys")
+	}
+	if len(accountKeysBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgRedB,
 			SubSubTitle:   " Account keys:",
-			Body: []string{
-				" " + utils.FgGreen("-") + " accountListIngressKeys  List account ingress keys",
-				" " + utils.FgGreen("-") + " accountListEgressKeys   List account egress keys",
-			},
+			Body:          accountKeysBody,
 		})
+	}
+
+	// ACCOUNT ACCESSES
+	accountAccessBody := []string{}
+	if hasPerm("accountListAccess") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" accountListAccess       List account accesses")
+	}
+	if hasPerm("accountAddAccess") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" accountAddAccess        Add access to an account")
+	}
+	if hasPerm("accountDelAccess") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" accountDelAccess        Remove access from an account")
+	}
+	if hasPerm("whoHasAccessTo") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" whoHasAccessTo          List accounts with access to a server")
+	}
+	if len(accountAccessBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgRedB,
 			SubSubTitle:   " Account accesses:",
-			Body: []string{
-				" " + utils.FgGreen("-") + " accountListAccess       List account accesses",
-				" " + utils.FgGreen("-") + " accountAddAccess        Add access to an account",
-				" " + utils.FgGreen("-") + " accountDelAccess        Remove access from an account",
-				" " + utils.FgGreen("-") + " whoHasAccessTo          List accounts with access to a server",
-			},
+			Body:          accountAccessBody,
 		})
 	}
 
 	// MANAGE GROUPS
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "> MANAGE GROUPS",
-		SubTitleColor: utils.FgMagentaB,
-		SubSubTitle:   " Groups:",
-		Body: []string{
-			" " + utils.FgGreen("-") + " groupInfo               Show group info",
-			" " + utils.FgGreen("-") + " groupList               List groups",
-		},
-	})
-	if user.IsAdmin() {
+	groupBody := []string{}
+	if hasPerm("groupInfo") {
+		groupBody = append(groupBody, " "+utils.FgGreen("-")+" groupInfo               Show group info")
+	}
+	if hasPerm("groupList") {
+		groupBody = append(groupBody, " "+utils.FgGreen("-")+" groupList               List groups")
+	}
+	if len(groupBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "> MANAGE GROUPS",
+			SubTitleColor: utils.FgMagentaB,
+			SubSubTitle:   " Groups:",
+			Body:          groupBody,
+		})
+	}
+
+	groupManageBody := []string{}
+	if hasPerm("groupCreate") {
+		groupManageBody = append(groupManageBody, " "+utils.FgGreen("-")+" groupCreate             Create a new group")
+	}
+	if hasPerm("groupDelete") {
+		groupManageBody = append(groupManageBody, " "+utils.FgGreen("-")+" groupDelete             Delete a group")
+	}
+	if len(groupManageBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgMagentaB,
 			SubSubTitle:   "",
-			Body: []string{
-				" " + utils.FgGreen("-") + " groupCreate             Create a new group",
-				" " + utils.FgGreen("-") + " groupDelete             Delete a group",
-			},
+			Body:          groupManageBody,
 		})
 	}
-	if user.IsAdmin() || isGroupManager(db, user) {
+
+	// GROUP MEMBER MANAGEMENT
+	groupMemberBody := []string{}
+	if hasPerm("groupAddMember") {
+		groupMemberBody = append(groupMemberBody, " "+utils.FgGreen("-")+" groupAddMember          Add a member to a group")
+	}
+	if hasPerm("groupDelMember") {
+		groupMemberBody = append(groupMemberBody, " "+utils.FgGreen("-")+" groupDelMember          Remove a member from a group")
+	}
+	if len(groupMemberBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgWhiteB,
 			SubSubTitle:   " Group member management:",
-			Body: []string{
-				" " + utils.FgGreen("-") + " groupAddMember          Add a member to a group",
-				" " + utils.FgGreen("-") + " groupDelMember          Remove a member from a group",
-			},
+			Body:          groupMemberBody,
 		})
+	}
+
+	// GROUP EGRESS KEYS
+	groupEgressBody := []string{}
+	if hasPerm("groupGenerateEgressKey") {
+		groupEgressBody = append(groupEgressBody, " "+utils.FgGreen("-")+" groupGenerateEgressKey  Generate a new group egress key")
+	}
+	if hasPerm("groupListEgressKeys") {
+		groupEgressBody = append(groupEgressBody, " "+utils.FgGreen("-")+" groupListEgressKeys     List group egress keys")
+	}
+	if len(groupEgressBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgWhiteB,
 			SubSubTitle:   " Group egress keys:",
-			Body: []string{
-				" " + utils.FgGreen("-") + " groupGenerateEgressKey  Generate a new group egress key",
-				" " + utils.FgGreen("-") + " groupListEgressKeys     List group egress keys",
-			},
+			Body:          groupEgressBody,
 		})
+	}
+
+	// GROUP ACCESSES
+	groupAccessBody := []string{}
+	if hasPerm("groupListAccesses") {
+		groupAccessBody = append(groupAccessBody, " "+utils.FgGreen("-")+" groupListAccesses         List accesses of the group")
+	}
+	if hasPerm("groupAddAccess") {
+		groupAccessBody = append(groupAccessBody, " "+utils.FgGreen("-")+" groupAddAccess          Add access to a group")
+	}
+	if hasPerm("groupDelAccess") {
+		groupAccessBody = append(groupAccessBody, " "+utils.FgGreen("-")+" groupDelAccess          Remove access from a group")
+	}
+	if len(groupAccessBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgWhiteB,
 			SubSubTitle:   " Group accesses:",
-			Body: []string{
-				" " + utils.FgGreen("-") + " groupListAccesses         List accesses of the group",
-				" " + utils.FgGreen("-") + " groupAddAccess          Add access to a group",
-				" " + utils.FgGreen("-") + " groupDelAccess          Remove access from a group",
-			},
+			Body:          groupAccessBody,
 		})
 	}
 
 	// GROUP ALIASES
 	bodyGroupAlias := []string{}
-
-	if isGroupManager(db, user) {
-		bodyGroupAlias = append(bodyGroupAlias,
-			" "+utils.FgGreen("-")+" groupAddAlias           Add a group alias",
-			" "+utils.FgGreen("-")+" groupDelAlias           Delete a group alias",
-			" "+utils.FgGreen("-")+" groupListAliases        List group aliases",
-		)
-	} else if isGroupMember(db, user) {
-		bodyGroupAlias = append(bodyGroupAlias,
-			" "+utils.FgGreen("-")+" groupListAliases        List group aliases",
-		)
+	if hasPerm("groupAddAlias") {
+		bodyGroupAlias = append(bodyGroupAlias, " "+utils.FgGreen("-")+" groupAddAlias           Add a group alias")
 	}
-
+	if hasPerm("groupDelAlias") {
+		bodyGroupAlias = append(bodyGroupAlias, " "+utils.FgGreen("-")+" groupDelAlias           Delete a group alias")
+	}
+	if hasPerm("groupListAliases") {
+		bodyGroupAlias = append(bodyGroupAlias, " "+utils.FgGreen("-")+" groupListAliases        List group aliases")
+	}
 	if len(bodyGroupAlias) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
@@ -195,17 +307,26 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	}
 
 	// MISC COMMANDS
-	sections = append(sections, console.SectionContent{
-		SubTitle:      "> MISC COMMANDS",
-		SubTitleColor: utils.FgWhiteB,
-		SubSubTitle:   " Basic commands:",
-		Body: []string{
-			" " + utils.FgGreen("-") + " help                   Display this help message",
-			" " + utils.FgGreen("-") + " info                   Show application info",
-			" " + utils.FgGreen("-") + " exit                   Exit the application",
-		},
-	})
+	miscBody := []string{}
+	if hasPerm("help") {
+		miscBody = append(miscBody, " "+utils.FgGreen("-")+" help                   Display this help message")
+	}
+	if hasPerm("info") {
+		miscBody = append(miscBody, " "+utils.FgGreen("-")+" info                   Show application info")
+	}
+	if hasPerm("exit") {
+		miscBody = append(miscBody, " "+utils.FgGreen("-")+" exit                   Exit the application")
+	}
+	if len(miscBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "> MISC COMMANDS",
+			SubTitleColor: utils.FgWhiteB,
+			SubSubTitle:   " Basic commands:",
+			Body:          miscBody,
+		})
+	}
 
+	// Align lines for formatting
 	globalMaxCmdLen := 0
 	for _, section := range sections {
 		for _, line := range section.Body {
@@ -216,40 +337,21 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 			}
 		}
 	}
-
 	for i, section := range sections {
 		for j, line := range section.Body {
 			cmd, desc := splitCommandLine(line)
 			visibleCmd := strings.TrimSpace(stripANSI(cmd))
 			pad := globalMaxCmdLen - len(visibleCmd)
-			alignedLine := cmd + strings.Repeat(" ", pad) + "  " + desc
-			sections[i].Body[j] = alignedLine
+			sections[i].Body[j] = cmd + strings.Repeat(" ", pad) + "  " + desc
 		}
 	}
 
-	helpBlock := console.ContentBlock{
+	// Display help
+	console.DisplayBlock(console.ContentBlock{
 		Title:     "▶ help",
 		BlockType: "help",
 		Sections:  sections,
-		Footer:    "",
-	}
-	console.DisplayBlock(helpBlock)
-}
-
-func isGroupManager(db *gorm.DB, user models.User) bool {
-	var userGroup models.UserGroup
-	if err := db.Where("user_id = ?", user.ID).First(&userGroup).Error; err != nil {
-		return false
-	}
-	return userGroup.IsOwner() || userGroup.IsACLKeeper() || userGroup.IsGateKeeper()
-}
-
-func isGroupMember(db *gorm.DB, user models.User) bool {
-	var userGroup models.UserGroup
-	if err := db.Where("user_id = ?", user.ID).First(&userGroup).Error; err != nil {
-		return false
-	}
-	return userGroup.IsMember() || userGroup.IsOwner() || userGroup.IsACLKeeper() || userGroup.IsGateKeeper()
+	})
 }
 
 func DisplayInfo() {
