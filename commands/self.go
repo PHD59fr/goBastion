@@ -105,7 +105,7 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to add ingress key. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to add ingress key. Please contact admin."}},
 			},
 		})
 		return err
@@ -115,7 +115,7 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to sync ingress key. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to sync ingress key. Please contact admin."}},
 			},
 		})
 		return err
@@ -150,7 +150,7 @@ func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 				Title:     "Delete Ingress Key",
 				BlockType: "error",
 				Sections: []console.SectionContent{
-					{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfDelIngressKey --id <ssh_public_key_id>"}},
+					{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfDelIngressKey --id <key_id>"}},
 				},
 			})
 		}
@@ -161,7 +161,7 @@ func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"selfDelIngressKey --id <ssh_public_key_id>"}},
+				{SubTitle: "Usage", Body: []string{"selfDelIngressKey --id <key_id>"}},
 			},
 		})
 		return nil
@@ -172,7 +172,7 @@ func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Invalid access ID format."}},
+				{SubTitle: "Error", Body: []string{"Invalid Ingress Key ID format."}},
 			},
 		})
 		return fmt.Errorf("invalid key UUID: %v", err)
@@ -183,7 +183,7 @@ func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to delete ingress key. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to delete ingress key. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error deleting ingress key: %v", keyId)
@@ -276,7 +276,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to create temporary directory. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to create temporary directory. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error creating .tmp directory: %w", err)
@@ -290,7 +290,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to generate SSH key. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to generate SSH key. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error generating SSH key: %v, %s", err, stderr.String())
@@ -304,7 +304,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to read private key. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to read private key. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error reading private key: %v", err)
@@ -315,7 +315,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to read public key. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to read public key. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error reading public key: %v", err)
@@ -347,7 +347,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to store key in database. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to store key in database. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error storing key in database: %v", err)
@@ -370,7 +370,7 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 			Title:     "My Personal Accesses",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred while retrieving accesses. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"An error occurred while retrieving accesses. Please contact admin."}},
 			},
 		})
 		return result.Error
@@ -387,13 +387,13 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 	}
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
@@ -461,7 +461,7 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"An error occurred. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("database error: %v", result.Error)
@@ -478,7 +478,7 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to add personal access. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to add personal access. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error adding personal access: %v", err)
@@ -553,7 +553,7 @@ func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"An error occurred. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("database error: %v", result.Error)
@@ -563,7 +563,7 @@ func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to delete personal access. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to delete personal access. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error deleting personal access: %v", err)
@@ -614,7 +614,7 @@ func SelfAddAlias(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Personal Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to add alias. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to add alias. Please contact admin."}},
 			},
 		})
 		return err
@@ -680,7 +680,7 @@ func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Personal Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"An error occurred. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("database error: %v", result.Error)
@@ -690,7 +690,7 @@ func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Personal Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to delete alias. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"Failed to delete alias. Please contact admin."}},
 			},
 		})
 		return fmt.Errorf("error deleting alias: %v", err)
@@ -713,7 +713,7 @@ func SelfListAliases(db *gorm.DB, user *models.User) error {
 			Title:     "My Aliases",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred while retrieving aliases. Please contact support."}},
+				{SubTitle: "Error", Body: []string{"An error occurred while retrieving aliases. Please contact admin."}},
 			},
 		})
 		return result.Error
@@ -730,9 +730,9 @@ func SelfListAliases(db *gorm.DB, user *models.User) error {
 	}
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tAlias\tHostname\tAdded At")
+	_, _ = fmt.Fprintln(w, "ID\tAlias\tHostname\tAdded At")
 	for _, host := range hosts {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 			host.ID.String(),
 			host.ResolveFrom,
 			host.Host,

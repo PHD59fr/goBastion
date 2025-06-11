@@ -16,7 +16,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
   When a user adds an SSH key, it is first validated and stored in the database. The bastion then automatically synchronizes the database with the system, adding the key to the appropriate location.
 
 - **Automatic Synchronization**:  
-  The bastion periodically checks the system for any discrepancies. If it finds an SSH key that is not in the database, the key is immediately removed from the system to ensure security and consistency.
+  The bastion periodically checks the system for any discrepancies. If it finds an SSH key not in the database, the key is immediately removed from the system to ensure security and consistency.
 
 ### **Advantages of this Approach**
 - **Centralized Control**: All modifications go through the bastion, ensuring tight access management.
@@ -30,75 +30,75 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 
 ## 🔍 **Features Overview**
 
-### 👤 **Self Commands (Manage Your Own Account)**
-| Command                             | Description |
-|-------------------------------------|-------------|
-| 🔑 `selfListIngressKeys`           | List your ingress SSH keys (keys for connecting to the bastion). |
-| ➕ `selfAddIngressKey`              | Add a new ingress SSH key. |
-| ❌ `selfDelIngressKey`              | Delete an ingress SSH key. |
-| 🔑 `selfListEgressKeys`            | List your egress SSH keys (keys for connecting from the bastion to servers). |
-| 🔑 `selfGenerateEgressKey`         | Generate a new egress SSH key. |
-| 📋 `selfListAccesses`               | List your personal server accesses. |
-| ➕ `selfAddAccess`                  | Add access to a personal server. |
-| ❌ `selfDelAccess`                  | Remove access to a personal server. |
-| 📋 `selfListAliases`               | List your personal SSH aliases. |
-| ➕ `selfAddAlias`                   | Add a personal SSH alias. |
-| ❌ `selfDelAlias`                   | Delete a personal SSH alias. |
-| ❌ `selfRemoveHostFromKnownHosts`  | Remove a host from your known_hosts file. |
+### 👤 **Self-Commands (Manage Your Own Account)**
+| Command                          | Description                                                                  |
+|----------------------------------|------------------------------------------------------------------------------|
+| 🔑 `selfListIngressKeys`         | List your ingress SSH keys (keys for connecting to the bastion).             |
+| ➕ `selfAddIngressKey`            | Add a new ingress SSH key.                                                   |
+| ❌ `selfDelIngressKey`            | Delete an ingress SSH key.                                                   |
+| 🔑 `selfListEgressKeys`          | List your egress SSH keys (keys for connecting from the bastion to servers). |
+| 🔑 `selfGenerateEgressKey`       | Generate a new egress SSH key.                                               |
+| 📋 `selfListAccesses`            | List your personal server accesses.                                          |
+| ➕ `selfAddAccess`                | Add access to a personal server.                                             |
+| ❌ `selfDelAccess`                | Remove access to a personal server.                                          |
+| 📋 `selfListAliases`             | List your personal SSH aliases.                                              |
+| ➕ `selfAddAlias`                 | Add a personal SSH alias.                                                    |
+| ❌ `selfDelAlias`                 | Delete a personal SSH alias.                                                 |
+| ❌ `selfRemoveHostFromKnownHosts` | Remove a host from your known_hosts file.                                    |
 
 ---
 
 ### 🦸 **Admin Commands (Manage Other Accounts)**
-| Command                      | Description |
-|------------------------------|-------------|
-| 📋 `accountList`             | List all user accounts. |
-| ℹ️ `accountInfo`             | Show detailed information about a user account. |
-| ➕ `accountCreate`            | Create a new user account. |
-| ❌ `accountDelete`            | Delete a user account. |
-| ✏️ `accountModify`           | Modify a user account (promote/demote to admin/user). |
-| 🔑 `accountListIngressKeys`  | List the ingress SSH keys of a user. |
-| 🔑 `accountListEgressKeys`   | List the egress SSH keys of a user. |
-| 📋 `accountListAccess`       | List all server accesses of a user. |
-| ➕ `accountAddAccess`         | Grant a user access to a server. |
-| ❌ `accountDelAccess`         | Remove a user's access to a server. |
-| 📋 `whoHasAccessTo`          | Show all users with access to a specific server. |
+| Command                     | Description                                           |
+|-----------------------------|-------------------------------------------------------|
+| 📋 `accountList`            | List all user accounts.                               |
+| ℹ️ `accountInfo`            | Show detailed information about a user account.       |
+| ➕ `accountCreate`           | Create a new user account.                            |
+| ❌ `accountDelete`           | Delete a user account.                                |
+| ✏️ `accountModify`          | Modify a user account (promote/demote to admin/user). |
+| 🔑 `accountListIngressKeys` | List the ingress SSH keys of a user.                  |
+| 🔑 `accountListEgressKeys`  | List the egress SSH keys of a user.                   |
+| 📋 `accountListAccess`      | List all server accesses of a user.                   |
+| ➕ `accountAddAccess`        | Grant a user access to a server.                      |
+| ❌ `accountDelAccess`        | Remove a user's access to a server.                   |
+| 📋 `whoHasAccessTo`         | Show all users with access to a specific server.      |
 
 ---
 
 ### 👥 **Group Management**
-| Command                      | Description |
-|------------------------------|-------------|
-| ℹ️ `groupInfo`               | Show detailed information about a group. |
-| 📋 `groupList`               | List all groups. |
-| ➕ `groupCreate`              | Create a new group. |
-| ❌ `groupDelete`              | Delete a group. |
-| ➕ `groupAddMember`           | Add a user to a group. |
-| ❌ `groupDelMember`           | Remove a user from a group. |
-| 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group. |
+| Command                     | Description                                       |
+|-----------------------------|---------------------------------------------------|
+| ℹ️ `groupInfo`              | Show detailed information about a group.          |
+| 📋 `groupList`              | List all groups.                                  |
+| ➕ `groupCreate`             | Create a new group.                               |
+| ❌ `groupDelete`             | Delete a group.                                   |
+| ➕ `groupAddMember`          | Add a user to a group.                            |
+| ❌ `groupDelMember`          | Remove a user from a group.                       |
+| 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group.      |
 | 🔑 `groupListEgressKeys`    | List all egress SSH keys associated with a group. |
-| 📋 `groupListAccess`         | List all accesses assigned to a group. |
-| ➕ `groupAddAccess`           | Grant access to a group. |
-| ❌ `groupDelAccess`           | Remove access from a group. |
-| ➕ `groupAddAlias`            | Add a group SSH alias. |
-| ❌ `groupDelAlias`            | Delete a group SSH alias. |
-| 📋 `groupListAliases`        | List all group SSH aliases. |
+| 📋 `groupListAccess`        | List all accesses assigned to a group.            |
+| ➕ `groupAddAccess`          | Grant access to a group.                          |
+| ❌ `groupDelAccess`          | Remove access from a group.                       |
+| ➕ `groupAddAlias`           | Add a group SSH alias.                            |
+| ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
+| 📋 `groupListAliases`       | List all group SSH aliases.                       |
 
 ---
 
 ### 📜 **TTY Session Recording**
-| Command     | Description |
-|-------------|-------------|
+| Command      | Description                                    |
+|--------------|------------------------------------------------|
 | 📋 `ttyList` | List available recorded SSH sessions (ttyrec). |
-| ▶️ `ttyPlay` | Replay a recorded SSH session. |
+| ▶️ `ttyPlay` | Replay a recorded SSH session.                 |
 
 ---
 
 ### 📜 **Misc Commands**
-| Command   | Description |
-|-----------|-------------|
+| Command   | Description                                    |
+|-----------|------------------------------------------------|
 | ❓ `help`  | Display the help menu with available commands. |
-| ℹ️ `info` | Show application version and details. |
-| 🚪 `exit` | Exit the application. |
+| ℹ️ `info` | Show application version and details.          |
+| 🚪 `exit` | Exit the application.                          |
 
 ---
 

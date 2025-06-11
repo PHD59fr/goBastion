@@ -34,8 +34,15 @@ func AccountList(db *gorm.DB, currentUser *models.User) error {
 		return err
 	}
 
-	if !currentUser.IsAdmin() {
-		users = []models.User{*currentUser}
+	if !currentUser.CanDo(db, "accountList", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Account List",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view the account list."}},
+			},
+		})
+		return nil
 	}
 
 	if len(users) == 0 {
@@ -108,7 +115,7 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 	if strings.TrimSpace(username) == "" {
-		err := errors.New("Missing required argument for -user flag. Please specify a username.")
+		err := errors.New("missing required argument for -user flag. Please specify a username")
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Info",
 			BlockType: "error",
@@ -118,17 +125,18 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return err
 	}
-	if !currentUser.IsAdmin() && username != currentUser.Username {
-		err := errors.New("You can only view your own information.")
+
+	if !currentUser.CanDo(db, "accountInfo", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Info",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{err.Error()}},
+				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view this account's information."}},
 			},
 		})
-		return err
+		return nil
 	}
+
 	var user models.User
 	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -204,11 +212,11 @@ func AccountCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountCreate", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Create",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to create an account."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to create an account."}}},
 		})
 		return nil
 	}
@@ -287,11 +295,11 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountModify", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to modify an account."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to modify this account."}}},
 		})
 		return nil
 	}
@@ -360,11 +368,11 @@ func AccountDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountDelete", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Delete",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to delete an account."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete this account."}}},
 		})
 		return nil
 	}
@@ -411,13 +419,12 @@ func AccountListIngressKeys(db *gorm.DB, currentUser *models.User, args []string
 		return nil
 	}
 
-	if !currentUser.IsAdmin() && username != currentUser.Username {
+	if !currentUser.CanDo(db, "accountListIngressKeys", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Ingress Keys List",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to view another account's ingress keys."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view ingress keys for this account."}}},
 		})
-		return nil
 	}
 
 	var user models.User
@@ -497,13 +504,12 @@ func AccountListEgressKeys(db *gorm.DB, currentUser *models.User, args []string)
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountListEgressKeys", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Egress Keys List",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to view another account's egress keys."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view egress keys for this account."}}},
 		})
-		return nil
 	}
 
 	var targetUser models.User
@@ -582,11 +588,11 @@ func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) err
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountListAccess", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Access List",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to view account accesses."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view accesses for this account."}}},
 		})
 		return nil
 	}
@@ -622,13 +628,13 @@ func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) err
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
@@ -674,11 +680,11 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "whoHasAccessTo", "") {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to view access to a server."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view accesses for this server."}}},
 		})
 		return nil
 	}
@@ -705,23 +711,23 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "Type\tName\tUsername\tGrade")
+	_, _ = fmt.Fprintln(w, "Type\tName\tUsername\tGrade")
 
 	for _, access := range accesses {
 		if access.User.ID != uuid.Nil {
-			fmt.Fprintf(w, "User\t%s\t%s\t-\n", access.User.Username, server)
+			_, _ = fmt.Fprintf(w, "User\t%s\t%s\t-\n", access.User.Username, server)
 		}
 	}
 
 	for _, ga := range groupAccesses {
-		fmt.Fprintf(w, "Group\t%s\t-\t-\n", ga.Group.Name)
+		_, _ = fmt.Fprintf(w, "Group\t%s\t-\t-\n", ga.Group.Name)
 		var userGroups []models.UserGroup
 		if err := db.Preload("User", "deleted_at IS NULL").Where("group_id = ? AND deleted_at IS NULL", ga.GroupID).Find(&userGroups).Error; err != nil {
 			continue
 		}
 		for _, ug := range userGroups {
 			if ug.User.ID != uuid.Nil {
-				fmt.Fprintf(w, "-\t-\t%s\t%s\n", ug.User.Username, utils.GetGrades(ug))
+				_, _ = fmt.Fprintf(w, "-\t-\t%s\t%s\n", ug.User.Username, utils.GetGrades(ug))
 			}
 		}
 	}
@@ -754,7 +760,7 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage Error", Body: []string{"Usage: accountAddAccess --user <username> --server <sshserver> --username <sshusername> --port <sshport> --comment <comment>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage Error", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> --comment <comment>"}}},
 		})
 		return err
 	}
@@ -763,16 +769,16 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountAddAccess --user <username> --server <sshserver> --username <sshusername> --port <sshport> --comment <comment>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> --comment <comment>"}}},
 		})
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountAddAccess", targetUser) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to add personal access."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add personal access for this user."}}},
 		})
 		return nil
 	}
@@ -831,11 +837,11 @@ func AccountDelAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		return nil
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "accountDelAccess", "") {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to delete personal access."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete personal access."}}},
 		})
 		return nil
 	}

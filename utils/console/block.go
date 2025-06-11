@@ -66,7 +66,6 @@ func DisplayBlock(block ContentBlock) {
 	fmt.Println(frameColor("├──────────────────────────────────────────────────────────"))
 	for i, section := range block.Sections {
 		space := "│ "
-		// Si la section possède un sous-titre, cela signifie un nouveau bloc, donc on insère un saut de ligne (sauf pour la première)
 		if section.SubTitle != "" {
 			if i > 0 {
 				fmt.Println(frameColor("│"))
@@ -77,11 +76,9 @@ func DisplayBlock(block ContentBlock) {
 				fmt.Println(frameColor(space) + utils.FgYellowB(section.SubTitle))
 			}
 		}
-		// Affichage du sous-sous-titre (toujours sur une nouvelle ligne)
 		if section.SubSubTitle != "" {
 			fmt.Println(frameColor(space+"  ") + utils.FgWhiteB(section.SubSubTitle))
 		}
-		// Affichage du contenu
 		for _, line := range section.Body {
 			fmt.Println(frameColor(space+"    ") + utils.FgWhite(line))
 		}

@@ -29,7 +29,9 @@ func SshConnection(user models.User, access models.AccessRight) error {
 	if err = os.WriteFile(tmpFilePath, []byte(privateKey), 0600); err != nil {
 		return fmt.Errorf("error writing private key: %v", err)
 	}
-	defer os.Remove(tmpFilePath)
+	defer func(name string) {
+		_ = os.Remove(name)
+	}(tmpFilePath)
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	dir := fmt.Sprintf("/app/ttyrec/%s/%s/", user.Username, access.Server)
@@ -44,9 +46,13 @@ func SshConnection(user models.User, access models.AccessRight) error {
 	if err != nil {
 		return fmt.Errorf("error creating gzip output file: %v", err)
 	}
-	defer outFile.Close()
+	defer func(outFile *os.File) {
+		_ = outFile.Close()
+	}(outFile)
 	gzipWriter := gzip.NewWriter(outFile)
-	defer gzipWriter.Close()
+	defer func(gzipWriter *gzip.Writer) {
+		_ = gzipWriter.Close()
+	}(gzipWriter)
 
 	done := make(chan error, 1)
 	go func() {
@@ -58,7 +64,9 @@ func SshConnection(user models.User, access models.AccessRight) error {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		defer f.Close()
+		defer func(f *os.File) {
+			_ = f.Close()
+		}(f)
 
 		buf := make([]byte, 4096)
 		for {

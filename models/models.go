@@ -13,14 +13,6 @@ const (
 	RoleUser  = "user"
 )
 
-var Grades = []string{
-	"Owner",
-	"GateKeeper",
-	"ACLKeeper",
-	"Member",
-	"Guest",
-}
-
 type User struct {
 	ID            uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Username      string    `gorm:"not null;index:idx_username_deletedat,unique"`
@@ -49,7 +41,7 @@ func (u *User) IsEnabled() bool {
 	return u.Enabled
 }
 
-func (u *User) BeforeCreate(*gorm.DB) (err error) {
+func (u *User) BeforeCreate() (err error) {
 	u.ID = uuid.New()
 	return
 }
@@ -62,7 +54,7 @@ type Group struct {
 	DeletedAt gorm.DeletedAt `gorm:"index:idx_groupname_deletedat"`
 }
 
-func (g *Group) BeforeCreate(*gorm.DB) (err error) {
+func (g *Group) BeforeCreate() (err error) {
 	g.ID = uuid.New()
 	return
 }
@@ -79,7 +71,7 @@ type UserGroup struct {
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
-func (ug *UserGroup) BeforeCreate(*gorm.DB) (err error) {
+func (ug *UserGroup) BeforeCreate() (err error) {
 	ug.ID = uuid.New()
 	return
 }
@@ -118,7 +110,7 @@ type IngressKey struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
-func (ik *IngressKey) BeforeCreate(*gorm.DB) (err error) {
+func (ik *IngressKey) BeforeCreate() (err error) {
 	ik.ID = uuid.New()
 	return
 }
@@ -137,7 +129,7 @@ type SelfEgressKey struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
-func (sek *SelfEgressKey) BeforeCreate(*gorm.DB) (err error) {
+func (sek *SelfEgressKey) BeforeCreate() (err error) {
 	sek.ID = uuid.New()
 	return
 }
@@ -156,7 +148,7 @@ type GroupEgressKey struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
-func (gek *GroupEgressKey) BeforeCreate(*gorm.DB) (err error) {
+func (gek *GroupEgressKey) BeforeCreate() (err error) {
 	gek.ID = uuid.New()
 	return
 }
@@ -175,7 +167,7 @@ type SelfAccess struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
-func (sa *SelfAccess) BeforeCreate(*gorm.DB) (err error) {
+func (sa *SelfAccess) BeforeCreate() (err error) {
 	sa.ID = uuid.New()
 	return
 }
@@ -194,7 +186,7 @@ type GroupAccess struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
-func (ga *GroupAccess) BeforeCreate(*gorm.DB) (err error) {
+func (ga *GroupAccess) BeforeCreate() (err error) {
 	ga.ID = uuid.New()
 	return
 }
@@ -219,7 +211,7 @@ type Aliases struct {
 	ID          uuid.UUID  `gorm:"type:uuid;primaryKey"`
 	ResolveFrom string     `gorm:"not null"`
 	Host        string     `gorm:"not null"`
-	UserID      *uuid.UUID `gorm:"type:uuid;index;constraint:OnDelete:CASCADE"` // If User is deleted, associated Aliases are deleted
+	UserID      *uuid.UUID `gorm:"type:uuid;index;constraint:OnDelete:CASCADE"` // If a User is deleted, associated Aliases are deleted
 	GroupID     *uuid.UUID `gorm:"type:uuid;index;constraint:OnDelete:CASCADE"` // If Group is deleted, associated Aliases are deleted
 	User        *User      `gorm:"foreignKey:UserID"`
 	Group       *Group     `gorm:"foreignKey:GroupID"`
@@ -228,7 +220,7 @@ type Aliases struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
-func (h *Aliases) BeforeCreate(tx *gorm.DB) (err error) {
+func (h *Aliases) BeforeCreate() (err error) {
 	h.ID = uuid.New()
 	if h.UserID != nil && h.GroupID != nil {
 		return fmt.Errorf("a host cannot be attached to both a user and a group")
@@ -255,7 +247,7 @@ type KnownHostsEntry struct {
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
-func (khe *KnownHostsEntry) BeforeCreate(*gorm.DB) (err error) {
+func (khe *KnownHostsEntry) BeforeCreate() (err error) {
 	khe.ID = uuid.New()
 	return nil
 }

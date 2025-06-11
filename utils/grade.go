@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"slices"
 	"strings"
 
 	"goBastion/models"
@@ -28,11 +27,4 @@ func GetGrades(ug models.UserGroup) string {
 		return "None"
 	}
 	return strings.Join(grades, ", ")
-}
-
-func CheckGrade(grade string) bool {
-	grade = strings.ToLower(grade)
-	return slices.ContainsFunc(models.Grades, func(g string) bool {
-		return strings.ToLower(g) == grade
-	})
 }

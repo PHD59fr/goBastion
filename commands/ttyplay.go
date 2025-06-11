@@ -13,9 +13,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
-func TtyList(u *models.User, args []string) error {
+func TtyList(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyList", flag.ContinueOnError)
 	var startDateStr, endDateStr string
 	var username string
@@ -38,11 +40,19 @@ func TtyList(u *models.User, args []string) error {
 		return err
 	}
 
-	if !u.IsAdmin() {
-		username = u.Username
-	}
 	if username == "" {
 		username = u.Username
+	}
+
+	if !u.CanDo(db, "ttyList", username) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session List",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Access Denied", Body: []string{"You do not have permission to list TTY sessions."}},
+			},
+		})
+		return fmt.Errorf("access denied for user %s to list TTY sessions", u.Username)
 	}
 
 	baseDir := fmt.Sprintf("/app/ttyrec/%s/", strings.ToLower(username))
@@ -119,7 +129,7 @@ func TtyList(u *models.User, args []string) error {
 	return err
 }
 
-func TtyPlay(u *models.User, args []string) error {
+func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyPlay", flag.ContinueOnError)
 	var username string
 	var file string
@@ -141,8 +151,19 @@ func TtyPlay(u *models.User, args []string) error {
 		return err
 	}
 
-	if !u.IsAdmin() || username == "" {
+	if username == "" {
 		username = u.Username
+	}
+
+	if !u.CanDo(db, "ttyPlay", username) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Access Denied", Body: []string{"You do not have permission to play TTY sessions."}},
+			},
+		})
+		return fmt.Errorf("access denied for user %s to play TTY sessions", u.Username)
 	}
 
 	re := regexp.MustCompile(`^[^.]+\.(?P<server>[^_:]+)(?::\d+)?_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ttyrec.gz$`)

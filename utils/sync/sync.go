@@ -37,7 +37,7 @@ func CreateUserFromDB(db *gorm.DB, user models.User) error {
 }
 
 func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
-	// Only on fresh install
+	// Only on fresh installation
 	homeFiles, err := os.ReadDir("/home")
 	if err != nil {
 		return fmt.Errorf("error reading HOME directory: %w", err)
@@ -77,7 +77,7 @@ func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
 }
 
 func CreateSystemUsersFromSystemToDb(db *gorm.DB) error {
-	// Only on fresh install
+	// Only on fresh installation
 	var userCount int64
 	if err := db.Model(&models.User{}).Where("system_user = ?", true).Count(&userCount).Error; err != nil {
 		return fmt.Errorf("error counting users: %w", err)

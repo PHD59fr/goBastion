@@ -24,7 +24,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func GroupInfo(db *gorm.DB, args []string) error {
+func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupInfo", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")
@@ -38,6 +38,15 @@ func GroupInfo(db *gorm.DB, args []string) error {
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupInfo --group <groupName>"}}},
 		})
 		return err
+	}
+
+	if !currentUser.CanDo(db, "groupInfo", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Info",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view group information."}}},
+		})
+		return fmt.Errorf("access denied for" + currentUser.Username)
 	}
 
 	var g models.Group
@@ -90,9 +99,18 @@ func GroupList(db *gorm.DB, user *models.User, args []string) error {
 		return err
 	}
 
+	if !user.CanDo(db, "groupList", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group List",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list groups."}}},
+		})
+		return fmt.Errorf("access denied for " + user.Username)
+	}
+
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "#\tID\tName")
+	_, _ = fmt.Fprintln(w, "#\tID\tName")
 
 	if *all {
 		var groups []models.Group
@@ -106,7 +124,7 @@ func GroupList(db *gorm.DB, user *models.User, args []string) error {
 			return nil
 		}
 		for i, g := range groups {
-			fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, g.ID.String(), g.Name)
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, g.ID.String(), g.Name)
 		}
 	} else {
 		var userGroups []models.UserGroup
@@ -120,10 +138,10 @@ func GroupList(db *gorm.DB, user *models.User, args []string) error {
 			return nil
 		}
 		for i, ug := range userGroups {
-			fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, ug.Group.ID.String(), ug.Group.Name)
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, ug.Group.ID.String(), ug.Group.Name)
 		}
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Group List",
@@ -149,13 +167,13 @@ func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "groupCreate", groupName) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Group Create",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to create groups."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to create groups."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for " + currentUser.Username)
 	}
 
 	var existingGroup models.Group
@@ -202,13 +220,13 @@ func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
-	if !currentUser.IsAdmin() {
+	if !currentUser.CanDo(db, "groupDelete", groupName) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Group Delete",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You must be an admin to delete groups."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete groups."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for " + currentUser.Username)
 	}
 
 	db.Where("name = ?", groupName).Delete(&models.Group{})
@@ -238,14 +256,13 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
-	grade = strings.TrimSpace(strings.ToLower(grade))
-	if !utils.CheckGrade(grade) {
+	if !currentUser.CanDo(db, "groupAddMember", groupName) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Member",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Invalid Grade", Body: []string{fmt.Sprintf("Invalid grade: %s", grade)}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add members to this group."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for " + currentUser.Username)
 	}
 
 	var g models.Group
@@ -276,15 +293,6 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 			Sections:  []console.SectionContent{{SubTitle: "Already Exists", Body: []string{fmt.Sprintf("User '%s' is already in group '%s'.", username, groupName)}}},
 		})
 		return nil
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, g.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Member",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
-		})
-		return err
 	}
 
 	newUG := models.UserGroup{UserID: u.ID, GroupID: g.ID, Role: grade}
@@ -320,6 +328,15 @@ func GroupDelMember(db *gorm.DB, currentUser *models.User, args []string) error 
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupDelMember --group <groupName> --user <username>"}}},
 		})
 		return err
+	}
+
+	if !currentUser.CanDo(db, "groupDelMember", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Remove Member",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to remove members from this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
 	}
 
 	var g models.Group
@@ -379,21 +396,21 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupGenerateEgressKey", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Generate Egress Key",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to generate egress keys for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
-		})
-		return err
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Generate Egress Key",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
 		})
 		return err
 	}
@@ -463,21 +480,21 @@ func GroupListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) e
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupListEgressKeys", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "List Egress Keys",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list egress keys for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "List Egress Keys",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
-		})
-		return err
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Egress Keys",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
 		})
 		return err
 	}
@@ -545,21 +562,21 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupAddAccess", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add access for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
-		})
-		return err
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Access",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
 		})
 		return err
 	}
@@ -615,6 +632,15 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupDelAccess", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete access for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -631,15 +657,6 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			Title:     "Delete Group Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid ID", Body: []string{"Invalid access ID format."}}},
-		})
-		return err
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Delete Group Access",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
 		})
 		return err
 	}
@@ -677,6 +694,15 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupListAccesses", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "List Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list accesses for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -685,18 +711,6 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
 		})
 		return err
-	}
-
-	if !currentUser.IsAdmin() {
-		var userGroup models.UserGroup
-		if err := db.Where("user_id = ? AND group_id = ?", currentUser.ID, group.ID).First(&userGroup).Error; err != nil {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "List Group Access",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You are not a member of this group."}}},
-			})
-			return err
-		}
 	}
 
 	var accesses []models.GroupAccess
@@ -720,13 +734,13 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
@@ -736,27 +750,13 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 			access.CreatedAt.Format("2006-01-02 15:04:05"),
 		)
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "List Group Access",
 		BlockType: "success",
 		Sections:  []console.SectionContent{{SubTitle: "Accesses", Body: strings.Split(buf.String(), "\n")}},
 	})
-	return nil
-}
-
-func checkGroupPrivileges(db *gorm.DB, currentUser *models.User, groupID uuid.UUID) error {
-	if currentUser.IsAdmin() {
-		return nil
-	}
-	var userGroup models.UserGroup
-	if err := db.Where("user_id = ? AND group_id = ?", currentUser.ID, groupID).First(&userGroup).Error; err != nil {
-		return fmt.Errorf("access denied: you are not a member of the group")
-	}
-	if !(userGroup.IsOwner() || userGroup.IsACLKeeper() || userGroup.IsGateKeeper()) {
-		return fmt.Errorf("access denied: insufficient privileges")
-	}
 	return nil
 }
 
@@ -778,21 +778,21 @@ func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupAddAlias", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Alias",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add aliases for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Alias",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
-		})
-		return err
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
 		})
 		return err
 	}
@@ -838,21 +838,21 @@ func GroupDelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupDelAlias", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group Alias",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete aliases for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Group Alias",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
-		})
-		return err
-	}
-
-	if err := checkGroupPrivileges(db, currentUser, group.ID); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Delete Group Alias",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{err.Error()}}},
 		})
 		return err
 	}
@@ -910,6 +910,15 @@ func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) erro
 		return err
 	}
 
+	if !currentUser.CanDo(db, "groupListAliases", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "List Group Aliases",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list aliases for this group."}}},
+		})
+		return fmt.Errorf("access denied for " + currentUser.Username)
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -918,18 +927,6 @@ func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) erro
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
 		})
 		return err
-	}
-
-	if !currentUser.IsAdmin() {
-		var userGroup models.UserGroup
-		if err := db.Where("user_id = ? AND group_id = ?", currentUser.ID, group.ID).First(&userGroup).Error; err != nil {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "List Group Aliases",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You are not a member of this group."}}},
-			})
-			return err
-		}
 	}
 
 	var aliases []models.Aliases
@@ -953,16 +950,16 @@ func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) erro
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tAlias\tHostname\tAdded At")
+	_, _ = fmt.Fprintln(w, "ID\tAlias\tHostname\tAdded At")
 	for _, alias := range aliases {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 			alias.ID.String(),
 			alias.ResolveFrom,
 			alias.Host,
 			alias.CreatedAt.Format("2006-01-02 15:04:05"),
 		)
 	}
-	w.Flush()
+	_ = w.Flush()
 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "List Group Aliases",

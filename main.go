@@ -325,7 +325,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 
 	wrappedCompleter := func(d prompt.Document) []prompt.Suggest {
 		if showCompletions {
-			return autocomplete.Completion(d, currentUser)
+			return autocomplete.Completion(d, currentUser, db)
 		}
 		return []prompt.Suggest{}
 	}
@@ -375,173 +375,223 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 
 func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) {
 	resetStdIn() // Mandatory! Otherwise, the terminal may be left in an unusable state.
-	switch cmd {
-	// Self commands
-	case "selfListIngressKeys":
-		commands.SelfListIngressKeys(db, currentUser)
-	case "selfAddIngressKey":
-		if err := commands.SelfAddIngressKey(db, currentUser, args); err != nil {
-			log.Error("selfAddIngressKey error", slog.String("error", err.Error()))
-		}
-	case "selfDelIngressKey":
-		if err := commands.SelfDelIngressKey(db, currentUser, args); err != nil {
-			log.Error("selfDelIngressKey error", slog.String("error", err.Error()))
-		}
-	case "selfGenerateEgressKey":
-		if err := commands.SelfGenerateEgressKey(db, currentUser, args); err != nil {
-			log.Error("selfGenerateEgressKey error", slog.String("error", err.Error()))
-		}
-	case "selfListEgressKeys":
-		if err := commands.SelfListEgressKeys(db, currentUser); err != nil {
-			log.Error("selfListEgressKeys error", slog.String("error", err.Error()))
-		}
-	case "selfListAccesses":
-		if err := commands.SelfListAccesses(db, currentUser); err != nil {
-			log.Error("selfListAccesses error", slog.String("error", err.Error()))
-		}
-	case "selfAddAccess":
-		if err := commands.SelfAddAccess(db, currentUser, args); err != nil {
-			log.Error("selfAddAccess error", slog.String("error", err.Error()))
-		}
-	case "selfDelAccess":
-		if err := commands.SelfDelAccess(db, currentUser, args); err != nil {
-			log.Error("selfDelAccess error", slog.String("error", err.Error()))
-		}
-	case "selfAddAlias":
-		if err := commands.SelfAddAlias(db, currentUser, args); err != nil {
-			log.Error("selfAddAlias error", slog.String("error", err.Error()))
-		}
-	case "selfDelAlias":
-		if err := commands.SelfDelAlias(db, currentUser, args); err != nil {
-			log.Error("selfDelAlias error", slog.String("error", err.Error()))
-		}
-	case "selfListAliases":
-		if err := commands.SelfListAliases(db, currentUser); err != nil {
-			log.Error("selfListAliases error", slog.String("error", err.Error()))
-		}
-	case "selfRemoveHostFromKnownHosts":
-		if err := commands.SelfRemoveHostFromKnownHosts(args); err != nil {
-			log.Error("selfRemoveHostFromKnownHosts error", slog.String("error", err.Error()))
-		}
 
-	// Account commands
-	case "accountList":
-		if err := commands.AccountList(db, currentUser); err != nil {
-			log.Error("accountList error", slog.String("error", err.Error()))
-		}
-	case "accountInfo":
-		if err := commands.AccountInfo(db, currentUser, args); err != nil {
-			log.Error("accountInfo error", slog.String("error", err.Error()))
-		}
-	case "accountCreate":
-		if err := commands.AccountCreate(db, currentUser, args); err != nil {
-			log.Error("accountCreate error", slog.String("error", err.Error()))
-		}
-	case "accountListIngressKeys":
-		if err := commands.AccountListIngressKeys(db, currentUser, args); err != nil {
-			log.Error("accountListIngressKeys error", slog.String("error", err.Error()))
-		}
-	case "accountListEgressKeys":
-		if err := commands.AccountListEgressKeys(db, currentUser, args); err != nil {
-			log.Error("accountListEgressKeys error", slog.String("error", err.Error()))
-		}
-	case "accountModify":
-		if err := commands.AccountModify(db, currentUser, args); err != nil {
-			log.Error("accountModify error", slog.String("error", err.Error()))
-		}
-	case "accountDelete":
-		if err := commands.AccountDelete(db, currentUser, args); err != nil {
-			log.Error("accountDelete error", slog.String("error", err.Error()))
-		}
-	case "accountAddAccess":
-		if err := commands.AccountAddAccess(db, currentUser, args); err != nil {
-			log.Error("accountAddAccess error", slog.String("error", err.Error()))
-		}
-	case "accountDelAccess":
-		if err := commands.AccountDelAccess(db, currentUser, args); err != nil {
-			log.Error("accountDelAccess error", slog.String("error", err.Error()))
-		}
-	case "accountListAccess":
-		if err := commands.AccountListAccess(db, currentUser, args); err != nil {
-			log.Error("accountListAccess error", slog.String("error", err.Error()))
-		}
-	// Group commands
-	case "groupInfo":
-		if err := commands.GroupInfo(db, args); err != nil {
-			log.Error("groupInfo error", slog.String("error", err.Error()))
-		}
-	case "groupList":
-		commands.GroupList(db, currentUser, args)
-	case "groupCreate":
-		if err := commands.GroupCreate(db, currentUser, args); err != nil {
-			log.Error("groupCreate error", slog.String("error", err.Error()))
-		}
-	case "groupDelete":
-		if err := commands.GroupDelete(db, currentUser, args); err != nil {
-			log.Error("groupDelete error", slog.String("error", err.Error()))
-		}
-	case "groupAddAccess":
-		if err := commands.GroupAddAccess(db, currentUser, args); err != nil {
-			log.Error("groupAddAccess error", slog.String("error", err.Error()))
-		}
-	case "groupDelAccess":
-		if err := commands.GroupDelAccess(db, currentUser, args); err != nil {
-			log.Error("groupDelAccess error", slog.String("error", err.Error()))
-		}
-	case "groupAddMember":
-		if err := commands.GroupAddMember(db, currentUser, args); err != nil {
-			log.Error("groupAddMember error", slog.String("error", err.Error()))
-		}
-	case "groupDelMember":
-		if err := commands.GroupDelMember(db, currentUser, args); err != nil {
-			log.Error("groupDelMember error", slog.String("error", err.Error()))
-		}
-	case "groupGenerateEgressKey":
-		if err := commands.GroupGenerateEgressKey(db, currentUser, args); err != nil {
-			log.Error("groupGenerateEgressKey error", slog.String("error", err.Error()))
-		}
-	case "groupListEgressKeys":
-		if err := commands.GroupListEgressKeys(db, currentUser, args); err != nil {
-			log.Error("groupListEgressKeys error", slog.String("error", err.Error()))
-		}
-	case "groupListAccess":
-		if err := commands.GroupListAccesses(db, currentUser, args); err != nil {
-			log.Error("groupListAccess error", slog.String("error", err.Error()))
-		}
-	case "groupAddAlias":
-		if err := commands.GroupAddAlias(db, currentUser, args); err != nil {
-			log.Error("groupAddAlias error", slog.String("error", err.Error()))
-		}
-	case "groupDelAlias":
-		if err := commands.GroupDelAlias(db, currentUser, args); err != nil {
-			log.Error("groupDelAlias error", slog.String("error", err.Error()))
-		}
-	case "groupListAliases":
-		if err := commands.GroupListAliases(db, currentUser, args); err != nil {
-			log.Error("groupListAliases error", slog.String("error", err.Error()))
-		}
-	// Command "TTY"
-	case "ttyList":
-		if err := commands.TtyList(currentUser, args); err != nil {
-			log.Error("ttyList error", slog.String("error", err.Error()))
-		}
-	case "ttyPlay":
-		if err := commands.TtyPlay(currentUser, args); err != nil {
-			log.Error("ttyPlay error", slog.String("error", err.Error()))
-		}
-	case "whoHasAccessTo":
-		if err := commands.WhoHasAccessTo(db, currentUser, args); err != nil {
-			log.Error("whoHasAccessTo error", slog.String("error", err.Error()))
-		}
-	// Miscellaneous Commands
-	case "help":
-		commands.DisplayHelp(db, *currentUser)
-	case "info":
-		commands.DisplayInfo()
-	case "exit":
-		os.Exit(0)
-	default:
-		fmt.Printf("Unknown command: %s\n", cmd)
+	hasPerm := func(perm string) bool {
+		return currentUser.CanDo(db, perm, "")
+	}
+
+	commandsMap := map[string]struct {
+		Perm    string
+		Handler func()
+	}{
+		// Self-commands
+		"selfListIngressKeys": {"selfListIngressKeys", func() { commands.SelfListIngressKeys(db, currentUser) }},
+		"selfAddIngressKey": {"selfAddIngressKey", func() {
+			if err := commands.SelfAddIngressKey(db, currentUser, args); err != nil {
+				log.Error("selfAddIngressKey error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfDelIngressKey": {"selfDelIngressKey", func() {
+			if err := commands.SelfDelIngressKey(db, currentUser, args); err != nil {
+				log.Error("selfDelIngressKey error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfGenerateEgressKey": {"selfGenerateEgressKey", func() {
+			if err := commands.SelfGenerateEgressKey(db, currentUser, args); err != nil {
+				log.Error("selfGenerateEgressKey error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfListEgressKeys": {"selfListEgressKeys", func() {
+			if err := commands.SelfListEgressKeys(db, currentUser); err != nil {
+				log.Error("selfListEgressKeys error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfListAccesses": {"selfListAccesses", func() {
+			if err := commands.SelfListAccesses(db, currentUser); err != nil {
+				log.Error("selfListAccesses error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfAddAccess": {"selfAddAccess", func() {
+			if err := commands.SelfAddAccess(db, currentUser, args); err != nil {
+				log.Error("selfAddAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfDelAccess": {"selfDelAccess", func() {
+			if err := commands.SelfDelAccess(db, currentUser, args); err != nil {
+				log.Error("selfDelAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfAddAlias": {"selfAddAlias", func() {
+			if err := commands.SelfAddAlias(db, currentUser, args); err != nil {
+				log.Error("selfAddAlias error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfDelAlias": {"selfDelAlias", func() {
+			if err := commands.SelfDelAlias(db, currentUser, args); err != nil {
+				log.Error("selfDelAlias error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfListAliases": {"selfListAliases", func() {
+			if err := commands.SelfListAliases(db, currentUser); err != nil {
+				log.Error("selfListAliases error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfRemoveHostFromKnownHosts": {"selfRemoveHostFromKnownHosts", func() {
+			if err := commands.SelfRemoveHostFromKnownHosts(args); err != nil {
+				log.Error("selfRemoveHostFromKnownHosts error", slog.String("error", err.Error()))
+			}
+		}},
+
+		// Account commands
+		"accountList": {"accountList", func() {
+			if err := commands.AccountList(db, currentUser); err != nil {
+				log.Error("accountList error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountInfo": {"accountInfo", func() {
+			if err := commands.AccountInfo(db, currentUser, args); err != nil {
+				log.Error("accountInfo error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountCreate": {"accountCreate", func() {
+			if err := commands.AccountCreate(db, currentUser, args); err != nil {
+				log.Error("accountCreate error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountListIngressKeys": {"accountListIngressKeys", func() {
+			if err := commands.AccountListIngressKeys(db, currentUser, args); err != nil {
+				log.Error("accountListIngressKeys error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountListEgressKeys": {"accountListEgressKeys", func() {
+			if err := commands.AccountListEgressKeys(db, currentUser, args); err != nil {
+				log.Error("accountListEgressKeys error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountModify": {"accountModify", func() {
+			if err := commands.AccountModify(db, currentUser, args); err != nil {
+				log.Error("accountModify error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountDelete": {"accountDelete", func() {
+			if err := commands.AccountDelete(db, currentUser, args); err != nil {
+				log.Error("accountDelete error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountAddAccess": {"accountAddAccess", func() {
+			if err := commands.AccountAddAccess(db, currentUser, args); err != nil {
+				log.Error("accountAddAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountDelAccess": {"accountDelAccess", func() {
+			if err := commands.AccountDelAccess(db, currentUser, args); err != nil {
+				log.Error("accountDelAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountListAccess": {"accountListAccess", func() {
+			if err := commands.AccountListAccess(db, currentUser, args); err != nil {
+				log.Error("accountListAccess error", slog.String("error", err.Error()))
+			}
+		}},
+
+		// Group commands
+		"groupInfo": {"groupInfo", func() {
+			if err := commands.GroupInfo(db, currentUser, args); err != nil {
+				log.Error("groupInfo error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupList": {"groupList", func() {
+			if err := commands.GroupList(db, currentUser, args); err != nil {
+				log.Error("groupList error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupCreate": {"groupCreate", func() {
+			if err := commands.GroupCreate(db, currentUser, args); err != nil {
+				log.Error("groupCreate error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupDelete": {"groupDelete", func() {
+			if err := commands.GroupDelete(db, currentUser, args); err != nil {
+				log.Error("groupDelete error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupAddAccess": {"groupAddAccess", func() {
+			if err := commands.GroupAddAccess(db, currentUser, args); err != nil {
+				log.Error("groupAddAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupDelAccess": {"groupDelAccess", func() {
+			if err := commands.GroupDelAccess(db, currentUser, args); err != nil {
+				log.Error("groupDelAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupAddMember": {"groupAddMember", func() {
+			if err := commands.GroupAddMember(db, currentUser, args); err != nil {
+				log.Error("groupAddMember error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupDelMember": {"groupDelMember", func() {
+			if err := commands.GroupDelMember(db, currentUser, args); err != nil {
+				log.Error("groupDelMember error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupGenerateEgressKey": {"groupGenerateEgressKey", func() {
+			if err := commands.GroupGenerateEgressKey(db, currentUser, args); err != nil {
+				log.Error("groupGenerateEgressKey error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupListEgressKeys": {"groupListEgressKeys", func() {
+			if err := commands.GroupListEgressKeys(db, currentUser, args); err != nil {
+				log.Error("groupListEgressKeys error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupListAccess": {"groupListAccesses", func() {
+			if err := commands.GroupListAccesses(db, currentUser, args); err != nil {
+				log.Error("groupListAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupAddAlias": {"groupAddAlias", func() {
+			if err := commands.GroupAddAlias(db, currentUser, args); err != nil {
+				log.Error("groupAddAlias error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupDelAlias": {"groupDelAlias", func() {
+			if err := commands.GroupDelAlias(db, currentUser, args); err != nil {
+				log.Error("groupDelAlias error", slog.String("error", err.Error()))
+			}
+		}},
+		"groupListAliases": {"groupListAliases", func() {
+			if err := commands.GroupListAliases(db, currentUser, args); err != nil {
+				log.Error("groupListAliases error", slog.String("error", err.Error()))
+			}
+		}},
+
+		// TTY
+		"ttyList": {"ttyList", func() {
+			if err := commands.TtyList(db, currentUser, args); err != nil {
+				log.Error("ttyList error", slog.String("error", err.Error()))
+			}
+		}},
+		"ttyPlay": {"ttyPlay", func() {
+			if err := commands.TtyPlay(db, currentUser, args); err != nil {
+				log.Error("ttyPlay error", slog.String("error", err.Error()))
+			}
+		}},
+		"whoHasAccessTo": {"whoHasAccessTo", func() {
+			if err := commands.WhoHasAccessTo(db, currentUser, args); err != nil {
+				log.Error("whoHasAccessTo error", slog.String("error", err.Error()))
+			}
+		}},
+
+		// Misc
+		"help": {"help", func() { commands.DisplayHelp(db, *currentUser) }},
+		"info": {"info", func() { commands.DisplayInfo() }},
+		"exit": {"exit", func() { os.Exit(0) }},
+	}
+	if entry, ok := commandsMap[cmd]; !ok || !hasPerm(entry.Perm) {
+		fmt.Printf("Unknown or unauthorized command: %s\n", cmd)
+	} else {
+		entry.Handler()
 	}
 }
 
