@@ -89,46 +89,52 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "accountCreate":
-			if user.Role != "admin" {
-				return []prompt.Suggest{}
-			}
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username to create"},
 			}
-			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "accountModify":
 			if user.Role != "admin" {
 				return []prompt.Suggest{}
 			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "accountModify":
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username to modify"},
 				{Text: "--role", Description: "New role (admin or user)"},
 			}
-			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "accountDelete":
 			if user.Role != "admin" {
 				return []prompt.Suggest{}
 			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "accountDelete":
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username to delete"},
+			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "accountListIngressKeys":
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username to list ingress keys"},
 			}
-			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "accountListEgressKeys":
 			if user.Role != "admin" {
 				return []prompt.Suggest{}
 			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
+		case "accountListEgressKeys":
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username to list egress keys"},
+			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "accountListAccess":
 			sugs := []prompt.Suggest{
 				{Text: "--user", Description: "Username to list accesses"},
+			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "accountAddAccess":
@@ -139,10 +145,16 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--username", Description: "SSH Username"},
 				{Text: "--comment", Description: "Comment"},
 			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
+			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "accountDelAccess":
 			sugs := []prompt.Suggest{
 				{Text: "--access", Description: "Access ID"},
+			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 
@@ -158,19 +170,19 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupCreate":
-			if user.Role != "admin" {
-				return []prompt.Suggest{}
-			}
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
+			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupDelete":
-			if user.Role != "admin" {
-				return []prompt.Suggest{}
-			}
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
+			}
+			if user.Role != "admin" && !isGroupManager(user) {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupAddAccess":
@@ -181,16 +193,25 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--username", Description: "SSH username"},
 				{Text: "--comment", Description: "Comment"},
 			}
+			if user.Role != "admin" && !isGroupManager(user) {
+				return []prompt.Suggest{}
+			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupDelAccess":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
 				{Text: "--access", Description: "Access ID to remove"},
 			}
+			if user.Role != "admin" && !isGroupManager(user) {
+				return []prompt.Suggest{}
+			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
-		case "groupListAccess":
+		case "groupListAccesses":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
+			}
+			if user.Role != "admin" && !isGroupManager(user) {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupAddMember":
@@ -234,16 +255,25 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 				{Text: "--alias", Description: "Alias"},
 				{Text: "--hostname", Description: "Host name"},
 			}
+			if user.Role != "admin" && !isGroupManager(user) {
+				return []prompt.Suggest{}
+			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupDelAlias":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
 				{Text: "--id", Description: "Alias ID"},
 			}
+			if user.Role != "admin" && !isGroupManager(user) {
+				return []prompt.Suggest{}
+			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 		case "groupListAliases":
 			sugs := []prompt.Suggest{
 				{Text: "--group", Description: "Group name"},
+			}
+			if user.Role != "admin" && !isGroupMember(user) {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 
@@ -266,6 +296,9 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		case "whoHasAccessTo":
 			sugs := []prompt.Suggest{
 				{Text: "--server", Description: "Server"},
+			}
+			if user.Role != "admin" {
+				return []prompt.Suggest{}
 			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(sugs), d.GetWordBeforeCursor(), true)
 
@@ -311,7 +344,7 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 			{Text: "groupGenerateEgressKey", Description: "Generate group egress key"},
 			{Text: "groupAddAccess", Description: "Add access to a group"},
 			{Text: "groupDelAccess", Description: "Remove access from a group"},
-			{Text: "groupListAccess", Description: "List group accesses"},
+			{Text: "groupListAccesses", Description: "List group accesses"},
 			{Text: "groupAddAlias", Description: "Add an alias to a group"},
 			{Text: "groupDelAlias", Description: "Delete an alias from a group"},
 			{Text: "groupListAliases", Description: "List group aliases"},
@@ -320,17 +353,17 @@ func Completion(d prompt.Document, user *models.User) []prompt.Suggest {
 		groupSuggestions = []prompt.Suggest{
 			{Text: "groupInfo", Description: "Show group info"},
 			{Text: "groupList", Description: "List groups"},
+			{Text: "groupListAliases", Description: "List group aliases"},
 		}
 		if isGroupManager(user) {
 			groupSuggestions = append(groupSuggestions, []prompt.Suggest{
 				{Text: "groupAddAccess", Description: "Add access to a group"},
 				{Text: "groupDelAccess", Description: "Remove access from a group"},
-				{Text: "groupListAccess", Description: "List group accesses"},
+				{Text: "groupListAccesses", Description: "List group accesses"},
 				{Text: "groupAddMember", Description: "Add a member to a group"},
 				{Text: "groupDelMember", Description: "Remove a member from a group"},
 				{Text: "groupAddAlias", Description: "Add an alias to a group"},
 				{Text: "groupDelAlias", Description: "Delete an alias from a group"},
-				{Text: "groupListAliases", Description: "List group aliases"},
 				{Text: "groupGenerateEgressKey", Description: "Generate group egress key"},
 			}...)
 		}

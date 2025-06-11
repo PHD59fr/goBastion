@@ -47,7 +47,7 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		Body: []string{
 			" " + utils.FgGreen("-") + " selfListEgressKeys             List your egress keys",
 			" " + utils.FgGreen("-") + " selfGenerateEgressKey          Generate a new egress key",
-			" " + utils.FgGreen("-") + " selfRemoveHostFromKnownHosts   Remove Host to Known_hosts file",
+			" " + utils.FgGreen("-") + " selfRemoveHostFromKnownHosts   Remove host from Known_hosts file",
 		},
 	})
 	sections = append(sections, console.SectionContent{
@@ -78,7 +78,7 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		SubSubTitle:   "",
 		Body: []string{
 			" " + utils.FgGreen("-") + " ttyList                   List recorded tty sessions",
-			" " + utils.FgGreen("-") + " ttyPlay                   Read a recorded tty session",
+			" " + utils.FgGreen("-") + " ttyPlay                   Replay a recorded tty session",
 		},
 	})
 
@@ -163,7 +163,7 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 			SubTitleColor: utils.FgWhiteB,
 			SubSubTitle:   " Group accesses:",
 			Body: []string{
-				" " + utils.FgGreen("-") + " groupListAccess         List access of the group",
+				" " + utils.FgGreen("-") + " groupListAccesses         List accesses of the group",
 				" " + utils.FgGreen("-") + " groupAddAccess          Add access to a group",
 				" " + utils.FgGreen("-") + " groupDelAccess          Remove access from a group",
 			},

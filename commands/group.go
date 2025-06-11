@@ -661,8 +661,8 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
-func GroupListAccess(db *gorm.DB, currentUser *models.User, args []string) error {
-	fs := flag.NewFlagSet("groupListAccess", flag.ContinueOnError)
+func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupListAccesses", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")
 	var flagOutput bytes.Buffer

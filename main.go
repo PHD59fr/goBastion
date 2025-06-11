@@ -505,7 +505,7 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 			log.Error("groupListEgressKeys error", slog.String("error", err.Error()))
 		}
 	case "groupListAccess":
-		if err := commands.GroupListAccess(db, currentUser, args); err != nil {
+		if err := commands.GroupListAccesses(db, currentUser, args); err != nil {
 			log.Error("groupListAccess error", slog.String("error", err.Error()))
 		}
 	case "groupAddAlias":
