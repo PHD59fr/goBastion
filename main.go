@@ -75,8 +75,8 @@ func createFirstAdminUser(db *gorm.DB) error {
 			return fmt.Errorf("error creating user: %w", err)
 		}
 
-		if err := commands.SwitchRoleUser(db, username); err != nil {
-			return fmt.Errorf("error switching role: %w", err)
+		if err := commands.SwitchSysRoleUser(db, username); err != nil {
+			return fmt.Errorf("error switching system role: %w", err)
 		}
 
 		fmt.Printf("User %s created successfully.\n", username)

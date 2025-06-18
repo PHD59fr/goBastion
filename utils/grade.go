@@ -6,25 +6,25 @@ import (
 	"goBastion/models"
 )
 
-func GetGrades(ug models.UserGroup) string {
-	var grades []string
+func GetRoles(ug models.UserGroup) string {
+	var roles []string
 	if ug.IsOwner() {
-		grades = append(grades, "Owner")
+		roles = append(roles, "Owner")
 	}
 	if ug.IsACLKeeper() {
-		grades = append(grades, "ACL Keeper")
+		roles = append(roles, "ACL Keeper")
 	}
 	if ug.IsGateKeeper() {
-		grades = append(grades, "Gate Keeper")
+		roles = append(roles, "Gate Keeper")
 	}
 	if ug.IsMember() {
-		grades = append(grades, "Member")
+		roles = append(roles, "Member")
 	}
 	if ug.IsGuest() {
-		grades = append(grades, "Guest")
+		roles = append(roles, "Guest")
 	}
-	if len(grades) == 0 {
+	if len(roles) == 0 {
 		return "None"
 	}
-	return strings.Join(grades, ", ")
+	return strings.Join(roles, ", ")
 }
