@@ -70,7 +70,19 @@ func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	if len(userGroups) > 0 {
 		infoLines = append(infoLines, "Members:")
 		for _, ug := range userGroups {
-			infoLines = append(infoLines, fmt.Sprintf("- %s (%s)", ug.User.Username, utils.GetGrades(ug)))
+			myRoles := utils.GetRoles(ug)
+			roleColored := utils.BgBlueB("Member")
+			if myRoles == "Owner" {
+				roleColored = utils.BgRedB("Owner")
+			}
+			if myRoles == "ACL Keeper" {
+				roleColored = utils.BgYellowB("ACL Keeper")
+			}
+			if myRoles == "Gate Keeper" {
+				roleColored = utils.BgGreenB("Gate Keeper")
+			}
+
+			infoLines = append(infoLines, fmt.Sprintf(" - %s - %s", ug.User.Username, roleColored))
 		}
 	} else {
 		infoLines = append(infoLines, "Members: None")
@@ -240,18 +252,18 @@ func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 
 func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddMember", flag.ContinueOnError)
-	var groupName, username, grade string
+	var groupName, username, role string
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&username, "user", "", "Username to add")
-	fs.StringVar(&grade, "grade", "", "Grade (owner, aclkeeper, gatekeeper, member, guest)")
+	fs.StringVar(&role, "role", "", "Role (owner, aclkeeper, gatekeeper, member, guest)")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
-	if err := fs.Parse(args); err != nil || strings.TrimSpace(groupName) == "" || strings.TrimSpace(username) == "" || strings.TrimSpace(grade) == "" {
+	if err := fs.Parse(args); err != nil || strings.TrimSpace(groupName) == "" || strings.TrimSpace(username) == "" || strings.TrimSpace(role) == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Member",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddMember --group <groupName> --user <username> --grade <grade>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddMember --group <groupName> --user <username> --role <role>"}}},
 		})
 		return err
 	}
@@ -295,7 +307,7 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	newUG := models.UserGroup{UserID: u.ID, GroupID: g.ID, Role: grade}
+	newUG := models.UserGroup{UserID: u.ID, GroupID: g.ID, Role: role}
 	if err := db.Create(&newUG).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Member",
@@ -308,7 +320,7 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Add Member",
 		BlockType: "success",
-		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("User '%s' added to group '%s' as '%s'.", username, groupName, grade)}}},
+		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("User '%s' added to group '%s' as '%s'.", username, groupName, role)}}},
 	})
 	return nil
 }

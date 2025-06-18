@@ -69,7 +69,7 @@ func AccountList(db *gorm.DB, currentUser *models.User) error {
 
 		userInfo := []string{
 			fmt.Sprintf("Username: %s", u.Username),
-			fmt.Sprintf("Role: %s", u.Role),
+			fmt.Sprintf("System Role: %s", u.Role),
 			fmt.Sprintf("Created At: %s", u.CreatedAt.Format("2006-01-02 15:04:05")),
 			fmt.Sprintf("Last Login: %s", u.LastLoginAt),
 			fmt.Sprintf("Last Login From: %s", u.LastLoginFrom),
@@ -78,7 +78,20 @@ func AccountList(db *gorm.DB, currentUser *models.User) error {
 		if len(userGroups) > 0 {
 			groupLines := []string{"Groups:"}
 			for _, ug := range userGroups {
-				groupLines = append(groupLines, fmt.Sprintf("  - %s (%s)", ug.Group.Name, utils.GetGrades(ug)))
+				role := utils.GetRoles(ug)
+				var coloredRole string
+				switch role {
+				case "Owner":
+					coloredRole = utils.BgRedB("Owner")
+				case "ACL Keeper":
+					coloredRole = utils.BgYellowB("ACL Keeper")
+				case "Gate Keeper":
+					coloredRole = utils.BgGreenB("Gate Keeper")
+				default:
+					coloredRole = utils.BgBlueB("Member")
+				}
+
+				groupLines = append(groupLines, fmt.Sprintf("  - %s - %s", ug.Group.Name, coloredRole))
 			}
 			userInfo = append(userInfo, groupLines...)
 		}
@@ -163,7 +176,7 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	infoLines := []string{
 		fmt.Sprintf("ID: %s", user.ID.String()),
 		fmt.Sprintf("Username: %s", user.Username),
-		fmt.Sprintf("Role: %s", user.Role),
+		fmt.Sprintf("System Role: %s", user.Role),
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("Last Login: %s", user.LastLoginAt),
 		fmt.Sprintf("Last Login From: %s", user.LastLoginFrom),
@@ -174,7 +187,21 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		infoLines = append(infoLines, "	User isn't a member of any groups. 😭")
 	} else {
 		for _, ug := range userGroups {
-			infoLines = append(infoLines, fmt.Sprintf("	* %s - %s", ug.Group.Name, utils.GetGrades(ug)))
+
+			role := utils.GetRoles(ug)
+			var coloredRole string
+			switch role {
+			case "Owner":
+				coloredRole = utils.BgRedB("Owner")
+			case "ACL Keeper":
+				coloredRole = utils.BgYellowB("ACL Keeper")
+			case "Gate Keeper":
+				coloredRole = utils.BgGreenB("Gate Keeper")
+			default:
+				coloredRole = utils.BgBlueB("Member")
+			}
+
+			infoLines = append(infoLines, fmt.Sprintf(" - %s - %s", ug.Group.Name, coloredRole))
 		}
 	}
 
@@ -273,7 +300,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountModify", flag.ContinueOnError)
 	var username, newRole string
 	fs.StringVar(&username, "user", "", "Username to modify")
-	fs.StringVar(&newRole, "role", "", "New role (admin or user)")
+	fs.StringVar(&newRole, "sysrole", "", "New system role (admin or user)")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
@@ -281,7 +308,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage Error", Body: []string{"Usage: accountModify --user <username> --role <admin|user>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage Error", Body: []string{"Usage: accountModify --user <username> --sysrole <admin|user>"}}},
 		})
 		return err
 	}
@@ -290,7 +317,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountModify --user <username> --role <admin|user>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountModify --user <username> --sysrole <admin|user>"}}},
 		})
 		return nil
 	}
@@ -309,7 +336,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Invalid Role", Body: []string{"Role must be 'admin' or 'user'."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Invalid System Role", Body: []string{"System role must be 'admin' or 'user'."}}},
 		})
 		return nil
 	}
@@ -329,7 +356,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to update user role."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to update user system role."}}},
 		})
 		return err
 	}
@@ -338,7 +365,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Modify",
 		BlockType: "success",
-		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("User '%s' role updated to '%s'.", username, newRole)}}},
+		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("User '%s' system role updated to '%s'.", username, newRole)}}},
 	})
 
 	return nil
@@ -710,31 +737,53 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 	}
 
 	var buf bytes.Buffer
-	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "Type\tName\tUsername\tGrade")
-
+	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', tabwriter.StripEscape)
+	_, _ = fmt.Fprintln(w, "Type\tName\tUsername\tRole\tServer")
 	for _, access := range accesses {
 		if access.User.ID != uuid.Nil {
-			_, _ = fmt.Fprintf(w, "User\t%s\t%s\t-\n", access.User.Username, server)
+			_, _ = fmt.Fprintf(w, "User\t-\t%s\t-\t%s\n", access.User.Username, server)
 		}
 	}
 
 	for _, ga := range groupAccesses {
-		_, _ = fmt.Fprintf(w, "Group\t%s\t-\t-\n", ga.Group.Name)
 		var userGroups []models.UserGroup
-		if err := db.Preload("User", "deleted_at IS NULL").Where("group_id = ? AND deleted_at IS NULL", ga.GroupID).Find(&userGroups).Error; err != nil {
+		if err := db.Preload("User", "deleted_at IS NULL").
+			Where("group_id = ? AND deleted_at IS NULL", ga.GroupID).
+			Find(&userGroups).Error; err != nil {
 			continue
 		}
+
 		for _, ug := range userGroups {
-			if ug.User.ID != uuid.Nil {
-				_, _ = fmt.Fprintf(w, "-\t-\t%s\t%s\n", ug.User.Username, utils.GetGrades(ug))
+			if ug.User.ID == uuid.Nil {
+				continue
 			}
+
+			role := utils.GetRoles(ug)
+			var coloredRole string
+			switch role {
+			case "Owner":
+				coloredRole = utils.BgRedB("Owner")
+			case "ACL Keeper":
+				coloredRole = utils.BgYellowB("ACL Keeper")
+			case "Gate Keeper":
+				coloredRole = utils.BgGreenB("Gate Keeper")
+			default:
+				coloredRole = utils.BgBlueB("Member")
+			}
+
+			_, _ = fmt.Fprintf(w, "Group\t%s\t%s\t%-12s\t%s\n",
+				ga.Group.Name,
+				ug.User.Username,
+				coloredRole,
+				ga.Server,
+			)
 		}
 	}
 
 	_ = w.Flush()
 	tableOutput := buf.String()
 	bodyLines := strings.Split(strings.TrimSpace(tableOutput), "\n")
+
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Who Has Access",
 		BlockType: "success",

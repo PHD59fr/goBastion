@@ -69,7 +69,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			},
 			"accountModify": {
 				{Text: "--user", Description: "Username to modify"},
-				{Text: "--role", Description: "New role (admin or user)"},
+				{Text: "--sysrole", Description: "New system role (admin or user)"},
 			},
 			"accountDelete": {
 				{Text: "--user", Description: "Username to delete"},
@@ -125,7 +125,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			"groupAddMember": {
 				{Text: "--group", Description: "Group name"},
 				{Text: "--user", Description: "Username to add"},
-				{Text: "--grade", Description: "Grade (owner, aclkeeper, gatekeeper, member, guest)"},
+				{Text: "--role", Description: "Role (owner, aclkeeper, gatekeeper, member, guest)"},
 			},
 			"groupDelMember": {
 				{Text: "--group", Description: "Group name"},

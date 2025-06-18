@@ -94,10 +94,10 @@ func createDBUser(db *gorm.DB, username string) (*models.User, error) {
 	return &newUser, nil
 }
 
-func SwitchRoleUser(db *gorm.DB, username string) error {
+func SwitchSysRoleUser(db *gorm.DB, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if username == "" {
-		fmt.Println("Usage: switchRoleUser <username>")
+		fmt.Println("Usage: switchSysRoleUser <username>")
 		return nil
 	}
 	var checkUser models.User
@@ -112,7 +112,7 @@ func SwitchRoleUser(db *gorm.DB, username string) error {
 	}
 
 	if err := db.Save(&checkUser).Error; err != nil {
-		return fmt.Errorf("error updating user role: %w", err)
+		return fmt.Errorf("error updating user system role: %w", err)
 	}
 
 	if err := system.UpdateSudoers(&checkUser); err != nil {
