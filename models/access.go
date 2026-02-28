@@ -21,6 +21,7 @@ type SelfAccess struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for SelfAccess before insertion.
 func (sa *SelfAccess) BeforeCreate(*gorm.DB) (err error) {
 	sa.ID = uuid.New()
 	return
@@ -40,6 +41,7 @@ type GroupAccess struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for GroupAccess before insertion.
 func (ga *GroupAccess) BeforeCreate(*gorm.DB) (err error) {
 	ga.ID = uuid.New()
 	return

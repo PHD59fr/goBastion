@@ -1,0 +1,9 @@
+quiet: true
+outpkg: mocks
+with-expecter: true
+packages:
+  gorm.io/gorm:
+    interfaces:
+      ConnPool:
+  goBastion/models:
+    interfaces:

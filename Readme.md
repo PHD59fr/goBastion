@@ -188,36 +188,41 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 3. Run the Docker container:
 
    ```sh
-   docker run --name gobastion --hostname goBastion -d -p 2222:22 gobastion:latest
+   docker run --name gobastion --hostname goBastion -it -p 2222:22 gobastion:latest
    ```
 
    You can also use the official **Docker Hub** image:
 
    ```sh
-   docker run --name gobastion --hostname goBastion -d -p 2222:22 phd59fr/gobastion:latest
+   docker run --name gobastion --hostname goBastion -it -p 2222:22 phd59fr/gobastion:latest
    ```
+
+   > **Note**: Use `-it` on first run — the container will interactively prompt for the first admin username and SSH public key before starting sshd. On subsequent starts (existing database), it restores automatically and starts sshd without any prompt.
 
    (optional) 3a. Launch the container with a volume to persist the database and ttyrec:
 
    ```sh
-   docker run --name gobastion --hostname goBastion -d -p 2222:22 \
+   docker run --name gobastion --hostname goBastion -it -p 2222:22 \
      -v /path/to/your/dbvolume:/var/lib/goBastion \
      -v /path/to/your/ttyvolume:/app/ttyrec gobastion:latest
    ```
 
-4. Create the first user:
+   (optional) 3b. Use an external database (see [Environment Variables](#-environment-variables)):
 
    ```sh
-   docker exec -it gobastion /app/goBastion --firstInstall
+   docker run --name gobastion --hostname goBastion -it -p 2222:22 \
+     -e DB_DRIVER=postgres \
+     -e DB_DSN="host=db user=gobastion password=secret dbname=gobastion port=5432 sslmode=disable" \
+     gobastion:latest
    ```
 
-5. Simplified usage with an Alias (Optional):
+4. Simplified usage with an Alias (Optional):
 
    ```sh
    alias gobastion='ssh -tp 2222 user@localhost --'
    ```
 
-6. Connect to the bastion host (interactive mode):
+5. Connect to the bastion host (interactive mode):
 
    ```sh
    ssh -tp 2222 user@localhost (or alias gobastion)
@@ -236,6 +241,46 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
    ```
 
 ---
+
+## ⚙️ **Environment Variables**
+
+| Variable    | Default | Description |
+|-------------|---------|-------------|
+| `DB_DRIVER` | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
+| `DB_DSN`    | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
+
+### DSN examples
+
+**MySQL:**
+```
+DB_DRIVER=mysql
+DB_DSN=gobastion:secret@tcp(db:3306)/gobastion?charset=utf8mb4&parseTime=True&loc=Local
+```
+
+**PostgreSQL:**
+```
+DB_DRIVER=postgres
+DB_DSN=host=db user=gobastion password=secret dbname=gobastion port=5432 sslmode=disable
+```
+
+**SQLite (custom path):**
+```
+DB_DRIVER=sqlite
+DB_DSN=file:/data/mybastion.db?cache=shared&mode=rwc
+```
+
+---
+
+## 🛠️ **Admin CLI Flags**
+
+These flags are only available when running as `root` outside an SSH session (e.g. `docker exec`):
+
+| Flag | Description |
+|------|-------------|
+| `--firstInstall` | Manually bootstrap the first admin user (useful for scripted setups) |
+| `--regenerateSSHHostKeys` | Force-regenerate the bastion's SSH host keys |
+
+
 
 ## 🤝 **Contributing**
 

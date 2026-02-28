@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// SshConnection writes the egress key to a temp file and executes an SSH session via ttyrec.
 func SshConnection(user models.User, access models.AccessRight) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {

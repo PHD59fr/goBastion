@@ -23,6 +23,7 @@ type KnownHostsEntry struct {
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for KnownHostsEntry before insertion.
 func (khe *KnownHostsEntry) BeforeCreate(*gorm.DB) (err error) {
 	khe.ID = uuid.New()
 	return nil
@@ -42,6 +43,7 @@ type IngressKey struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for IngressKey before insertion.
 func (ik *IngressKey) BeforeCreate(*gorm.DB) (err error) {
 	ik.ID = uuid.New()
 	return
@@ -61,6 +63,7 @@ type SelfEgressKey struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for SelfEgressKey before insertion.
 func (sek *SelfEgressKey) BeforeCreate(*gorm.DB) (err error) {
 	sek.ID = uuid.New()
 	return
@@ -80,6 +83,7 @@ type GroupEgressKey struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for GroupEgressKey before insertion.
 func (gek *GroupEgressKey) BeforeCreate(*gorm.DB) (err error) {
 	gek.ID = uuid.New()
 	return

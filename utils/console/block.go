@@ -21,6 +21,7 @@ type SectionContent struct {
 	Body          []string
 }
 
+// getTitleColor returns the color function for a block title based on its type.
 func getTitleColor(blockType string) func(a ...interface{}) string {
 	switch strings.ToLower(blockType) {
 	case "error":
@@ -38,6 +39,7 @@ func getTitleColor(blockType string) func(a ...interface{}) string {
 	}
 }
 
+// getFrameColor returns the color function for a block frame based on its type.
 func getFrameColor(blockType string) func(a ...interface{}) string {
 	switch strings.ToLower(blockType) {
 	case "error":
@@ -55,6 +57,7 @@ func getFrameColor(blockType string) func(a ...interface{}) string {
 	}
 }
 
+// DisplayBlock renders a formatted, colored console output block.
 func DisplayBlock(block ContentBlock) {
 	if !strings.HasPrefix(block.Title, "▶") {
 		block.Title = "▶ " + block.Title

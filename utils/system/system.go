@@ -9,6 +9,7 @@ import (
 	"goBastion/utils"
 )
 
+// CreateUser adds a new system OS user with disabled password.
 func CreateUser(username string) error {
 	username = utils.NormalizeUsername(username)
 	output, err := ExecCommand("/usr/bin/sudo", "adduser", "--disabled-password", "--gecos", "", username)
@@ -23,6 +24,7 @@ func CreateUser(username string) error {
 	return nil
 }
 
+// DeleteUser removes a system OS user and their home directory.
 func DeleteUser(username string) error {
 	username = utils.NormalizeUsername(username)
 	if _, err := ExecCommand("/usr/bin/sudo", "deluser", "--remove-home", username); err != nil {
@@ -31,6 +33,7 @@ func DeleteUser(username string) error {
 	return nil
 }
 
+// ChownDir recursively changes ownership of a directory to the given user.
 func ChownDir(user models.User, dir string) error {
 	// Without sudo
 	_, err := ExecCommand("chown", "-R", user.Username+":"+user.Username, dir)
@@ -44,6 +47,7 @@ func ChownDir(user models.User, dir string) error {
 	return nil
 }
 
+// UpdateSudoers writes or removes the sudoers entry for a user based on their role.
 func UpdateSudoers(user *models.User) error {
 	sudoersPath := "/etc/sudoers.d/" + user.Username
 	if user.Role == "admin" {
@@ -66,6 +70,7 @@ func UpdateSudoers(user *models.User) error {
 	return nil
 }
 
+// ExecCommand runs an OS command and returns its combined output.
 func ExecCommand(name string, arg ...string) (string, error) {
 	cmd := exec.Command(name, arg...)
 	output, err := cmd.CombinedOutput()

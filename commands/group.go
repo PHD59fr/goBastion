@@ -24,6 +24,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// GroupInfo displays detailed information about a group.
 func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupInfo", flag.ContinueOnError)
 	var groupName string
@@ -46,7 +47,7 @@ func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view group information."}}},
 		})
-		return fmt.Errorf("access denied for" + currentUser.Username)
+		return fmt.Errorf("access denied for user %s", currentUser.Username)
 	}
 
 	var g models.Group
@@ -96,6 +97,7 @@ func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// GroupList displays all groups, optionally filtered by membership.
 func GroupList(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupList", flag.ContinueOnError)
 	all := fs.Bool("all", false, "List all groups")
@@ -117,7 +119,7 @@ func GroupList(db *gorm.DB, user *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list groups."}}},
 		})
-		return fmt.Errorf("access denied for " + user.Username)
+		return fmt.Errorf("access denied for %s", user.Username)
 	}
 
 	var buf bytes.Buffer
@@ -163,6 +165,7 @@ func GroupList(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// GroupCreate creates a new group.
 func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupCreate", flag.ContinueOnError)
 	var groupName string
@@ -185,7 +188,7 @@ func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to create groups."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var existingGroup models.Group
@@ -216,6 +219,7 @@ func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// GroupDelete removes a group and its associated data.
 func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelete", flag.ContinueOnError)
 	var groupName string
@@ -238,7 +242,7 @@ func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete groups."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	db.Where("name = ?", groupName).Delete(&models.Group{})
@@ -250,6 +254,7 @@ func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// GroupAddMember adds a user to a group with a specified role.
 func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddMember", flag.ContinueOnError)
 	var groupName, username, role string
@@ -274,7 +279,7 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add members to this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var g models.Group
@@ -325,6 +330,7 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
+// GroupDelMember removes a user from a group.
 func GroupDelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelMember", flag.ContinueOnError)
 	var groupName, username string
@@ -348,7 +354,7 @@ func GroupDelMember(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to remove members from this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var g models.Group
@@ -388,6 +394,7 @@ func GroupDelMember(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
+// GroupGenerateEgressKey generates a new SSH egress key pair for a group.
 func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupGenerateEgressKey", flag.ContinueOnError)
 	var groupName, keyType string
@@ -414,7 +421,7 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to generate egress keys for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -476,6 +483,7 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 	return nil
 }
 
+// GroupListEgressKeys lists all egress SSH keys for a group.
 func GroupListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupListEgressKeys", flag.ContinueOnError)
 	var groupName string
@@ -498,7 +506,7 @@ func GroupListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) e
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list egress keys for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -553,6 +561,7 @@ func GroupListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) e
 	return nil
 }
 
+// GroupAddAccess adds an SSH access entry to a group.
 func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddAccess", flag.ContinueOnError)
 	var groupName, server, username, comment string
@@ -580,7 +589,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add access for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -627,6 +636,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
+// GroupDelAccess removes an SSH access entry from a group.
 func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelAccess", flag.ContinueOnError)
 	var groupName, accessIDStr string
@@ -650,7 +660,7 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete access for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -690,6 +700,7 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
+// GroupListAccesses lists all SSH accesses for a group.
 func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupListAccesses", flag.ContinueOnError)
 	var groupName string
@@ -712,7 +723,7 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list accesses for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -772,6 +783,7 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 	return nil
 }
 
+// GroupAddAlias creates an alias for a group access target.
 func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddAlias", flag.ContinueOnError)
 	var groupName, alias, hostname string
@@ -796,7 +808,7 @@ func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add aliases for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -833,6 +845,7 @@ func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// GroupDelAlias removes an alias from a group.
 func GroupDelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelAlias", flag.ContinueOnError)
 	var groupName, hostID string
@@ -856,7 +869,7 @@ func GroupDelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete aliases for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
@@ -906,6 +919,7 @@ func GroupDelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// GroupListAliases lists all aliases for a group.
 func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupListAliases", flag.ContinueOnError)
 	var groupName string
@@ -928,7 +942,7 @@ func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list aliases for this group."}}},
 		})
-		return fmt.Errorf("access denied for " + currentUser.Username)
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group
