@@ -26,6 +26,7 @@ type User struct {
 	DeletedAt     gorm.DeletedAt `gorm:"index:idx_username_deletedat"`
 }
 
+// BeforeDelete removes all group memberships for the user before deletion.
 func (u *User) BeforeDelete(tx *gorm.DB) (err error) {
 	if err := tx.Model(&UserGroup{}).Where("user_id = ?", u.ID).Update("deleted_at", time.Now()).Error; err != nil {
 		return fmt.Errorf("error marking user groups as deleted: %w", err)
@@ -33,14 +34,17 @@ func (u *User) BeforeDelete(tx *gorm.DB) (err error) {
 	return nil
 }
 
+// IsAdmin returns true if the user has the admin role.
 func (u *User) IsAdmin() bool {
 	return u.Role == RoleAdmin
 }
 
+// IsEnabled returns true if the user account is active.
 func (u *User) IsEnabled() bool {
 	return u.Enabled
 }
 
+// BeforeCreate generates a UUID for User before insertion.
 func (u *User) BeforeCreate(*gorm.DB) (err error) {
 	u.ID = uuid.New()
 	return
@@ -54,6 +58,7 @@ type Group struct {
 	DeletedAt gorm.DeletedAt `gorm:"index:idx_groupname_deletedat"`
 }
 
+// BeforeCreate generates a UUID for Group before insertion.
 func (g *Group) BeforeCreate(*gorm.DB) (err error) {
 	g.ID = uuid.New()
 	return
@@ -71,27 +76,33 @@ type UserGroup struct {
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for UserGroup before insertion.
 func (ug *UserGroup) BeforeCreate(*gorm.DB) (err error) {
 	ug.ID = uuid.New()
 	return
 }
 
+// IsOwner returns true if the user is the group owner.
 func (ug *UserGroup) IsOwner() bool {
 	return ug.Role == "owner"
 }
 
+// IsGateKeeper returns true if the user is a group gate keeper.
 func (ug *UserGroup) IsGateKeeper() bool {
 	return ug.Role == "gatekeeper"
 }
 
+// IsACLKeeper returns true if the user is a group ACL keeper.
 func (ug *UserGroup) IsACLKeeper() bool {
 	return ug.Role == "aclkeeper"
 }
 
+// IsMember returns true if the user is a regular group member.
 func (ug *UserGroup) IsMember() bool {
 	return ug.Role == "member"
 }
 
+// IsGuest returns true if the user is a guest in the group.
 func (ug *UserGroup) IsGuest() bool {
 	return ug.Role == "guest"
 }

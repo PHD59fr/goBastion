@@ -21,6 +21,7 @@ type Aliases struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
+// BeforeCreate generates a UUID for Aliases before insertion.
 func (h *Aliases) BeforeCreate(*gorm.DB) (err error) {
 	h.ID = uuid.New()
 	if h.UserID != nil && h.GroupID != nil {

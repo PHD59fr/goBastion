@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// CreateUser creates a system OS user, a DB record and registers the initial ingress key.
 func CreateUser(db *gorm.DB, username string, pubKey string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 	var userCount int64
@@ -47,6 +48,7 @@ func CreateUser(db *gorm.DB, username string, pubKey string) error {
 	return nil
 }
 
+// DeleteUser removes the user from the DB and deletes the OS system user.
 func DeleteUser(db *gorm.DB, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if err := deleteDBUser(db, username); err != nil {
@@ -60,6 +62,7 @@ func DeleteUser(db *gorm.DB, username string) error {
 	return nil
 }
 
+// deleteDBUser soft-deletes the user record and associated data from the database.
 func deleteDBUser(db *gorm.DB, username string) error {
 	var user models.User
 	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
@@ -72,15 +75,16 @@ func deleteDBUser(db *gorm.DB, username string) error {
 	return nil
 }
 
+// createDBUser inserts a new user record into the database.
 func createDBUser(db *gorm.DB, username string) (*models.User, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
-	var existingUser models.User
-	result := db.Unscoped().Where("username = ? AND deleted_at IS NULL", username).First(&existingUser)
 
+	var existingUser models.User
+	result := db.Where("username = ?", username).First(&existingUser)
 	if result.Error == nil {
 		fmt.Printf("Username '%s' already exists.\n", username)
 		return &existingUser, nil
-	} else if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+	} else if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("error checking user existence: %v", result.Error)
 	}
 
@@ -94,6 +98,7 @@ func createDBUser(db *gorm.DB, username string) (*models.User, error) {
 	return &newUser, nil
 }
 
+// SwitchSysRoleUser toggles a user's system role between admin and user.
 func SwitchSysRoleUser(db *gorm.DB, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if username == "" {
@@ -122,6 +127,7 @@ func SwitchSysRoleUser(db *gorm.DB, username string) error {
 	return nil
 }
 
+// CreateDBIngressKey validates and persists an SSH ingress public key for a user.
 func CreateDBIngressKey(db *gorm.DB, user *models.User, pubKeyStr string) error {
 	pubKeyStr = strings.TrimSpace(pubKeyStr)
 	if pubKeyStr == "" {

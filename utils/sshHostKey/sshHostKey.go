@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// sshKeysExist returns true if the SSH host key files are present on disk.
 func sshKeysExist() bool {
 	keyTypes := []string{"rsa", "dsa", "ecdsa", "ed25519"}
 
@@ -24,6 +25,7 @@ func sshKeysExist() bool {
 	return false
 }
 
+// GenerateSSHHostKeys creates new SSH host key files, persisting them to the database.
 func GenerateSSHHostKeys(db *gorm.DB, force bool) error {
 	if sshKeysExist() && !force {
 		return nil
@@ -45,6 +47,7 @@ func GenerateSSHHostKeys(db *gorm.DB, force bool) error {
 	return saveSSHHostKeys(db)
 }
 
+// saveSSHHostKeys reads generated key files and stores them in the database.
 func saveSSHHostKeys(db *gorm.DB) error {
 	keyTypes := []string{"rsa", "dsa", "ecdsa", "ed25519"}
 
@@ -72,6 +75,7 @@ func saveSSHHostKeys(db *gorm.DB) error {
 	return nil
 }
 
+// removeSSHHostKeys deletes the SSH host key files from disk.
 func removeSSHHostKeys() error {
 	pattern := "/etc/ssh/ssh_host_*"
 
@@ -89,6 +93,7 @@ func removeSSHHostKeys() error {
 	return nil
 }
 
+// RestoreSSHHostKeys writes SSH host keys from the database back to disk.
 func RestoreSSHHostKeys(db *gorm.DB) error {
 	var keys []models.SshHostKey
 	result := db.Find(&keys)

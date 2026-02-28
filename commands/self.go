@@ -23,9 +23,19 @@ import (
 	"gorm.io/gorm"
 )
 
-func SelfListIngressKeys(db *gorm.DB, user *models.User) {
+// SelfListIngressKeys lists all ingress SSH keys for the current user.
+func SelfListIngressKeys(db *gorm.DB, user *models.User) error {
 	var keys []models.IngressKey
-	db.Where("user_id = ?", user.ID).Find(&keys)
+	if err := db.Where("user_id = ?", user.ID).Find(&keys).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "My Ingress Keys",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Error", Body: []string{"An error occurred while retrieving keys. Please contact support."}},
+			},
+		})
+		return err
+	}
 	if len(keys) == 0 {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "My Ingress Keys",
@@ -34,7 +44,7 @@ func SelfListIngressKeys(db *gorm.DB, user *models.User) {
 				{SubTitle: "Error", Body: []string{"No ingress keys found."}},
 			},
 		})
-		return
+		return nil
 	}
 	var sections []console.SectionContent
 	for _, key := range keys {
@@ -50,14 +60,15 @@ func SelfListIngressKeys(db *gorm.DB, user *models.User) {
 		}
 		sections = append(sections, section)
 	}
-	block := console.ContentBlock{
+	console.DisplayBlock(console.ContentBlock{
 		Title:     "My Ingress Keys",
 		BlockType: "success",
 		Sections:  sections,
-	}
-	console.DisplayBlock(block)
+	})
+	return nil
 }
 
+// SelfAddIngressKey adds a new ingress SSH key for the current user.
 func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddIngressKey", flag.ContinueOnError)
 	var pubKey string
@@ -130,6 +141,7 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// SelfDelIngressKey removes an ingress SSH key for the current user.
 func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfDelIngressKey", flag.ContinueOnError)
 	var keyId string
@@ -198,6 +210,7 @@ func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// SelfListEgressKeys lists all egress SSH keys for the current user.
 func SelfListEgressKeys(db *gorm.DB, user *models.User) error {
 	var keys []models.SelfEgressKey
 	result := db.Where("user_id = ?", user.ID).Find(&keys)
@@ -244,6 +257,7 @@ func SelfListEgressKeys(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
+// SelfGenerateEgressKey generates a new SSH egress key pair for the current user.
 func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfGenerateEgressKey", flag.ContinueOnError)
 	var keyType string
@@ -362,6 +376,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 	return nil
 }
 
+// SelfListAccesses lists all personal SSH accesses for the current user.
 func SelfListAccesses(db *gorm.DB, user *models.User) error {
 	var accesses []models.SelfAccess
 	result := db.Where("user_id = ?", user.ID).Find(&accesses)
@@ -417,6 +432,7 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
+// SelfAddAccess adds a personal SSH access entry for the current user.
 func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddAccess", flag.ContinueOnError)
 	var server, username, comment string
@@ -493,6 +509,7 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// SelfDelAccess removes a personal SSH access entry for the current user.
 func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfDelAccess", flag.ContinueOnError)
 	var accessID uuid.UUID
@@ -578,6 +595,7 @@ func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// SelfAddAlias creates an alias for a personal access target.
 func SelfAddAlias(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddAlias", flag.ContinueOnError)
 	var alias, hostname string
@@ -629,6 +647,7 @@ func SelfAddAlias(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// SelfDelAlias removes a personal alias.
 func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfDelAlias", flag.ContinueOnError)
 	var hostID string
@@ -705,6 +724,7 @@ func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
 	return nil
 }
 
+// SelfListAliases lists all personal aliases for the current user.
 func SelfListAliases(db *gorm.DB, user *models.User) error {
 	var hosts []models.Aliases
 	result := db.Where("user_id = ?", user.ID).Find(&hosts)
@@ -753,6 +773,7 @@ func SelfListAliases(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
+// SelfRemoveHostFromKnownHosts removes a host entry from the user's known_hosts file.
 func SelfRemoveHostFromKnownHosts(args []string) error {
 	fs := flag.NewFlagSet("removeHost", flag.ContinueOnError)
 	var hostname string
@@ -777,15 +798,26 @@ func SelfRemoveHostFromKnownHosts(args []string) error {
 				{SubTitle: "Usage", Body: []string{"removeHost --host <hostname_or_ip>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("missing required flag --host")
 	}
 
 	cmd := exec.Command("ssh-keygen", "-R", hostname)
 	var stdoutBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stdoutBuf
 
 	if err := cmd.Run(); err != nil {
+		// Exit status 255 means ssh-keygen could not open the known_hosts file
+		// (e.g. it does not exist yet). Treat it as "host not found".
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 255 {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Remove Host from known_hosts",
+				BlockType: "warning",
+				Sections: []console.SectionContent{
+					{SubTitle: "Info", Body: []string{fmt.Sprintf("Host '%s' was not found in known_hosts.", hostname)}},
+				},
+			})
+			return nil
+		}
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Remove Host from known_hosts",
 			BlockType: "error",

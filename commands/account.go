@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// AccountList displays all non-system user accounts.
 func AccountList(db *gorm.DB, currentUser *models.User) error {
 	var users []models.User
 	if err := db.Where("system_user = ?", false).Find(&users).Error; err != nil {
@@ -111,6 +112,7 @@ func AccountList(db *gorm.DB, currentUser *models.User) error {
 	return nil
 }
 
+// AccountInfo displays detailed information for a specific user account.
 func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountInfo", flag.ContinueOnError)
 	var username string
@@ -215,6 +217,7 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// AccountCreate creates a new user account with an SSH ingress key.
 func AccountCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountCreate", flag.ContinueOnError)
 	var username string
@@ -296,6 +299,7 @@ func AccountCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// AccountModify updates the system role of a user account.
 func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountModify", flag.ContinueOnError)
 	var username, newRole string
@@ -371,6 +375,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// AccountDelete removes a user account from the system.
 func AccountDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountDelete", flag.ContinueOnError)
 	var username string
@@ -422,6 +427,7 @@ func AccountDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
+// AccountListIngressKeys lists all ingress SSH keys for a user.
 func AccountListIngressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountListIngressKeys", flag.ContinueOnError)
 	var username string
@@ -452,6 +458,7 @@ func AccountListIngressKeys(db *gorm.DB, currentUser *models.User, args []string
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view ingress keys for this account."}}},
 		})
+		return nil
 	}
 
 	var user models.User
@@ -507,6 +514,7 @@ func AccountListIngressKeys(db *gorm.DB, currentUser *models.User, args []string
 	return nil
 }
 
+// AccountListEgressKeys lists all egress SSH keys for a user.
 func AccountListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountListEgressKeys", flag.ContinueOnError)
 	var username string
@@ -591,6 +599,7 @@ func AccountListEgressKeys(db *gorm.DB, currentUser *models.User, args []string)
 	return nil
 }
 
+// AccountListAccess lists all personal SSH accesses for a user.
 func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountListAccess", flag.ContinueOnError)
 	var username string
@@ -683,6 +692,7 @@ func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) err
 	return nil
 }
 
+// WhoHasAccessTo lists all users and groups that have access to a given server.
 func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("whoHasAccessTo", flag.ContinueOnError)
 	var server string
@@ -793,6 +803,7 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
+// AccountAddAccess adds a personal SSH access entry for a user.
 func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountAddAccess", flag.ContinueOnError)
 	var targetUser, server, username, comment string
@@ -861,6 +872,7 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 	return nil
 }
 
+// AccountDelAccess removes a personal SSH access entry by ID.
 func AccountDelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountDelAccess", flag.ContinueOnError)
 	var accessID string

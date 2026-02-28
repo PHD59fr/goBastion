@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// Completion returns autocomplete suggestions based on the current input and user permissions.
 func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Suggest {
 	hasPerm := func(perm string) bool {
 		return user.CanDo(db, perm, "")
@@ -229,6 +230,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 	return prompt.FilterHasPrefix(filterAlreadyUsed(suggestions), d.GetWordBeforeCursor(), true)
 }
 
+// contains reports whether a string slice contains the given value.
 func contains(slice []string, s string) bool {
 	for _, item := range slice {
 		if item == s {
