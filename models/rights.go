@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// CanDo returns true if the user has permission to perform the given right on the target.
 func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	if u == nil {
 		return false
@@ -227,6 +228,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	}
 }
 
+// getGroups returns all group memberships for the user.
 func (u *User) getGroups(db *gorm.DB) ([]UserGroup, error) {
 	var userGroups []UserGroup
 	if err := db.Preload("Group").Where("user_id = ?", u.ID).Find(&userGroups).Error; err != nil {

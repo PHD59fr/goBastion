@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// CreateUserFromDB creates the OS system user and writes its authorized_keys from DB.
 func CreateUserFromDB(db *gorm.DB, user models.User) error {
 	userDir := filepath.Join("/home", utils.NormalizeUsername(user.Username))
 	_, err := os.Stat(userDir)
@@ -36,6 +37,7 @@ func CreateUserFromDB(db *gorm.DB, user models.User) error {
 	return nil
 }
 
+// CreateUsersFromDB syncs all DB users to the OS, creating missing system accounts.
 func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
 	// Only on fresh installation
 	homeFiles, err := os.ReadDir("/home")
@@ -76,6 +78,7 @@ func CreateUsersFromDB(db *gorm.DB, logger slog.Logger) error {
 	return nil
 }
 
+// CreateSystemUsersFromSystemToDb imports existing OS users into the database.
 func CreateSystemUsersFromSystemToDb(db *gorm.DB) error {
 	// Only on fresh installation
 	var userCount int64
@@ -116,6 +119,7 @@ func CreateSystemUsersFromSystemToDb(db *gorm.DB) error {
 	return nil
 }
 
+// IngressKeyFromDB writes the user's ingress keys to their authorized_keys file.
 func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 	var keys []models.IngressKey
 	if err := db.Where("user_id = ?", user.ID).Find(&keys).Error; err != nil {
@@ -175,6 +179,7 @@ func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 	return nil
 }
 
+// KnownHostsFromDB writes the user's known_hosts entries from the database to disk.
 func KnownHostsFromDB(db *gorm.DB, user *models.User) error {
 	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
@@ -207,6 +212,7 @@ func KnownHostsFromDB(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
+// KnownHostsEntriesFromSystemToDb imports known_hosts file entries into the database.
 func KnownHostsEntriesFromSystemToDb(db *gorm.DB, user *models.User) error {
 
 	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
@@ -283,6 +289,7 @@ func KnownHostsEntriesFromSystemToDb(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
+// RestoreBastionSSHHostKeys restores SSH host keys from DB and regenerates sshd host key files.
 func RestoreBastionSSHHostKeys(db *gorm.DB) error {
 	if err := sshHostKey.RestoreSSHHostKeys(db); err != nil {
 		return err

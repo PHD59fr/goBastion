@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// TtyList lists recorded TTY sessions for a user.
 func TtyList(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyList", flag.ContinueOnError)
 	var startDateStr, endDateStr string
@@ -134,6 +135,7 @@ func TtyList(db *gorm.DB, u *models.User, args []string) error {
 	return err
 }
 
+// TtyPlay replays a recorded TTY session.
 func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyPlay", flag.ContinueOnError)
 	var username string
@@ -243,6 +245,7 @@ func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
 	return nil
 }
 
+// extractDate parses the date from a ttyrec filename.
 func extractDate(fileName string) (string, bool) {
 	re := regexp.MustCompile(`_(\d{4}-\d{2}-\d{2})_`)
 	matches := re.FindStringSubmatch(fileName)

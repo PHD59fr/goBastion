@@ -8,6 +8,7 @@ import (
 	"goBastion/models"
 	"goBastion/utils"
 	"goBastion/utils/console"
+	"goBastion/version"
 
 	"gorm.io/gorm"
 )
@@ -17,10 +18,12 @@ var (
 	spaceRegex = regexp.MustCompile(`\s{2,}`)
 )
 
+// stripANSI removes ANSI escape codes from a string.
 func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
 }
 
+// splitCommandLine splits a help line into command name and description.
 func splitCommandLine(line string) (string, string) {
 	parts := spaceRegex.Split(line, 2)
 	if len(parts) < 2 {
@@ -29,6 +32,7 @@ func splitCommandLine(line string) (string, string) {
 	return parts[0], parts[1]
 }
 
+// DisplayHelp prints all available commands and their descriptions for the current user.
 func DisplayHelp(db *gorm.DB, user models.User) {
 	var sections []console.SectionContent
 
@@ -354,6 +358,16 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	})
 }
 
+// DisplayInfo prints bastion version and system information.
 func DisplayInfo() {
-	fmt.Println("goBastion - Version 1.0")
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "Info",
+		BlockType: "info",
+		Sections: []console.SectionContent{
+			{SubTitle: "goBastion", Body: []string{
+				fmt.Sprintf("Version: %s", version.Version),
+				"Repository: https://github.com/phd59fr/goBastion",
+			}},
+		},
+	})
 }

@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// SSHConnect resolves the target and establishes an SSH connection through the bastion.
 func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
 	sshUser, sshHost, sshPort, err := parseSSHCommand(params)
 	if err != nil {
@@ -49,7 +50,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		fmt.Printf("Trying keys ...\n")
 		for _, access := range accesses {
 			if access.KeyId == uuid.Nil {
-				fmt.Printf("- " + access.Source + " - Skip empty egress key.\n")
+				fmt.Printf("- %s - Skip empty egress key.\n", access.Source)
 				continue
 			}
 			fmt.Printf("- "+utils.BgGreenB("%s")+" - ID: %s "+utils.FgBlueB("%s-%d")+" [%s]...\n", access.Source, access.KeyId.String(), strings.ToUpper(access.KeyType), access.KeySize, access.KeyUpdatedAt.Format("2006-01-02"))
@@ -74,6 +75,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	return nil
 }
 
+// accessFilter returns the list of access rights matching username, host and port for the user.
 func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([]models.AccessRight, error) {
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
@@ -223,6 +225,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 	}
 }
 
+// parseSSHCommand parses an SSH command string into user, host and port components.
 func parseSSHCommand(command string) (user, host, port string, err error) {
 	command = strings.TrimSpace(command)
 
@@ -258,6 +261,7 @@ func parseSSHCommand(command string) (user, host, port string, err error) {
 	return "", "", "", errors.New("invalid format")
 }
 
+// resolveForcedHost resolves an alias hostname to its underlying access target.
 func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (models.Aliases, error) {
 	host := models.Aliases{}
 

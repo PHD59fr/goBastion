@@ -7,6 +7,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// GetKeySize returns the bit size of an SSH public key.
 func GetKeySize(key ssh.PublicKey) int {
 	switch key.Type() {
 	case "ssh-rsa":
@@ -24,6 +25,7 @@ func GetKeySize(key ssh.PublicKey) int {
 	}
 }
 
+// getRSASize parses the raw RSA public key blob to extract the modulus bit length.
 func getRSASize(key ssh.PublicKey) int {
 	data := key.Marshal()
 	r := bytes.NewReader(data)
@@ -47,6 +49,7 @@ func getRSASize(key ssh.PublicKey) int {
 	return len(modulus) * 8
 }
 
+// readString reads a length-prefixed byte slice from a binary reader.
 func readString(r *bytes.Reader) ([]byte, error) {
 	var length uint32
 	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
