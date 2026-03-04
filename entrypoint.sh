@@ -1,10 +1,17 @@
 #!/bin/sh
 
-# Auto startup: restores DB state if present.
+# Auto startup: syncs DB state to OS if present.
 # Exits 1 if no admin exists (no TTY) — retry every 5s until one is created via --firstInstall.
 until /app/goBastion; do
     sleep 5
 done
+
+# Periodic sync: enforce DB as source of truth every 5 minutes.
+# Logs drift (rogue users, key changes) and corrects it automatically.
+(while true; do
+    sleep 300
+    /app/goBastion --sync
+done) &
 
 echo "[goBastion] Starting sshd..."
 # -e sends sshd logs to stderr instead of syslog; 2>&1 forwards them to docker logs.

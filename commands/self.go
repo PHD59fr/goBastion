@@ -773,92 +773,96 @@ func SelfListAliases(db *gorm.DB, user *models.User) error {
 	return nil
 }
 
-// SelfRemoveHostFromKnownHosts removes a host entry from the user's known_hosts file.
-func SelfRemoveHostFromKnownHosts(args []string) error {
-	fs := flag.NewFlagSet("removeHost", flag.ContinueOnError)
-	var hostname string
-	fs.StringVar(&hostname, "host", "", "Hostname or IP to remove from known_hosts")
+// SelfRemoveHostFromKnownHosts removes all known_hosts entries for a host from the DB and syncs to disk.
+func SelfRemoveHostFromKnownHosts(db *gorm.DB, u *models.User, args []string) error {
+	return removeHostFromKnownHosts(db, u, args, false)
+}
 
-	if err := fs.Parse(args); err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Host from known_hosts",
-			BlockType: "error",
-			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: removeHost --host <hostname_or_ip>"}},
-			},
-		})
-		return err
+// SelfReplaceKnownHost removes the stored key for a host so the new key is trusted on next connection.
+func SelfReplaceKnownHost(db *gorm.DB, u *models.User, args []string) error {
+	return removeHostFromKnownHosts(db, u, args, true)
+}
+
+// removeHostFromKnownHosts is the shared implementation for both removal commands.
+func removeHostFromKnownHosts(db *gorm.DB, u *models.User, args []string, replace bool) error {
+	title := "Remove Host from Known Hosts"
+	if replace {
+		title = "Replace Known Host Key"
 	}
 
-	if strings.TrimSpace(hostname) == "" {
+	fs := flag.NewFlagSet("knownHosts", flag.ContinueOnError)
+	var hostname string
+	fs.StringVar(&hostname, "host", "", "Hostname or IP")
+	var flagOutput bytes.Buffer
+	fs.SetOutput(&flagOutput)
+
+	if err := fs.Parse(args); err != nil || strings.TrimSpace(hostname) == "" {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Host from known_hosts",
+			Title:     title,
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"removeHost --host <hostname_or_ip>"}},
+				{SubTitle: "Usage", Body: []string{"Usage: --host <hostname_or_ip>"}},
 			},
 		})
 		return fmt.Errorf("missing required flag --host")
 	}
 
-	cmd := exec.Command("ssh-keygen", "-R", hostname)
-	var stdoutBuf bytes.Buffer
-	cmd.Stderr = &stdoutBuf
+	// Match entries for this host (port 22: "hostname keytype key", other ports: "[hostname]:port keytype key")
+	var entries []models.KnownHostsEntry
+	db.Where("user_id = ?", u.ID).Find(&entries)
 
-	if err := cmd.Run(); err != nil {
-		// Exit status 255 means ssh-keygen could not open the known_hosts file
-		// (e.g. it does not exist yet). Treat it as "host not found".
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 255 {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "Remove Host from known_hosts",
-				BlockType: "warning",
-				Sections: []console.SectionContent{
-					{SubTitle: "Info", Body: []string{fmt.Sprintf("Host '%s' was not found in known_hosts.", hostname)}},
-				},
-			})
-			return nil
+	var toDelete []string
+	for _, e := range entries {
+		parts := strings.Fields(e.Entry)
+		if len(parts) < 1 {
+			continue
 		}
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Host from known_hosts",
-			BlockType: "error",
-			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{fmt.Sprintf("Command failed: %v", err)}},
-			},
-		})
-		return fmt.Errorf("failed to run ssh-keygen for host %s: %v", hostname, err)
+		host := parts[0]
+		// Match "hostname" (port 22) or "[hostname]:..." (any port)
+		if host == hostname || strings.HasPrefix(host, "["+hostname+"]:") {
+			toDelete = append(toDelete, e.ID.String())
+		}
 	}
 
-	output := stdoutBuf.String()
-
-	if strings.Contains(output, "found: line") {
+	if len(toDelete) == 0 {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Host from known_hosts",
-			BlockType: "success",
-			Sections: []console.SectionContent{
-				{SubTitle: "Success", Body: []string{fmt.Sprintf("Host '%s' successfully removed from known_hosts.", hostname)}},
-			},
-		})
-		return nil
-	}
-
-	if strings.Contains(output, "not found in") {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Host from known_hosts",
+			Title:     title,
 			BlockType: "warning",
 			Sections: []console.SectionContent{
-				{SubTitle: "Info", Body: []string{fmt.Sprintf("Host '%s' was not found in known_hosts.", hostname)}},
+				{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Host '%s' was not found in known hosts.", hostname)}},
 			},
 		})
 		return nil
+	}
+
+	if err := db.Where("id IN ?", toDelete).Delete(&models.KnownHostsEntry{}).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     title,
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Error", Body: []string{fmt.Sprintf("Failed to delete entries: %v", err)}},
+			},
+		})
+		return err
+	}
+
+	if err := sync.KnownHostsFromDB(db, u); err != nil {
+		return fmt.Errorf("error syncing known_hosts: %w", err)
+	}
+
+	var successMsg string
+	if replace {
+		successMsg = fmt.Sprintf("Old key for '%s' removed. The new key will be trusted on your next connection.", hostname)
+	} else {
+		successMsg = fmt.Sprintf("Host '%s' successfully removed from known hosts.", hostname)
 	}
 
 	console.DisplayBlock(console.ContentBlock{
-		Title:     "Remove Host from known_hosts",
-		BlockType: "info",
+		Title:     title,
+		BlockType: "success",
 		Sections: []console.SectionContent{
-			{SubTitle: "Output", Body: []string{output}},
+			{SubTitle: "Success", Body: []string{successMsg}},
 		},
 	})
-
 	return nil
 }

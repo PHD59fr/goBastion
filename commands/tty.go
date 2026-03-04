@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -20,19 +21,20 @@ import (
 // TtyList lists recorded TTY sessions for a user.
 func TtyList(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyList", flag.ContinueOnError)
-	var startDateStr, endDateStr string
+	var startDateStr, endDateStr, hostFilter string
 	var username string
 	if u.IsAdmin() {
 		fs.StringVar(&username, "user", "", "Username (admin only)")
 	}
 	fs.StringVar(&startDateStr, "startDate", "", "From date (YYYY-MM-DD)")
 	fs.StringVar(&endDateStr, "endDate", "", "To date (YYYY-MM-DD)")
+	fs.StringVar(&hostFilter, "host", "", "Filter by server hostname")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
-	bodyUsage := []string{"Usage: ttyList [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}
+	bodyUsage := []string{"Usage: ttyList [--host <hostname>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}
 	if u.IsAdmin() {
-		bodyUsage = []string{"Usage: ttyList [--user <username>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}
+		bodyUsage = []string{"Usage: ttyList [--user <username>] [--host <hostname>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>]"}
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -80,18 +82,55 @@ func TtyList(db *gorm.DB, u *models.User, args []string) error {
 		}
 		if info.IsDir() && path != baseDir {
 			serverIP := filepath.Base(path)
+			if hostFilter != "" && !strings.Contains(serverIP, hostFilter) {
+				return filepath.SkipDir
+			}
 			filesByDate := make(map[string][]string)
 			files, err := os.ReadDir(path)
 			if err != nil {
 				return nil
 			}
+			// Build a set of gz filenames to deduplicate uncompressed counterparts
+			gzSet := make(map[string]bool)
 			for _, file := range files {
-				if !file.IsDir() {
-					dateStr, valid := extractDate(file.Name())
-					if valid {
-						filesByDate[dateStr] = append(filesByDate[dateStr], file.Name())
+				if !file.IsDir() && strings.HasSuffix(file.Name(), ".ttyrec.gz") {
+					gzSet[file.Name()] = true
+				}
+			}
+			for _, file := range files {
+				if file.IsDir() {
+					continue
+				}
+				name := file.Name()
+				// Skip bare .ttyrec if a .gz version exists
+				if strings.HasSuffix(name, ".ttyrec") && !strings.HasSuffix(name, ".ttyrec.gz") {
+					if gzSet[name+".gz"] {
+						continue
 					}
 				}
+				dateStr, valid := extractDate(name)
+				if !valid {
+					continue
+				}
+				if startDateStr != "" {
+					start, err := time.Parse("2006-01-02", startDateStr)
+					if err == nil {
+						d, _ := time.Parse("2006-01-02", dateStr)
+						if d.Before(start) {
+							continue
+						}
+					}
+				}
+				if endDateStr != "" {
+					end, err := time.Parse("2006-01-02", endDateStr)
+					if err == nil {
+						d, _ := time.Parse("2006-01-02", dateStr)
+						if d.After(end) {
+							continue
+						}
+					}
+				}
+				filesByDate[dateStr] = append(filesByDate[dateStr], name)
 			}
 			if len(filesByDate) == 0 {
 				return nil

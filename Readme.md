@@ -17,8 +17,8 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 * **Key Addition**:
   When a user adds an SSH key, it is first validated and stored in the database. The bastion then automatically synchronizes the database with the system, adding the key to the appropriate location.
 
-* **Automatic Synchronization** (Not Implemented):
-  The bastion periodically checks the system for any discrepancies. If it finds an SSH key not in the database, the key is immediately removed from the system to ensure security and consistency.
+* **Automatic Synchronization**:
+  The bastion enforces the database state every **5 minutes** automatically. If it finds an SSH key, user, or host entry not in the database, it is immediately corrected to ensure security and consistency. The `--sync` flag allows triggering this on demand.
 
 ### **Advantages of this Approach**
 
@@ -49,6 +49,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ➕ `selfAddAlias`                 | Add a personal SSH alias.                                                    |
 | ❌ `selfDelAlias`                 | Delete a personal SSH alias.                                                 |
 | ❌ `selfRemoveHostFromKnownHosts` | Remove a host from your known\_hosts file.                                   |
+| 🔄 `selfReplaceKnownHost`        | Trust a new host key after it changed (TOFU reset).                          |
 
 ---
 
@@ -93,10 +94,10 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 
 ### 📜 **TTY Session Recording**
 
-| Command      | Description                                    |
-|--------------|------------------------------------------------|
-| 📋 `ttyList` | List available recorded SSH sessions (ttyrec). |
-| ▶️ `ttyPlay` | Replay a recorded SSH session.                 |
+| Command      | Description                                                                         |
+|--------------|--------------------------------------------------------------------------------------|
+| 📋 `ttyList` | List recorded SSH sessions. Filters: `--host`, `--startDate`, `--endDate`, `--user` (admin). |
+| ▶️ `ttyPlay` | Replay a recorded SSH session.                                                       |
 
 ---
 
@@ -158,6 +159,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 - `selfListEgressKeys`
 - `selfListIngressKeys`
 - `selfRemoveHostFromKnownHosts`
+- `selfReplaceKnownHost`
 
 ⚠ **Alias Priority Warning**:
 If an alias is defined by the user (`selfAddAlias`) and the group defines an alias with the same name (`groupAddAlias`), **the user-defined alias always takes precedence**
@@ -279,6 +281,7 @@ These flags are only available when running as `root` outside an SSH session (e.
 |------|-------------|
 | `--firstInstall` | Manually bootstrap the first admin user (useful for scripted setups) |
 | `--regenerateSSHHostKeys` | Force-regenerate the bastion's SSH host keys |
+| `--sync` | Enforce DB state onto the OS immediately (DB is source of truth); also runs automatically every 5 minutes |
 
 
 

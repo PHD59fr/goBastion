@@ -9,6 +9,7 @@ import (
 	"goBastion/utils/system"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -120,6 +121,7 @@ func CreateSystemUsersFromSystemToDb(db *gorm.DB) error {
 }
 
 // IngressKeyFromDB writes the user's ingress keys to their authorized_keys file.
+// Uses an atomic write (temp file + rename) to avoid a window where the file is empty.
 func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 	var keys []models.IngressKey
 	if err := db.Where("user_id = ?", user.ID).Find(&keys).Error; err != nil {
@@ -151,28 +153,43 @@ func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 		return fmt.Errorf("error creating .ssh directory: %w", err)
 	}
 
-	file, err := os.OpenFile(authorizedKeysPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Write to a temp file in the same directory, then atomically rename
+	tmpFile, err := os.CreateTemp(sshDir, "authorized_keys.tmp")
 	if err != nil {
-		return fmt.Errorf("error opening authorized_keys file: %w", err)
+		return fmt.Errorf("error creating temp authorized_keys: %w", err)
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // no-op if rename succeeded
+
+	if err = tmpFile.Chmod(0600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("error setting permissions on temp file: %w", err)
+	}
 
 	for _, key := range keys {
 		keyEntry := key.Key
-		if _, exists := existingKeys[keyEntry]; !exists {
-			newKeyLine := fmt.Sprintf("%s #ID:%s\n", keyEntry, key.ID.String())
-			if _, err := file.WriteString(newKeyLine); err != nil {
-				return fmt.Errorf("error writing key to authorized_keys: %w", err)
-			}
-		} else {
-			if _, err := file.WriteString(existingKeys[keyEntry] + "\n"); err != nil {
-				return fmt.Errorf("error writing existing key to authorized_keys: %w", err)
-			}
+		var line string
+		if existing, exists := existingKeys[keyEntry]; exists {
+			line = existing + "\n"
 			delete(existingKeys, keyEntry)
+		} else {
+			line = fmt.Sprintf("%s #ID:%s\n", keyEntry, key.ID.String())
+		}
+		if _, err := tmpFile.WriteString(line); err != nil {
+			_ = tmpFile.Close()
+			return fmt.Errorf("error writing key to temp file: %w", err)
 		}
 	}
+
+	if err = tmpFile.Close(); err != nil {
+		return fmt.Errorf("error closing temp file: %w", err)
+	}
+
+	// Atomic replace
+	if err = os.Rename(tmpPath, authorizedKeysPath); err != nil {
+		return fmt.Errorf("error replacing authorized_keys: %w", err)
+	}
+
 	if err = system.ChownDir(user, sshDir); err != nil {
 		return fmt.Errorf("error changing ownership of %s: %w", sshDir, err)
 	}
@@ -180,6 +197,8 @@ func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 }
 
 // KnownHostsFromDB writes the user's known_hosts entries from the database to disk.
+// KnownHostsFromDB writes the user's known_hosts entries from the database to disk.
+// Uses an atomic write (temp file + rename) to avoid disrupting active SSH sessions.
 func KnownHostsFromDB(db *gorm.DB, user *models.User) error {
 	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
@@ -200,14 +219,32 @@ func KnownHostsFromDB(db *gorm.DB, user *models.User) error {
 		return fmt.Errorf("failed to create SSH directory: %v", err)
 	}
 
-	var lines []string
-	for _, entry := range entries {
-		lines = append(lines, entry.Entry)
+	// Write to a temp file in the same directory, then atomically rename
+	tmpFile, err := os.CreateTemp(sshDir, "known_hosts.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp known_hosts: %v", err)
 	}
-	knownHostsContent := strings.Join(lines, "\n") + "\n"
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // no-op if rename succeeded
 
-	if err := os.WriteFile(knownHostsPath, []byte(knownHostsContent), 0600); err != nil {
-		return fmt.Errorf("failed to write known_hosts file: %v", err)
+	if err = tmpFile.Chmod(0600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to set permissions on temp known_hosts: %v", err)
+	}
+
+	for _, entry := range entries {
+		if _, err := fmt.Fprintln(tmpFile, entry.Entry); err != nil {
+			_ = tmpFile.Close()
+			return fmt.Errorf("failed to write known_hosts entry: %v", err)
+		}
+	}
+
+	if err = tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp known_hosts: %v", err)
+	}
+
+	if err = os.Rename(tmpPath, knownHostsPath); err != nil {
+		return fmt.Errorf("failed to replace known_hosts: %v", err)
 	}
 	return nil
 }
@@ -298,5 +335,83 @@ func RestoreBastionSSHHostKeys(db *gorm.DB) error {
 	if err := sshHostKey.GenerateSSHHostKeys(db, false); err != nil {
 		return err
 	}
+	return nil
+}
+
+// EnforceFromDB is the authoritative DB → OS sync.
+// It ensures every bastion user exists in the OS with correct keys, and removes OS users
+// that are no longer in the DB (skipping users with active sessions to avoid disruption).
+func EnforceFromDB(db *gorm.DB, log slog.Logger) error {
+	log.Info("[sync] Starting DB → OS enforcement")
+
+	if err := RestoreBastionSSHHostKeys(db); err != nil {
+		log.Error("[sync] Error syncing SSH host keys", slog.Any("error", err))
+	}
+
+	var dbUsers []models.User
+	if err := db.Where("system_user = ?", false).Find(&dbUsers).Error; err != nil {
+		return fmt.Errorf("[sync] error querying DB users: %w", err)
+	}
+
+	// Build set of normalized usernames present in DB
+	dbUsernames := make(map[string]bool)
+	for _, u := range dbUsers {
+		dbUsernames[utils.NormalizeUsername(u.Username)] = true
+	}
+
+	// Sync each DB user to the OS
+	for _, u := range dbUsers {
+		normalName := utils.NormalizeUsername(u.Username)
+		userDir := filepath.Join("/home", normalName)
+
+		if _, err := os.Stat(userDir); os.IsNotExist(err) {
+			log.Warn("[sync] User missing from OS, creating", slog.String("user", u.Username))
+			if err := system.CreateUser(u.Username); err != nil {
+				log.Error("[sync] Failed to create OS user", slog.String("user", u.Username), slog.Any("error", err))
+				continue
+			}
+		}
+
+		if err := IngressKeyFromDB(db, u); err != nil {
+			log.Error("[sync] Failed to sync authorized_keys", slog.String("user", u.Username), slog.Any("error", err))
+		}
+		if err := KnownHostsFromDB(db, &u); err != nil {
+			log.Error("[sync] Failed to sync known_hosts", slog.String("user", u.Username), slog.Any("error", err))
+		}
+		if err := system.UpdateSudoers(&u); err != nil {
+			log.Error("[sync] Failed to update sudoers", slog.String("user", u.Username), slog.Any("error", err))
+		}
+	}
+
+	// Detect OS users in /home that are not in DB
+	homeEntries, err := os.ReadDir("/home")
+	if err != nil {
+		return fmt.Errorf("[sync] error reading /home: %w", err)
+	}
+
+	for _, entry := range homeEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		osUser := entry.Name()
+		if dbUsernames[osUser] {
+			continue
+		}
+
+		// Check for active processes owned by this user
+		out, pErr := exec.Command("pgrep", "-u", osUser).Output()
+		if pErr == nil && len(strings.TrimSpace(string(out))) > 0 {
+			log.Warn("[sync] Rogue OS user has active session, skipping deletion until session ends",
+				slog.String("user", osUser))
+			continue
+		}
+
+		log.Warn("[sync] OS user not in DB, removing", slog.String("user", osUser))
+		if err := system.DeleteUser(osUser); err != nil {
+			log.Error("[sync] Failed to remove rogue OS user", slog.String("user", osUser), slog.Any("error", err))
+		}
+	}
+
+	log.Info("[sync] DB → OS enforcement complete")
 	return nil
 }

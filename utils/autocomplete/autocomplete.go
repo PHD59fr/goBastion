@@ -62,6 +62,9 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			"selfRemoveHostFromKnownHosts": {
 				{Text: "--host", Description: "Host to remove from known_hosts"},
 			},
+			"selfReplaceKnownHost": {
+				{Text: "--host", Description: "Host whose key changed"},
+			},
 			"accountInfo": {
 				{Text: "--user", Description: "Username"},
 			},
@@ -153,6 +156,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			"ttyList": {
 				{Text: "--startDate", Description: "Start date"},
 				{Text: "--endDate", Description: "End date"},
+				{Text: "--host", Description: "Filter by server hostname"},
 				{Text: "--user", Description: "Username (Admin only)"},
 			},
 			"ttyPlay": {
@@ -208,7 +212,8 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 		{Text: "selfListAliases", Description: "List your aliases"},
 		{Text: "selfListEgressKeys", Description: "List your egress keys"},
 		{Text: "selfListIngressKeys", Description: "List your ingress keys"},
-		{Text: "selfRemoveHostFromKnownHosts", Description: "Remove a host from known_hosts"},
+		{Text: "selfRemoveHostFromKnownHosts", Description: "Remove a host from known hosts"},
+		{Text: "selfReplaceKnownHost", Description: "Replace a changed host key (TOFU reset)"},
 		{Text: "ttyList", Description: "List recorded tty sessions"},
 		{Text: "ttyPlay", Description: "Read a recorded tty session"},
 		{Text: "whoHasAccessTo", Description: "List access for a server"},

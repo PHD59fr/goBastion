@@ -214,8 +214,13 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 			}
 		}},
 		"selfRemoveHostFromKnownHosts": {"selfRemoveHostFromKnownHosts", func() {
-			if err := commands.SelfRemoveHostFromKnownHosts(args); err != nil {
+			if err := commands.SelfRemoveHostFromKnownHosts(db, currentUser, args); err != nil {
 				log.Error("selfRemoveHostFromKnownHosts error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfReplaceKnownHost": {"selfReplaceKnownHost", func() {
+			if err := commands.SelfReplaceKnownHost(db, currentUser, args); err != nil {
+				log.Error("selfReplaceKnownHost error", slog.String("error", err.Error()))
 			}
 		}},
 
