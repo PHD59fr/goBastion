@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -11,6 +13,7 @@ import (
 	"goBastion/models"
 	"goBastion/utils"
 	"goBastion/utils/autocomplete"
+	"goBastion/utils/totp"
 
 	"log/slog"
 
@@ -40,15 +43,27 @@ func Run(db *gorm.DB, log *slog.Logger) {
 	}
 
 	if len(os.Args) == 1 {
+		if !checkTOTP(&currentUser) {
+			return
+		}
 		log.Info("session start", slog.String("user", currentUser.Username), slog.String("mode", "interactive"))
 		runInteractiveMode(db, &currentUser, log)
 	} else {
 		cmd := os.Args[1]
 		args := os.Args[2:]
 		if strings.TrimSpace(cmd) == "" {
+			if !checkTOTP(&currentUser) {
+				return
+			}
 			log.Info("session start", slog.String("user", currentUser.Username), slog.String("mode", "interactive"))
 			runInteractiveMode(db, &currentUser, log)
 		} else {
+			// Skip TOTP for raw TCP proxy (-W): no TTY, raw pipe only.
+			if _, _, ok := parseTCPProxyRequest(cmd, args); !ok {
+				if !checkTOTP(&currentUser) {
+					return
+				}
+			}
 			log.Info("session start", slog.String("user", currentUser.Username), slog.String("mode", "command"), slog.String("cmd", cmd))
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session end", slog.String("user", currentUser.Username))
@@ -76,6 +91,10 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			args = commandParts[2:]
 		}
 		executeCommand(db, currentUser, log, command, args)
+	} else if host, port, ok := parseTCPProxyRequest(command, args); ok {
+		if err := commands.TCPProxy(db, *currentUser, *log, host, port); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	} else {
 		if err := commands.SSHConnect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
@@ -224,6 +243,16 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 				log.Error("selfReplaceKnownHost error", slog.String("error", err.Error()))
 			}
 		}},
+		"selfSetupTOTP": {"selfSetupTOTP", func() {
+			if err := commands.SelfSetupTOTP(db, currentUser); err != nil {
+				log.Error("selfSetupTOTP error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfDisableTOTP": {"selfDisableTOTP", func() {
+			if err := commands.SelfDisableTOTP(db, currentUser); err != nil {
+				log.Error("selfDisableTOTP error", slog.String("error", err.Error()))
+			}
+		}},
 
 		// Account
 		"accountList": {"accountList", func() {
@@ -274,6 +303,11 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		"accountListAccess": {"accountListAccess", func() {
 			if err := commands.AccountListAccess(db, currentUser, args); err != nil {
 				log.Error("accountListAccess error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountDisableTOTP": {"accountDisableTOTP", func() {
+			if err := commands.AccountDisableTOTP(db, currentUser, args); err != nil {
+				log.Error("accountDisableTOTP error", slog.String("error", err.Error()))
 			}
 		}},
 
@@ -394,6 +428,45 @@ func resetStdIn() {
 	cmd.Stdin = os.Stdin
 	_ = cmd.Run()
 	_ = cmd.Wait()
+}
+
+// checkTOTP prompts for a TOTP code if the user has TOTP enabled. Returns false if the check
+// fails, which should cause the session to be terminated immediately.
+func checkTOTP(user *models.User) bool {
+	if !user.TOTPEnabled || user.TOTPSecret == "" {
+		return true
+	}
+	fmt.Print("🔐 Enter TOTP code: ")
+	reader := bufio.NewReader(os.Stdin)
+	code, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "\n⛔ Could not read TOTP code.")
+		return false
+	}
+	if !totp.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
+		fmt.Println("⛔ Invalid TOTP code. Access denied.")
+		return false
+	}
+	return true
+}
+
+// parseTCPProxyRequest detects an OpenSSH -W host:port proxy request and returns the target.
+// The ForceCommand in sshd_config passes SSH_ORIGINAL_COMMAND as a single quoted argument,
+// so "-W host:port" arrives as os.Args[1]. Two-arg form is also handled for safety.
+func parseTCPProxyRequest(cmd string, args []string) (host, port string, ok bool) {
+	var hostPort string
+	if strings.HasPrefix(cmd, "-W ") {
+		hostPort = strings.TrimPrefix(cmd, "-W ")
+	} else if cmd == "-W" && len(args) > 0 {
+		hostPort = args[0]
+	} else {
+		return "", "", false
+	}
+	h, p, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return "", "", false
+	}
+	return h, p, true
 }
 
 // currentSystemUser returns the username of the current OS process owner.

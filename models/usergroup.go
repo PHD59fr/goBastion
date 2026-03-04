@@ -21,6 +21,8 @@ type User struct {
 	SystemUser    bool      `gorm:"default:false"`
 	LastLoginFrom string    `gorm:"default:null"`
 	LastLoginAt   time.Time
+	TOTPSecret    string `gorm:"default:null"`
+	TOTPEnabled   bool   `gorm:"default:false"`
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	DeletedAt     gorm.DeletedAt `gorm:"index:idx_username_deletedat"`

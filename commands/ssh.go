@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"goBastion/utils/sshConnector"
+	"goBastion/utils/tcpProxy"
 	"log/slog"
 	"os"
 	"regexp"
@@ -311,4 +312,73 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 	}
 
 	return host, nil
+}
+
+// TCPProxy establishes a raw TCP tunnel to host:port after verifying the user has at least
+// one access entry for that host. Used for transparent SCP/SFTP/rsync passthrough.
+// Client-side config example:
+//
+//	Host target
+//	  ProxyCommand ssh -p 2222 %r@bastion -W %h:%p
+func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port string) error {
+	portInt, err := strconv.ParseInt(port, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid port: %v", err)
+	}
+
+	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	log := logger.With(
+		slog.String("user", user.Username),
+		slog.String("from", sshFrom),
+		slog.String("target_host", host),
+		slog.String("target_port", port),
+	)
+
+	if !hasAnyAccessToHost(db, user, host, portInt) {
+		log.Warn("tcp proxy access denied")
+		return fmt.Errorf("⛔ Access denied for %s to %s:%s", user.Username, host, port)
+	}
+
+	log.Info("tcp proxy started")
+	if err := tcpProxy.Proxy(host, port); err != nil {
+		log.Error("tcp proxy error", slog.String("error", err.Error()))
+		return err
+	}
+	log.Info("tcp proxy closed")
+	return nil
+}
+
+// hasAnyAccessToHost returns true if the user has any self or group access entry for the given
+// host and port (regardless of the remote username). Used by the TCP proxy access check.
+func hasAnyAccessToHost(db *gorm.DB, user models.User, host string, port int64) bool {
+	var count int64
+
+	if user.Role == models.RoleAdmin {
+		// Admin can use any access entry (self or group) from any user for this host.
+		// Mirrors the behaviour of accessFilter which queries without user_id filter.
+		db.Model(&models.SelfAccess{}).Where("server = ? AND port = ?", host, port).Count(&count)
+		if count > 0 {
+			return true
+		}
+		db.Model(&models.GroupAccess{}).Where("server = ? AND port = ?", host, port).Count(&count)
+		return count > 0
+	}
+
+	db.Model(&models.SelfAccess{}).
+		Where("user_id = ? AND server = ? AND port = ?", user.ID, host, port).
+		Count(&count)
+	if count > 0 {
+		return true
+	}
+
+	var groupIDs []uuid.UUID
+	db.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).Pluck("group_id", &groupIDs)
+	if len(groupIDs) == 0 {
+		return false
+	}
+
+	db.Model(&models.GroupAccess{}).
+		Where("group_id IN ? AND server = ? AND port = ?", groupIDs, host, port).
+		Count(&count)
+	return count > 0
 }
