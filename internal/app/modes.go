@@ -138,6 +138,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 		prompt.OptionAddKeyBind(escKeyBinding),
 	)
 	p.Run()
+	log.Info("session end", slog.String("user", currentUser.Username), slog.String("reason", "disconnect"))
 }
 
 // executeCommand looks up and runs a command, enforcing permission checks.
