@@ -8,7 +8,7 @@
 
 ---
 
-## ✨ **Key Concept – Database as the Source of Truth**
+## ✨ **Key Concept - Database as the Source of Truth**
 
 In **goBastion**, **the database is the single source of truth** for SSH keys and access management. This means that the system always reflects the state of the database. Any key or access added manually to the system without passing through the bastion will be **automatically removed** to maintain consistency.
 
@@ -50,6 +50,8 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ❌ `selfDelAlias`                 | Delete a personal SSH alias.                                                 |
 | ❌ `selfRemoveHostFromKnownHosts` | Remove a host from your known\_hosts file.                                   |
 | 🔄 `selfReplaceKnownHost`        | Trust a new host key after it changed (TOFU reset).                          |
+| 🔐 `selfSetupTOTP`               | Enable TOTP two-factor authentication (generates QR/OTP URI).                |
+| 🔐 `selfDisableTOTP`             | Disable TOTP two-factor authentication.                                      |
 
 ---
 
@@ -68,6 +70,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ➕ `accountAddAccess`        | Grant a user access to a server.                      |
 | ❌ `accountDelAccess`        | Remove a user's access to a server.                   |
 | 📋 `whoHasAccessTo`         | Show all users with access to a specific server.      |
+| 🔐 `accountDisableTOTP`    | Disable TOTP two-factor authentication for a user.    |
 
 ---
 
@@ -89,6 +92,40 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
 | ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
 | 📋 `groupListAliases`       | List all group SSH aliases.                       |
+
+---
+
+### 🔐 **MFA / TOTP (Two-Factor Authentication)**
+
+goBastion supports RFC 6238 TOTP for users who want an extra layer of security on their bastion sessions.
+
+| Command               | Description                                                            |
+|-----------------------|------------------------------------------------------------------------|
+| `selfSetupTOTP`       | Generate a TOTP secret and display the QR/OTP URI to add to your authenticator app. |
+| `selfDisableTOTP`     | Disable TOTP for your own account.                                     |
+| `accountDisableTOTP`  | *(admin)* Disable TOTP for any user account.                           |
+
+Once TOTP is enabled, the bastion will prompt for a 6-digit code at every interactive or passthrough login.
+
+---
+
+### 📡 **SCP / SFTP / rsync Passthrough**
+
+goBastion supports transparent file transfer passthrough via the standard OpenSSH `-W` proxy mechanism.
+Configure your `~/.ssh/config` to use the bastion as a `ProxyJump` or `ProxyCommand`:
+
+```ssh-config
+Host my-server
+    HostName 192.168.1.10
+    ProxyJump user@bastion:2222
+```
+
+This enables:
+- `scp file.txt user@my-server:/path/`
+- `sftp user@my-server`
+- `rsync -avz ./dir/ user@my-server:/path/`
+
+All passthrough connections are subject to the same access control rules as interactive SSH sessions.
 
 ---
 
@@ -126,6 +163,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 - `accountListEgressKeys`
 - `accountModify`
 - `whoHasAccessTo`
+- `accountDisableTOTP`
 - `groupCreate`
 - `groupDelete`
 - `ttyList`
@@ -160,6 +198,8 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 - `selfListIngressKeys`
 - `selfRemoveHostFromKnownHosts`
 - `selfReplaceKnownHost`
+- `selfSetupTOTP`
+- `selfDisableTOTP`
 
 ⚠ **Alias Priority Warning**:
 If an alias is defined by the user (`selfAddAlias`) and the group defines an alias with the same name (`groupAddAlias`), **the user-defined alias always takes precedence**
@@ -199,7 +239,7 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
    docker run --name gobastion --hostname goBastion -it -p 2222:22 phd59fr/gobastion:latest
    ```
 
-   > **Note**: Use `-it` on first run — the container will interactively prompt for the first admin username and SSH public key before starting sshd. On subsequent starts (existing database), it restores automatically and starts sshd without any prompt.
+   > **Note**: Use `-it` on first run - the container will interactively prompt for the first admin username and SSH public key before starting sshd. On subsequent starts (existing database), it restores automatically and starts sshd without any prompt.
 
    (optional) 3a. Launch the container with a volume to persist the database and ttyrec:
 
@@ -240,6 +280,23 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 
    ```sh
    ssh -tp 2222 user@localhost -- user@targethost (ssh options supported) (or alias gobastion user@targethost)
+   ```
+
+   (optional) 5c. Use SCP / SFTP / rsync through the bastion (configure ProxyJump):
+
+   ```ssh-config
+   # ~/.ssh/config
+   Host my-server
+       HostName 192.168.1.10
+       ProxyJump user@bastion-host:2222
+   ```
+
+   Then use standard tools transparently:
+
+   ```sh
+   scp file.txt user@my-server:/path/
+   sftp user@my-server
+   rsync -avz ./dir/ user@my-server:/path/
    ```
 
 ---

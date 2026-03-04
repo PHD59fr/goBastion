@@ -22,10 +22,10 @@ const dbDir = "/var/lib/goBastion"
 // Init opens the database, runs migrations and applies configuration.
 // The database backend is selected via the DB_DRIVER environment variable:
 //
-//	DB_DRIVER=sqlite  (default) — SQLite file at /var/lib/goBastion/bastion.db
+//	DB_DRIVER=sqlite  (default) - SQLite file at /var/lib/goBastion/bastion.db
 //	                              Override path with DB_DSN.
-//	DB_DRIVER=mysql              — requires DB_DSN (e.g. "user:pass@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=True")
-//	DB_DRIVER=postgres           — requires DB_DSN (e.g. "host=... user=... password=... dbname=... port=5432 sslmode=disable")
+//	DB_DRIVER=mysql              - requires DB_DSN (e.g. "user:pass@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=True")
+//	DB_DRIVER=postgres           - requires DB_DSN (e.g. "host=... user=... password=... dbname=... port=5432 sslmode=disable")
 func Init(log *slog.Logger) (*gorm.DB, error) {
 	driver := os.Getenv("DB_DRIVER")
 	dsn := os.Getenv("DB_DSN")

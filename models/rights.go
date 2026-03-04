@@ -34,6 +34,8 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.IsAdmin()
 	case "accountModify":
 		return u.IsAdmin()
+	case "accountDisableTOTP":
+		return u.IsAdmin()
 	case "whoHasAccessTo":
 		return u.IsAdmin()
 
@@ -202,6 +204,10 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	case "selfRemoveHostFromKnownHosts":
 		return true
 	case "selfReplaceKnownHost":
+		return true
+	case "selfSetupTOTP":
+		return true
+	case "selfDisableTOTP":
 		return true
 
 	// TTY

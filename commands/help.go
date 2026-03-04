@@ -123,6 +123,23 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		})
 	}
 
+	// MFA / TOTP
+	var totpBody []string
+	if hasPerm("selfSetupTOTP") {
+		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfSetupTOTP             Enable TOTP two-factor authentication")
+	}
+	if hasPerm("selfDisableTOTP") {
+		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfDisableTOTP           Disable TOTP two-factor authentication")
+	}
+	if len(totpBody) > 0 {
+		sections = append(sections, console.SectionContent{
+			SubTitle:      "",
+			SubTitleColor: utils.FgYellowB,
+			SubSubTitle:   " MFA / TOTP:",
+			Body:          totpBody,
+		})
+	}
+
 	// MANAGE OTHER ACCOUNTS
 	var manageAccountsBody []string
 	if hasPerm("accountList") {
@@ -179,6 +196,9 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	}
 	if hasPerm("whoHasAccessTo") {
 		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" whoHasAccessTo          List accounts with access to a server")
+	}
+	if hasPerm("accountDisableTOTP") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" accountDisableTOTP      Disable TOTP for an account")
 	}
 	if len(accountAccessBody) > 0 {
 		sections = append(sections, console.SectionContent{

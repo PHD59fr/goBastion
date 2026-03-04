@@ -124,7 +124,7 @@ func CreateSystemUsersFromSystemToDb(db *gorm.DB) error {
 // Uses an atomic write (temp file + rename) to avoid a window where the file is empty.
 func IngressKeyFromDB(db *gorm.DB, user models.User) error {
 	var keys []models.IngressKey
-	if err := db.Where("user_id = ?", user.ID).Find(&keys).Error; err != nil {
+	if err := db.Where("user_id = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, time.Now()).Find(&keys).Error; err != nil {
 		return fmt.Errorf("error retrieving keys for %s: %w", user.Username, err)
 	}
 

@@ -8,14 +8,16 @@ import (
 )
 
 type SelfAccess struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey"`
-	UserID         uuid.UUID `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
-	User           User      `gorm:"foreignKey:UserID"`
-	Username       string    `gorm:"not null"`
-	Server         string    `gorm:"not null"`
-	Port           int64     `gorm:"not null"`
-	Comment        string    `gorm:"default:null"`
-	LastConnection time.Time `gorm:"default:null"`
+	ID             uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	UserID         uuid.UUID  `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
+	User           User       `gorm:"foreignKey:UserID"`
+	Username       string     `gorm:"not null"`
+	Server         string     `gorm:"not null"`
+	Port           int64      `gorm:"not null"`
+	Comment        string     `gorm:"default:null"`
+	AllowedFrom    string     `gorm:"default:null"` // comma-separated CIDRs, empty = unrestricted
+	ExpiresAt      *time.Time `gorm:"default:null"`
+	LastConnection time.Time  `gorm:"default:null"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
@@ -28,14 +30,16 @@ func (sa *SelfAccess) BeforeCreate(*gorm.DB) (err error) {
 }
 
 type GroupAccess struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey"`
-	GroupID        uuid.UUID `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
-	Group          Group     `gorm:"foreignKey:GroupID"`
-	Username       string    `gorm:"not null"`
-	Server         string    `gorm:"not null"`
-	Port           int64     `gorm:"not null"`
-	Comment        string    `gorm:"default:null"`
-	LastConnection time.Time `gorm:"default:null"`
+	ID             uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	GroupID        uuid.UUID  `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
+	Group          Group      `gorm:"foreignKey:GroupID"`
+	Username       string     `gorm:"not null"`
+	Server         string     `gorm:"not null"`
+	Port           int64      `gorm:"not null"`
+	Comment        string     `gorm:"default:null"`
+	AllowedFrom    string     `gorm:"default:null"` // comma-separated CIDRs, empty = unrestricted
+	ExpiresAt      *time.Time `gorm:"default:null"`
+	LastConnection time.Time  `gorm:"default:null"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
@@ -61,4 +65,5 @@ type AccessRight struct {
 	KeyUpdatedAt   time.Time
 	PublicKey      string
 	PrivateKey     string
+	RemoteCmd      string // non-empty for non-interactive sessions (e.g. SCP commands)
 }

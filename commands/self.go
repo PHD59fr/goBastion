@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"goBastion/models"
 	"goBastion/utils/console"
@@ -48,12 +49,25 @@ func SelfListIngressKeys(db *gorm.DB, user *models.User) error {
 	}
 	var sections []console.SectionContent
 	for _, key := range keys {
+		expiresStr := "Never"
+		if key.ExpiresAt != nil {
+			if key.ExpiresAt.Before(time.Now()) {
+				expiresStr = "⚠️ EXPIRED (" + key.ExpiresAt.Format("2006-01-02") + ")"
+			} else {
+				expiresStr = key.ExpiresAt.Format("2006-01-02")
+			}
+		}
+		pivStr := ""
+		if key.PIVAttested {
+			pivStr = " 🔐 PIV-attested"
+		}
 		section := console.SectionContent{
 			SubTitle: fmt.Sprintf("Key ID: %s", key.ID.String()),
 			Body: []string{
-				fmt.Sprintf("Type: %s", key.Type),
+				fmt.Sprintf("Type: %s%s", key.Type, pivStr),
 				fmt.Sprintf("Fingerprint: %s", key.Fingerprint),
 				fmt.Sprintf("Size: %d", key.Size),
+				fmt.Sprintf("Expires: %s", expiresStr),
 				fmt.Sprintf("Last Update: %s", key.UpdatedAt.Format("2006-01-02 15:04:05")),
 				fmt.Sprintf("Public Key: %s", key.Key),
 			},
@@ -72,13 +86,15 @@ func SelfListIngressKeys(db *gorm.DB, user *models.User) error {
 func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddIngressKey", flag.ContinueOnError)
 	var pubKey string
+	var expiresDays int
 	fs.StringVar(&pubKey, "key", "", "SSH public key")
+	fs.IntVar(&expiresDays, "expires", 0, "Key expiry in days (0 = never)")
 	if err := fs.Parse(args); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfAddIngressKey --key <ssh_public_key>"}},
+				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfAddIngressKey --key <ssh_public_key> [--expires <days>]"}},
 			},
 		})
 		return err
@@ -94,7 +110,7 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"selfAddIngressKey --key <ssh_public_key>"}},
+				{SubTitle: "Usage", Body: []string{"selfAddIngressKey --key <ssh_public_key> [--expires <days>]"}},
 			},
 		})
 		return nil
@@ -121,6 +137,18 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return err
 	}
+
+	// Apply expiry if requested
+	if expiresDays > 0 {
+		expiresAt := time.Now().AddDate(0, 0, expiresDays)
+		if err := db.Model(&models.IngressKey{}).
+			Where("user_id = ? AND key = ?", user.ID, strings.TrimSpace(pubKey)).
+			Update("expires_at", expiresAt).Error; err != nil {
+			// Non-fatal: key was created, just expiry update failed
+			fmt.Printf("⚠️  Key added but expiry could not be set: %v\n", err)
+		}
+	}
+
 	if err := sync.IngressKeyFromDB(db, *user); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Ingress Key",

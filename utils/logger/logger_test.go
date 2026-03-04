@@ -119,7 +119,7 @@ func TestGelfHandler_WithAttrs(t *testing.T) {
 	m := decodeGELF(t, buf.String())
 
 	if m["_user"] != "phd" {
-		t.Errorf("WithAttrs: expected _user=phd in output, got %v — WithAttrs may not be storing pre-attrs", m["_user"])
+		t.Errorf("WithAttrs: expected _user=phd in output, got %v - WithAttrs may not be storing pre-attrs", m["_user"])
 	}
 	if m["_cmd"] != "selfListIngressKeys" {
 		t.Errorf("WithAttrs: expected _cmd in output, got %v", m["_cmd"])

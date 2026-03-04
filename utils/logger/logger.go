@@ -40,7 +40,7 @@ func slogLevelToGelf(l slog.Level) int {
 }
 
 // gelfHandler writes GELF 1.1 JSON records to an io.Writer.
-// Each record is a single line of JSON — compatible with Graylog GELF HTTP/TCP inputs
+// Each record is a single line of JSON - compatible with Graylog GELF HTTP/TCP inputs
 // and log shippers such as Filebeat or Fluent Bit.
 //
 // GELF fields produced:

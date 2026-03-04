@@ -49,7 +49,12 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		return fmt.Errorf("error creating ttyrec dir: %v", err)
 	}
 
-	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s.ttyrec", dir, access.Username, access.Server, access.Port, timestamp)
+	// Non-interactive sessions (remote command) get a _cmd suffix in the filename
+	filenameSuffix := ""
+	if access.RemoteCmd != "" {
+		filenameSuffix = "_cmd"
+	}
+	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, access.Username, access.Server, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
 
 	outFile, err := os.Create(ttyrecGzFile)
@@ -107,13 +112,16 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}()
 
 	knownHostsFile := fmt.Sprintf("/home/%s/.ssh/known_hosts", strings.ToLower(user.Username))
-	cmd := exec.Command(
-		"ttyrec", "-f", ttyrecFile, "--",
-		"ssh", "-i", tmpFilePath,
+	sshArgs := []string{
+		"-i", tmpFilePath,
 		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile="+knownHostsFile,
-		access.Username+"@"+access.Server, "-p", strconv.FormatInt(access.Port, 10),
-	)
+		"-o", "UserKnownHostsFile=" + knownHostsFile,
+		access.Username + "@" + access.Server, "-p", strconv.FormatInt(access.Port, 10),
+	}
+	if access.RemoteCmd != "" {
+		sshArgs = append(sshArgs, "--", access.RemoteCmd)
+	}
+	cmd := exec.Command("ttyrec", append([]string{"-f", ttyrecFile, "--", "ssh"}, sshArgs...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

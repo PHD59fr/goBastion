@@ -175,10 +175,15 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
+	totpStatus := "❌ Disabled"
+	if user.TOTPEnabled {
+		totpStatus = "✅ Enabled"
+	}
 	infoLines := []string{
 		fmt.Sprintf("ID: %s", user.ID.String()),
 		fmt.Sprintf("Username: %s", user.Username),
 		fmt.Sprintf("System Role: %s", user.Role),
+		fmt.Sprintf("MFA / TOTP: %s", totpStatus),
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("Last Login: %s", user.LastLoginAt),
 		fmt.Sprintf("Last Login From: %s", user.LastLoginFrom),
