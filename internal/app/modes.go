@@ -18,6 +18,8 @@ import (
 	"log/slog"
 
 	"github.com/c-bata/go-prompt"
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/term"
 	"gorm.io/gorm"
 )
 
@@ -43,7 +45,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 	}
 
 	if len(os.Args) == 1 {
-		if !checkTOTP(&currentUser) {
+		if !checkTOTP(&currentUser, log) {
 			return
 		}
 		log.Info("session start", slog.String("user", currentUser.Username), slog.String("mode", "interactive"))
@@ -52,7 +54,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		cmd := os.Args[1]
 		args := os.Args[2:]
 		if strings.TrimSpace(cmd) == "" {
-			if !checkTOTP(&currentUser) {
+			if !checkTOTP(&currentUser, log) {
 				return
 			}
 			log.Info("session start", slog.String("user", currentUser.Username), slog.String("mode", "interactive"))
@@ -60,7 +62,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		} else {
 			// Skip TOTP for raw TCP proxy (-W): no TTY, raw pipe only.
 			if _, _, ok := parseTCPProxyRequest(cmd, args); !ok {
-				if !checkTOTP(&currentUser) {
+				if !checkTOTP(&currentUser, log) {
 					return
 				}
 			}
@@ -95,6 +97,8 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		if err := commands.TCPProxy(db, *currentUser, *log, host, port); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
+	} else if isMoshServerRequest(command, args) {
+		runMoshServer(command, args, log)
 	} else {
 		if err := commands.SSHConnect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
@@ -311,6 +315,30 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 			}
 		}},
 
+		// PIV attestation (admin)
+		"pivAddTrustAnchor": {"pivAddTrustAnchor", func() {
+			if err := commands.PivAddTrustAnchor(db, currentUser, args); err != nil {
+				log.Error("pivAddTrustAnchor error", slog.String("error", err.Error()))
+			}
+		}},
+		"pivListTrustAnchors": {"pivListTrustAnchors", func() {
+			if err := commands.PivListTrustAnchors(db, currentUser, args); err != nil {
+				log.Error("pivListTrustAnchors error", slog.String("error", err.Error()))
+			}
+		}},
+		"pivRemoveTrustAnchor": {"pivRemoveTrustAnchor", func() {
+			if err := commands.PivRemoveTrustAnchor(db, currentUser, args); err != nil {
+				log.Error("pivRemoveTrustAnchor error", slog.String("error", err.Error()))
+			}
+		}},
+
+		// PIV attestation (self)
+		"selfAddIngressKeyPIV": {"selfAddIngressKeyPIV", func() {
+			if err := commands.SelfAddIngressKeyPIV(db, currentUser, args); err != nil {
+				log.Error("selfAddIngressKeyPIV error", slog.String("error", err.Error()))
+			}
+		}},
+
 		// Group
 		"groupInfo": {"groupInfo", func() {
 			if err := commands.GroupInfo(db, currentUser, args); err != nil {
@@ -382,6 +410,28 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 				log.Error("groupListAliases error", slog.String("error", err.Error()))
 			}
 		}},
+		"groupSetMFA": {"groupSetMFA", func() {
+			if err := commands.GroupSetMFA(db, currentUser, args); err != nil {
+				log.Error("groupSetMFA error", slog.String("error", err.Error()))
+			}
+		}},
+
+		// Password MFA
+		"selfSetPassword": {"selfSetPassword", func() {
+			if err := commands.SelfSetPassword(db, currentUser, args); err != nil {
+				log.Error("selfSetPassword error", slog.String("error", err.Error()))
+			}
+		}},
+		"selfChangePassword": {"selfChangePassword", func() {
+			if err := commands.SelfChangePassword(db, currentUser, args); err != nil {
+				log.Error("selfChangePassword error", slog.String("error", err.Error()))
+			}
+		}},
+		"accountSetPassword": {"accountSetPassword", func() {
+			if err := commands.AccountSetPassword(db, currentUser, args); err != nil {
+				log.Error("accountSetPassword error", slog.String("error", err.Error()))
+			}
+		}},
 
 		// TTY
 		"ttyList": {"ttyList", func() {
@@ -430,24 +480,55 @@ func resetStdIn() {
 	_ = cmd.Wait()
 }
 
-// checkTOTP prompts for a TOTP code if the user has TOTP enabled. Returns false if the check
-// fails, which should cause the session to be terminated immediately.
-func checkTOTP(user *models.User) bool {
+// checkMFA prompts for TOTP and/or password second factors if configured.
+// Returns false if any check fails, which should cause the session to be terminated immediately.
+func checkMFA(user *models.User, log *slog.Logger) bool {
+	ip := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+
+	// Password MFA check (independent of TOTP)
+	if user.PasswordHash != "" {
+		log.Info("password mfa challenge", slog.String("user", user.Username), slog.String("ip", ip))
+		fmt.Print("🔑 Enter password: ")
+		pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			log.Warn("password mfa read error", slog.String("user", user.Username), slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, "⛔ Could not read password.")
+			return false
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), pass) != nil {
+			log.Warn("password mfa failure", slog.String("user", user.Username), slog.String("ip", ip))
+			fmt.Println("⛔ Invalid password. Access denied.")
+			return false
+		}
+		log.Info("password mfa success", slog.String("user", user.Username), slog.String("ip", ip))
+	}
+
+	// TOTP check
 	if !user.TOTPEnabled || user.TOTPSecret == "" {
 		return true
 	}
+	log.Info("totp challenge", slog.String("user", user.Username), slog.String("ip", ip))
 	fmt.Print("🔐 Enter TOTP code: ")
 	reader := bufio.NewReader(os.Stdin)
 	code, err := reader.ReadString('\n')
 	if err != nil {
+		log.Warn("totp read error", slog.String("user", user.Username), slog.String("ip", ip), slog.String("error", err.Error()))
 		fmt.Fprintln(os.Stderr, "\n⛔ Could not read TOTP code.")
 		return false
 	}
 	if !totp.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
+		log.Warn("totp failure", slog.String("user", user.Username), slog.String("ip", ip))
 		fmt.Println("⛔ Invalid TOTP code. Access denied.")
 		return false
 	}
+	log.Info("totp success", slog.String("user", user.Username), slog.String("ip", ip))
 	return true
+}
+
+// checkTOTP is kept for backward compatibility; delegates to checkMFA.
+func checkTOTP(user *models.User, log *slog.Logger) bool {
+	return checkMFA(user, log)
 }
 
 // parseTCPProxyRequest detects an OpenSSH -W host:port proxy request and returns the target.
@@ -476,4 +557,33 @@ func currentSystemUser() (string, error) {
 		return "", err
 	}
 	return u.Username, nil
+}
+
+// isMoshServerRequest returns true when the SSH_ORIGINAL_COMMAND is a mosh-server invocation.
+// The mosh client sends: mosh-server new -s -c <cols> -l LANG=... -- ...
+func isMoshServerRequest(command string, args []string) bool {
+	return command == "mosh-server" || strings.HasPrefix(command, "mosh-server ")
+}
+
+// runMoshServer exec's mosh-server directly, passing through all arguments.
+// stdin/stdout/stderr are inherited so the mosh client can negotiate the UDP port.
+func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
+	// Reconstruct the full argument list from the original command string + extra args.
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		fmt.Fprintln(os.Stderr, "mosh-server: empty command")
+		return
+	}
+	// parts[0] is "mosh-server", parts[1:] are inline args from the command string.
+	cmdArgs := append(parts[1:], extraArgs...)
+
+	log.Info("mosh-server passthrough", slog.Any("args", cmdArgs))
+
+	cmd := exec.Command("mosh-server", cmdArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Error("mosh-server error", slog.String("error", err.Error()))
+	}
 }

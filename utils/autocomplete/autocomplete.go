@@ -35,6 +35,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 		cmdOptions := map[string][]prompt.Suggest{
 			"selfAddIngressKey": {
 				{Text: "--key", Description: "SSH public key"},
+				{Text: "--expires", Description: "Key expiry in days"},
 			},
 			"selfDelIngressKey": {
 				{Text: "--id", Description: "SSH public key ID"},
@@ -48,6 +49,9 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 				{Text: "--username", Description: "SSH username"},
 				{Text: "--port", Description: "Port number"},
 				{Text: "--comment", Description: "Comment"},
+				{Text: "--from", Description: "Allowed source CIDRs (comma-separated)"},
+				{Text: "--ttl", Description: "Access expiry in days"},
+				{Text: "--protocol", Description: "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
 			},
 			"selfDelAccess": {
 				{Text: "--id", Description: "Access ID"},
@@ -93,9 +97,15 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 				{Text: "--port", Description: "SSH Port"},
 				{Text: "--username", Description: "SSH Username"},
 				{Text: "--comment", Description: "Comment"},
+				{Text: "--from", Description: "Allowed source CIDRs (comma-separated)"},
+				{Text: "--ttl", Description: "Access expiry in days"},
+				{Text: "--protocol", Description: "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
 			},
 			"accountDelAccess": {
 				{Text: "--access", Description: "Access ID"},
+			},
+			"accountDisableTOTP": {
+				{Text: "--user", Description: "Username"},
 			},
 			"groupInfo": {
 				{Text: "--group", Description: "Group name"},
@@ -115,6 +125,9 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 				{Text: "--port", Description: "SSH Port"},
 				{Text: "--username", Description: "SSH username"},
 				{Text: "--comment", Description: "Comment"},
+				{Text: "--from", Description: "Allowed source CIDRs (comma-separated)"},
+				{Text: "--ttl", Description: "Access expiry in days"},
+				{Text: "--protocol", Description: "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
 			},
 			"groupDelAccess": {
 				{Text: "--group", Description: "Group name"},
@@ -153,19 +166,55 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			"groupListAliases": {
 				{Text: "--group", Description: "Group name"},
 			},
-			"ttyList": {
-				{Text: "--startDate", Description: "Start date"},
-				{Text: "--endDate", Description: "End date"},
-				{Text: "--host", Description: "Filter by server hostname"},
-				{Text: "--user", Description: "Username (Admin only)"},
+			"groupSetMFA": {
+				{Text: "--group", Description: "Group name"},
+				{Text: "--required", Description: "Require MFA for this group"},
+				{Text: "--optional", Description: "Remove MFA requirement for this group"},
 			},
-			"ttyPlay": {
-				{Text: "--file", Description: "File name"},
-				{Text: "--user", Description: "Username (Admin only)"},
+			"selfSetPassword":    {},
+			"selfChangePassword": {},
+			"accountSetPassword": {
+				{Text: "--user", Description: "Target username"},
+				{Text: "--clear", Description: "Clear/remove password MFA"},
 			},
 			"whoHasAccessTo": {
 				{Text: "--server", Description: "Server"},
 			},
+			"pivAddTrustAnchor": {
+				{Text: "--name", Description: "Friendly name for this trust anchor"},
+				{Text: "--cert", Description: "Path to PEM certificate file"},
+			},
+			"pivRemoveTrustAnchor": {
+				{Text: "--name", Description: "Name of the trust anchor to remove"},
+			},
+			"selfAddIngressKeyPIV": {
+				{Text: "--attest", Description: "Path to PIV attestation certificate (PEM)"},
+				{Text: "--intermediate", Description: "Path to intermediate certificate (PEM)"},
+				{Text: "--comment", Description: "Comment for this key"},
+			},
+		}
+
+		// ttyList and ttyPlay: --user only available to admins
+		if cmd == "ttyList" || cmd == "ttyPlay" {
+			if !hasPerm(cmd) {
+				return []prompt.Suggest{}
+			}
+			var opts []prompt.Suggest
+			if cmd == "ttyList" {
+				opts = []prompt.Suggest{
+					{Text: "--startDate", Description: "Start date"},
+					{Text: "--endDate", Description: "End date"},
+					{Text: "--host", Description: "Filter by server hostname"},
+				}
+			} else {
+				opts = []prompt.Suggest{
+					{Text: "--file", Description: "File name"},
+				}
+			}
+			if user.IsAdmin() {
+				opts = append(opts, prompt.Suggest{Text: "--user", Description: "Username (Admin only)"})
+			}
+			return prompt.FilterHasPrefix(filterAlreadyUsed(opts), d.GetWordBeforeCursor(), true)
 		}
 
 		if opts, ok := cmdOptions[cmd]; ok {
@@ -188,6 +237,10 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 		{Text: "accountListIngressKeys", Description: "List account ingress keys"},
 		{Text: "accountModify", Description: "Modify an account"},
 		{Text: "accountDisableTOTP", Description: "Disable TOTP for an account (admin)"},
+		{Text: "accountSetPassword", Description: "Set/clear password MFA for an account (admin)"},
+		{Text: "pivAddTrustAnchor", Description: "Add a PIV/YubiKey trust anchor CA (admin)"},
+		{Text: "pivListTrustAnchors", Description: "List PIV trust anchor CAs (admin)"},
+		{Text: "pivRemoveTrustAnchor", Description: "Remove a PIV trust anchor CA (admin)"},
 		{Text: "groupAddAccess", Description: "Add access to a group"},
 		{Text: "groupAddAlias", Description: "Add an alias to a group"},
 		{Text: "groupAddMember", Description: "Add a member to a group"},
@@ -202,6 +255,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 		{Text: "groupListAccesses", Description: "List group accesses"},
 		{Text: "groupListAliases", Description: "List group aliases"},
 		{Text: "groupListEgressKeys", Description: "List group egress keys"},
+		{Text: "groupSetMFA", Description: "Enable/disable JIT MFA requirement for a group"},
 		{Text: "selfAddAccess", Description: "Add a personal access"},
 		{Text: "selfAddAlias", Description: "Add an alias"},
 		{Text: "selfAddIngressKey", Description: "Add an ingress key"},
@@ -217,9 +271,12 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 		{Text: "selfReplaceKnownHost", Description: "Replace a changed host key (TOFU reset)"},
 		{Text: "selfSetupTOTP", Description: "Enable TOTP two-factor authentication"},
 		{Text: "selfDisableTOTP", Description: "Disable TOTP two-factor authentication"},
+		{Text: "selfAddIngressKeyPIV", Description: "Add a PIV/hardware-attested ingress key"},
+		{Text: "selfSetPassword", Description: "Set a password MFA second factor"},
+		{Text: "selfChangePassword", Description: "Change your password MFA"},
 		{Text: "ttyList", Description: "List recorded tty sessions"},
 		{Text: "ttyPlay", Description: "Read a recorded tty session"},
-		{Text: "whoHasAccessTo", Description: "List access for a server"},
+		{Text: "whoHasAccessTo", Description: "List access for a server (supports CIDR)"},
 		{Text: "exit", Description: "Exit the application"},
 		{Text: "help", Description: "Display this help message"},
 		{Text: "info", Description: "Show application info"},

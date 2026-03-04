@@ -7,9 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"goBastion/utils/console"
+	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"goBastion/utils"
 	"goBastion/utils/system"
@@ -17,7 +20,9 @@ import (
 	"goBastion/models"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 	"gorm.io/gorm"
 )
 
@@ -179,11 +184,16 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	if user.TOTPEnabled {
 		totpStatus = "✅ Enabled"
 	}
+	passwordMFAStatus := "❌ Not set"
+	if user.PasswordHash != "" {
+		passwordMFAStatus = "✅ Set"
+	}
 	infoLines := []string{
 		fmt.Sprintf("ID: %s", user.ID.String()),
 		fmt.Sprintf("Username: %s", user.Username),
 		fmt.Sprintf("System Role: %s", user.Role),
 		fmt.Sprintf("MFA / TOTP: %s", totpStatus),
+		fmt.Sprintf("MFA / Password: %s", passwordMFAStatus),
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("Last Login: %s", user.LastLoginAt),
 		fmt.Sprintf("Last Login From: %s", user.LastLoginFrom),
@@ -550,6 +560,7 @@ func AccountListEgressKeys(db *gorm.DB, currentUser *models.User, args []string)
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view egress keys for this account."}}},
 		})
+		return fmt.Errorf("access denied")
 	}
 
 	var targetUser models.User
@@ -669,18 +680,37 @@ func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) err
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tProtocol\tComment\tFrom\tExpires\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		expiresStr := "Never"
+		if access.ExpiresAt != nil {
+			if access.ExpiresAt.Before(time.Now()) {
+				expiresStr = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
+			} else {
+				expiresStr = access.ExpiresAt.Format("2006-01-02")
+			}
+		}
+		fromStr := access.AllowedFrom
+		if fromStr == "" {
+			fromStr = "*"
+		}
+		proto := access.Protocol
+		if proto == "" {
+			proto = "ssh"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
 			access.Port,
+			proto,
 			access.Comment,
+			fromStr,
+			expiresStr,
 			lastUsed,
 			access.CreatedAt.Format("2006-01-02 15:04:05"),
 		)
@@ -731,8 +761,9 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	var accesses []models.SelfAccess
-	if err := db.Preload("User", "deleted_at IS NULL").Where("server LIKE ? AND deleted_at IS NULL", "%"+server+"%").Find(&accesses).Error; err != nil {
+	// Load all accesses and filter in Go (supports CIDR matching)
+	var allSelfAccesses []models.SelfAccess
+	if err := db.Preload("User", "deleted_at IS NULL").Where("deleted_at IS NULL").Find(&allSelfAccesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
 			BlockType: "error",
@@ -741,8 +772,8 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
-	var groupAccesses []models.GroupAccess
-	if err := db.Preload("Group", "deleted_at IS NULL").Where("server LIKE ? AND deleted_at IS NULL", "%"+server+"%").Find(&groupAccesses).Error; err != nil {
+	var allGroupAccesses []models.GroupAccess
+	if err := db.Preload("Group", "deleted_at IS NULL").Where("deleted_at IS NULL").Find(&allGroupAccesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
 			BlockType: "error",
@@ -754,13 +785,19 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', tabwriter.StripEscape)
 	_, _ = fmt.Fprintln(w, "Type\tName\tUsername\tRole\tServer")
-	for _, access := range accesses {
+	for _, access := range allSelfAccesses {
+		if !serverMatchesQuery(access.Server, server) {
+			continue
+		}
 		if access.User.ID != uuid.Nil {
-			_, _ = fmt.Fprintf(w, "User\t-\t%s\t-\t%s\n", access.User.Username, server)
+			_, _ = fmt.Fprintf(w, "User\t-\t%s\t-\t%s\n", access.User.Username, access.Server)
 		}
 	}
 
-	for _, ga := range groupAccesses {
+	for _, ga := range allGroupAccesses {
+		if !serverMatchesQuery(ga.Server, server) {
+			continue
+		}
 		var userGroups []models.UserGroup
 		if err := db.Preload("User", "deleted_at IS NULL").
 			Where("group_id = ? AND deleted_at IS NULL", ga.GroupID).
@@ -808,16 +845,48 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 	return nil
 }
 
+// serverMatchesQuery returns true if the stored server string matches the query.
+// Supports exact match, substring match, and CIDR containment:
+// - If query is an IP and storedServer is a CIDR, checks if the IP is in the CIDR.
+// - If storedServer is an IP/hostname and query is a CIDR, checks if the server IP is in the CIDR.
+func serverMatchesQuery(storedServer, query string) bool {
+	// Exact or substring match
+	if strings.Contains(storedServer, query) || strings.Contains(query, storedServer) {
+		return true
+	}
+	queryIP := net.ParseIP(query)
+	storedIP := net.ParseIP(storedServer)
+	// Query is an IP, stored is a CIDR
+	if queryIP != nil {
+		_, storedCIDR, err := net.ParseCIDR(storedServer)
+		if err == nil && storedCIDR.Contains(queryIP) {
+			return true
+		}
+	}
+	// Query is a CIDR, stored is an IP
+	if storedIP != nil {
+		_, queryCIDR, err := net.ParseCIDR(query)
+		if err == nil && queryCIDR.Contains(storedIP) {
+			return true
+		}
+	}
+	return false
+}
+
 // AccountAddAccess adds a personal SSH access entry for a user.
 func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountAddAccess", flag.ContinueOnError)
-	var targetUser, server, username, comment string
+	var targetUser, server, username, comment, allowedFrom, protocol string
 	var port int64
+	var ttlDays int
 	fs.StringVar(&targetUser, "user", "", "Target username")
 	fs.StringVar(&server, "server", "", "SSH Server")
 	fs.StringVar(&username, "username", "", "SSH Username")
 	fs.StringVar(&comment, "comment", "", "Comment")
 	fs.Int64Var(&port, "port", 22, "SSH Port")
+	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
+	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
+	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
@@ -825,7 +894,7 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage Error", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> --comment <comment>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage Error", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}}},
 		})
 		return err
 	}
@@ -834,7 +903,7 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> --comment <comment>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}}},
 		})
 		return nil
 	}
@@ -844,6 +913,16 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add personal access for this user."}}},
+		})
+		return nil
+	}
+
+	validProtocols := map[string]bool{"ssh": true, "scpupload": true, "scpdownload": true, "sftp": true, "rsync": true}
+	if !validProtocols[protocol] {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
 		})
 		return nil
 	}
@@ -858,7 +937,11 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		return err
 	}
 
-	access := models.SelfAccess{UserID: user.ID, Server: server, Username: username, Port: port, Comment: comment}
+	access := models.SelfAccess{UserID: user.ID, Server: server, Username: username, Port: port, Comment: comment, AllowedFrom: allowedFrom, Protocol: protocol}
+	if ttlDays > 0 {
+		t := time.Now().AddDate(0, 0, ttlDays)
+		access.ExpiresAt = &t
+	}
 	if err := db.Create(&access).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
@@ -927,5 +1010,87 @@ func AccountDelAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{"Personal access deleted successfully."}}},
 	})
 
+	return nil
+}
+
+// AccountSetPassword sets or clears a password MFA second factor for a user account (admin only).
+func AccountSetPassword(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("accountSetPassword", flag.ContinueOnError)
+	var targetUser string
+	var clear bool
+	fs.StringVar(&targetUser, "user", "", "Target username")
+	fs.BoolVar(&clear, "clear", false, "Clear/remove password MFA for the user")
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+
+	if err := fs.Parse(args); err != nil || targetUser == "" {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Account Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Usage", Body: []string{"accountSetPassword --user <username> [--clear]"}}},
+		})
+		return nil
+	}
+
+	if !currentUser.CanDo(db, "accountSetPassword", targetUser) {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Account Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Only admins can set password MFA for other users."}}},
+		})
+		return nil
+	}
+
+	var user models.User
+	if err := db.Where("username = ?", targetUser).First(&user).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Account Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+		})
+		return err
+	}
+
+	if clear {
+		if err := db.Model(&user).Update("password_hash", "").Error; err != nil {
+			return fmt.Errorf("failed to clear password: %v", err)
+		}
+		slog.Default().Info("password mfa cleared by admin",
+			slog.String("admin", currentUser.Username),
+			slog.String("user", targetUser),
+		)
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Account Password MFA", BlockType: "success",
+			Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password MFA cleared for " + targetUser}}},
+		})
+		return nil
+	}
+
+	fmt.Print("Enter new password for " + targetUser + ": ")
+	passBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return fmt.Errorf("could not read password: %v", err)
+	}
+	passStr := string(passBytes)
+	if len(passStr) < 8 {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Account Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
+		})
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(passStr), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("bcrypt error: %v", err)
+	}
+	if err := db.Model(&user).Update("password_hash", string(hash)).Error; err != nil {
+		return fmt.Errorf("failed to save password: %v", err)
+	}
+	slog.Default().Info("password mfa set by admin",
+		slog.String("admin", currentUser.Username),
+		slog.String("user", targetUser),
+	)
+	console.DisplayBlock(console.ContentBlock{
+		Title: "Set Account Password MFA", BlockType: "success",
+		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password MFA set for " + targetUser}}},
+	})
 	return nil
 }

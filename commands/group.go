@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"goBastion/utils/console"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"goBastion/utils"
 
@@ -66,6 +68,7 @@ func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 	infoLines := []string{
 		fmt.Sprintf("Group ID: %s", g.ID.String()),
 		fmt.Sprintf("Name: %s", g.Name),
+		fmt.Sprintf("JIT MFA: %s", map[bool]string{true: "✅ Required", false: "❌ Not required"}[g.MFARequired]),
 	}
 
 	if len(userGroups) > 0 {
@@ -564,13 +567,17 @@ func GroupListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) e
 // GroupAddAccess adds an SSH access entry to a group.
 func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddAccess", flag.ContinueOnError)
-	var groupName, server, username, comment string
+	var groupName, server, username, comment, allowedFrom, protocol string
 	var port int64
+	var ttlDays int
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&server, "server", "", "Server to add access for")
 	fs.Int64Var(&port, "port", 22, "Port number")
 	fs.StringVar(&username, "username", "", "Connection username")
 	fs.StringVar(&comment, "comment", "", "Comment")
+	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
+	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
+	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
@@ -578,9 +585,9 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <connection username> --comment <comment>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}}},
 		})
-		return err
+		return nil
 	}
 
 	if !currentUser.CanDo(db, "groupAddAccess", groupName) {
@@ -590,6 +597,16 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add access for this group."}}},
 		})
 		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+
+	validProtocols := map[string]bool{"ssh": true, "scpupload": true, "scpdownload": true, "sftp": true, "rsync": true}
+	if !validProtocols[protocol] {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
+		})
+		return nil
 	}
 
 	var group models.Group
@@ -613,11 +630,17 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	}
 
 	access := models.GroupAccess{
-		GroupID:  group.ID,
-		Server:   server,
-		Port:     port,
-		Username: username,
-		Comment:  comment,
+		GroupID:     group.ID,
+		Server:      server,
+		Port:        port,
+		Username:    username,
+		Comment:     comment,
+		AllowedFrom: allowedFrom,
+		Protocol:    protocol,
+	}
+	if ttlDays > 0 {
+		t := time.Now().AddDate(0, 0, ttlDays)
+		access.ExpiresAt = &t
 	}
 	if err := db.Create(&access).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -757,18 +780,37 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tProtocol\tComment\tFrom\tExpires\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		expiresStr := "Never"
+		if access.ExpiresAt != nil {
+			if access.ExpiresAt.Before(time.Now()) {
+				expiresStr = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
+			} else {
+				expiresStr = access.ExpiresAt.Format("2006-01-02")
+			}
+		}
+		fromStr := access.AllowedFrom
+		if fromStr == "" {
+			fromStr = "*"
+		}
+		proto := access.Protocol
+		if proto == "" {
+			proto = "ssh"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
 			access.Port,
+			proto,
 			access.Comment,
+			fromStr,
+			expiresStr,
 			lastUsed,
 			access.CreatedAt.Format("2006-01-02 15:04:05"),
 		)
@@ -991,6 +1033,73 @@ func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) erro
 		Title:     "List Group Aliases",
 		BlockType: "success",
 		Sections:  []console.SectionContent{{SubTitle: "Aliases", Body: strings.Split(buf.String(), "\n")}},
+	})
+	return nil
+}
+
+// GroupSetMFA enables or disables JIT MFA requirement for a group.
+// When enabled, users connecting via this group must pass a TOTP challenge even if TOTP is not globally enabled.
+func GroupSetMFA(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupSetMFA", flag.ContinueOnError)
+	var groupName string
+	var required, optional bool
+	fs.StringVar(&groupName, "group", "", "Group name")
+	fs.BoolVar(&required, "required", false, "Require MFA for this group")
+	fs.BoolVar(&optional, "optional", false, "Remove MFA requirement for this group")
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+
+	if err := fs.Parse(args); err != nil || groupName == "" || (!required && !optional) || (required && optional) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Set MFA",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"groupSetMFA --group <name> --required|--optional"}}},
+		})
+		return nil
+	}
+
+	if !currentUser.CanDo(db, "groupSetMFA", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Set MFA",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Only group owners or admins can set MFA policy."}}},
+		})
+		return nil
+	}
+
+	var group models.Group
+	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Set MFA",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+		})
+		return err
+	}
+
+	mfaRequired := required && !optional
+	if err := db.Model(&group).Update("mfa_required", mfaRequired).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Set MFA",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to update MFA setting."}}},
+		})
+		return err
+	}
+
+	status := "disabled"
+	if mfaRequired {
+		status = "enabled"
+	}
+	slog.Default().Info("group mfa policy updated",
+		slog.String("admin", currentUser.Username),
+		slog.String("group", groupName),
+		slog.Bool("mfa_required", mfaRequired),
+	)
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "Group Set MFA",
+		BlockType: "success",
+		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{"JIT MFA " + status + " for group " + groupName}}},
 	})
 	return nil
 }

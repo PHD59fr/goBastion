@@ -16,7 +16,7 @@ RUN git clone https://github.com/ovh/ovh-ttyrec.git /tmp/ovh-ttyrec && \
 
 FROM alpine:latest
 
-RUN apk add --no-cache bash gzip openssh sudo jq
+RUN apk add --no-cache bash gzip openssh sudo jq mosh
 
 RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
@@ -41,5 +41,6 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 22
+EXPOSE 60001-61000/udp
 
 CMD ["/entrypoint.sh"]

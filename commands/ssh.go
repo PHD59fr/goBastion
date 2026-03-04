@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
@@ -14,6 +15,7 @@ import (
 
 	"goBastion/models"
 	"goBastion/utils"
+	totpUtil "goBastion/utils/totp"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -28,6 +30,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 
 	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
 	hostname, _ := os.Hostname()
+	protocol := detectProtocol(remoteCmd)
 
 	log := logger.With(
 		slog.String("user", user.Username),
@@ -35,6 +38,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		slog.String("target_user", sshUser),
 		slog.String("target_host", sshHost),
 		slog.String("target_port", sshPort),
+		slog.String("protocol", protocol),
 	)
 
 	log.Info("ssh connection attempt")
@@ -53,7 +57,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		sshHost = forcedHost.Host
 	}
 
-	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort)
+	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
 		log.Warn("ssh access denied", slog.String("error", err.Error()))
 		return fmt.Errorf("%v\n", err)
@@ -74,6 +78,20 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 				db.Model(&models.GroupAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now())
 			}
 
+			// JIT MFA: if the group requires MFA and the user hasn't done global TOTP,
+			// prompt for a TOTP code now.
+			if access.MFARequired && !user.TOTPEnabled {
+				if user.TOTPSecret == "" {
+					fmt.Println("⛔ This group requires MFA but you have no TOTP secret configured.")
+					fmt.Println("   Run selfSetupTOTP first, then ask your admin to enable JIT MFA for this group.")
+					log.Warn("jit mfa blocked - no totp secret", slog.String("source", access.Source))
+					return nil
+				}
+				if !promptTOTP(user, log) {
+					return nil
+				}
+			}
+
 			log.Info("ssh connection started", slog.String("source", access.Source), slog.String("key_id", access.KeyId.String()))
 			access.RemoteCmd = remoteCmd
 			err = sshConnector.SshConnection(db, user, access)
@@ -92,8 +110,10 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	return nil
 }
 
-// accessFilter returns the list of access rights matching username, host and port for the user.
-func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([]models.AccessRight, error) {
+// accessFilter returns the list of access rights matching username, host, port and protocol for the user.
+// protocol is one of: ssh, scpupload, scpdownload, sftp, rsync.
+// An access with protocol "ssh" grants all protocols (backwards-compatible).
+func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol string) ([]models.AccessRight, error) {
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid port value: %v", err)
@@ -107,11 +127,11 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 
 	// ADMIN LOGIC
 	if user.Role == models.RoleAdmin {
-		if err = DB.Where("username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", username, host, portInt, now).
+		if err = DB.Where("username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
 			Find(&selfAccessList).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving self access for admin: %v", err)
 		}
-		if err = DB.Where("username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", username, host, portInt, now).
+		if err = DB.Where("username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
 			Preload("Group").
 			Find(&groupAccessList).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving group access for admin: %v", err)
@@ -141,6 +161,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 				KeyUpdatedAt:   groupEgressKey.UpdatedAt,
 				PublicKey:      groupEgressKey.PubKey,
 				PrivateKey:     groupEgressKey.PrivKey,
+				MFARequired:    ga.Group.MFARequired,
 			}
 			return []models.AccessRight{access}, nil
 		} else if len(selfAccessList) > 0 {
@@ -175,7 +196,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 	}
 
 	// USER LOGIC
-	if err = DB.Where("user_id = ? AND username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, username, host, portInt, now).
+	if err = DB.Where("user_id = ? AND username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", user.ID, username, host, portInt, now, protocol).
 		Find(&selfAccessList).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving self access: %v", err)
 	}
@@ -193,7 +214,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 	}
 
 	if len(groupIDs) > 0 {
-		if err = DB.Where("group_id IN ? AND username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", groupIDs, username, host, portInt, now).
+		if err = DB.Where("group_id IN ? AND username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", groupIDs, username, host, portInt, now, protocol).
 			Preload("Group").
 			Find(&groupAccessList).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving group access: %v", err)
@@ -224,6 +245,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 			KeyUpdatedAt:   groupEgressKey.UpdatedAt,
 			PublicKey:      groupEgressKey.PubKey,
 			PrivateKey:     groupEgressKey.PrivKey,
+			MFARequired:    ga.Group.MFARequired,
 		}
 		return []models.AccessRight{access}, nil
 	} else if len(selfAccessList) > 0 {
@@ -255,6 +277,47 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port string) ([
 	} else {
 		return nil, errors.New("⛔ " + utils.BgRedB("Access denied for "+user.Username+" to "+username+"@"+host+":"+port))
 	}
+}
+
+// detectProtocol inspects the remote command string to determine the access protocol.
+// Returns "ssh" for interactive sessions, or the specific protocol otherwise.
+func detectProtocol(remoteCmd string) string {
+	if remoteCmd == "" {
+		return "ssh"
+	}
+	cmd := strings.ToLower(strings.TrimSpace(remoteCmd))
+	switch {
+	case strings.HasPrefix(cmd, "scp ") && strings.Contains(cmd, " -t "):
+		return "scpupload"
+	case strings.HasPrefix(cmd, "scp ") && strings.Contains(cmd, " -f "):
+		return "scpdownload"
+	case strings.Contains(cmd, "sftp-server"):
+		return "sftp"
+	case strings.HasPrefix(cmd, "rsync ") || strings.Contains(cmd, "rsync --server"):
+		return "rsync"
+	default:
+		return "ssh"
+	}
+}
+
+// promptTOTP reads a TOTP code from stdin and verifies it.
+// Used for JIT MFA enforcement at connection time.
+func promptTOTP(user models.User, log *slog.Logger) bool {
+	fmt.Print("🔐 This group requires MFA. Enter TOTP code: ")
+	reader := bufio.NewReader(os.Stdin)
+	code, err := reader.ReadString('\n')
+	if err != nil {
+		log.Warn("jit mfa read error", slog.String("user", user.Username), slog.String("error", err.Error()))
+		fmt.Fprintln(os.Stderr, "⛔ Could not read TOTP code.")
+		return false
+	}
+	if !totpUtil.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
+		log.Warn("jit mfa failure", slog.String("user", user.Username))
+		fmt.Println("⛔ Invalid TOTP code. Access denied.")
+		return false
+	}
+	log.Info("jit mfa success", slog.String("user", user.Username))
+	return true
 }
 
 // ipAllowed checks whether clientIP is permitted by an allowedFrom CIDR list.

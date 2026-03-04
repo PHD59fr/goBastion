@@ -131,11 +131,20 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	if hasPerm("selfDisableTOTP") {
 		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfDisableTOTP           Disable TOTP two-factor authentication")
 	}
+	if hasPerm("selfSetPassword") {
+		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfSetPassword           Set a password second factor (MFA)")
+	}
+	if hasPerm("selfChangePassword") {
+		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfChangePassword        Change your password second factor")
+	}
+	if hasPerm("selfAddIngressKeyPIV") {
+		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfAddIngressKeyPIV      Add a PIV/hardware-attested SSH key (YubiKey)")
+	}
 	if len(totpBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
 			SubTitleColor: utils.FgYellowB,
-			SubSubTitle:   " MFA / TOTP:",
+			SubSubTitle:   " MFA / TOTP / PIV:",
 			Body:          totpBody,
 		})
 	}
@@ -199,6 +208,18 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	}
 	if hasPerm("accountDisableTOTP") {
 		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" accountDisableTOTP      Disable TOTP for an account")
+	}
+	if hasPerm("accountSetPassword") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" accountSetPassword      Set/clear password MFA for an account")
+	}
+	if hasPerm("pivAddTrustAnchor") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" pivAddTrustAnchor       Add a PIV/YubiKey CA trust anchor")
+	}
+	if hasPerm("pivListTrustAnchors") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" pivListTrustAnchors     List PIV trust anchor CAs")
+	}
+	if hasPerm("pivRemoveTrustAnchor") {
+		accountAccessBody = append(accountAccessBody, " "+utils.FgGreen("-")+" pivRemoveTrustAnchor    Remove a PIV trust anchor CA")
 	}
 	if len(accountAccessBody) > 0 {
 		sections = append(sections, console.SectionContent{
@@ -287,6 +308,9 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	if hasPerm("groupDelAccess") {
 		groupAccessBody = append(groupAccessBody, " "+utils.FgGreen("-")+" groupDelAccess          Remove access from a group")
 	}
+	if hasPerm("groupSetMFA") {
+		groupAccessBody = append(groupAccessBody, " "+utils.FgGreen("-")+" groupSetMFA             Enable/disable JIT MFA requirement for a group")
+	}
 	if len(groupAccessBody) > 0 {
 		sections = append(sections, console.SectionContent{
 			SubTitle:      "",
@@ -319,7 +343,7 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	// TTY SESSIONS
 	var ttyBody []string
 	if hasPerm("ttyList") {
-		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions [--host] [--startDate] [--endDate]")
+		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions")
 	}
 	if hasPerm("ttyPlay") {
 		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyPlay                   Replay a recorded tty session")

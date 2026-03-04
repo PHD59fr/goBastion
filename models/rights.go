@@ -29,14 +29,19 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	case "accountListAccess":
 		return u.IsAdmin()
 	case "accountListEgressKeys":
-		return true
+		return u.IsAdmin()
 	case "accountListIngressKeys":
 		return u.IsAdmin()
 	case "accountModify":
 		return u.IsAdmin()
 	case "accountDisableTOTP":
 		return u.IsAdmin()
+	case "pivAddTrustAnchor", "pivListTrustAnchors", "pivRemoveTrustAnchor":
+		return u.IsAdmin()
 	case "whoHasAccessTo":
+		return u.IsAdmin()
+
+	case "accountSetPassword":
 		return u.IsAdmin()
 
 	// Group
@@ -52,10 +57,10 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		isGroupManager := false
 
 		for _, ug := range userGroups {
-			if ug.IsOwner() {
+			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() {
 				isGroupManager = true
 			}
-			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
+			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
 				return true
 			}
 		}
@@ -74,10 +79,10 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		isGroupManager := false
 
 		for _, ug := range userGroups {
-			if ug.IsOwner() {
+			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember() {
 				isGroupManager = true
 			}
-			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
+			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
 				return true
 			}
 		}
@@ -95,10 +100,10 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		isGroupManager := false
 
 		for _, ug := range userGroups {
-			if ug.IsOwner() {
+			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() {
 				isGroupManager = true
 			}
-			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
+			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
 				return true
 			}
 		}
@@ -117,14 +122,32 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		isGroupManager := false
 
 		for _, ug := range userGroups {
-			if ug.IsOwner() {
+			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember() {
 				isGroupManager = true
 			}
-			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
+			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
 				return true
 			}
 		}
 		return isGroupManager && target == ""
+
+	case "groupSetMFA":
+		if u.IsAdmin() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		for _, ug := range userGroups {
+			if ug.IsOwner() {
+				// Allow if target is empty (pre-dispatch check) or matches group name
+				if target == "" || ug.Group.Name == target {
+					return true
+				}
+			}
+		}
+		return false
 
 	case "groupAddMember", "groupDelMember":
 		if u.IsAdmin() {
@@ -138,10 +161,10 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		isGroupManager := false
 
 		for _, ug := range userGroups {
-			if ug.IsOwner() {
+			if ug.IsOwner() || ug.IsACLKeeper() {
 				isGroupManager = true
 			}
-			if ug.GroupID.String() == target && (ug.IsOwner() || ug.IsACLKeeper()) {
+			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper()) {
 				return true
 			}
 		}
@@ -166,7 +189,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 			if ug.IsOwner() {
 				isGroupManager = true
 			}
-			if ug.GroupID.String() == target && ug.IsOwner() {
+			if ug.Group.Name == target && ug.IsOwner() {
 				return true
 			}
 		}
@@ -208,6 +231,10 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	case "selfSetupTOTP":
 		return true
 	case "selfDisableTOTP":
+		return true
+	case "selfAddIngressKeyPIV":
+		return true
+	case "selfSetPassword", "selfChangePassword":
 		return true
 
 	// TTY

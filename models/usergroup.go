@@ -23,6 +23,7 @@ type User struct {
 	LastLoginAt   time.Time
 	TOTPSecret    string `gorm:"default:null"`
 	TOTPEnabled   bool   `gorm:"default:false"`
+	PasswordHash  string `gorm:"default:null"` // bcrypt hash for password MFA second factor
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	DeletedAt     gorm.DeletedAt `gorm:"index:idx_username_deletedat"`
@@ -53,11 +54,12 @@ func (u *User) BeforeCreate(*gorm.DB) (err error) {
 }
 
 type Group struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
-	Name      string    `gorm:"not null;index:idx_groupname_deletedat,unique"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index:idx_groupname_deletedat"`
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Name        string    `gorm:"not null;index:idx_groupname_deletedat,unique"`
+	MFARequired bool      `gorm:"default:false"` // JIT MFA: require TOTP when connecting via this group
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   gorm.DeletedAt `gorm:"index:idx_groupname_deletedat"`
 }
 
 // BeforeCreate generates a UUID for Group before insertion.
