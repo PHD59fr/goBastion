@@ -201,6 +201,8 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return true
 	case "selfRemoveHostFromKnownHosts":
 		return true
+	case "selfReplaceKnownHost":
+		return true
 
 	// TTY
 	case "ttyList", "ttyPlay":

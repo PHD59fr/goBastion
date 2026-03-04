@@ -13,6 +13,7 @@ import (
 	internalDB "goBastion/internal/db"
 	"goBastion/models"
 	"goBastion/utils/logger"
+	"goBastion/utils/sshConnector"
 	"goBastion/utils/sshHostKey"
 	"goBastion/utils/sync"
 
@@ -56,6 +57,7 @@ func isRootNonSSH() bool {
 func handleAdminFlags(db *gorm.DB, log *slog.Logger) {
 	regenerateSSHHostKeysFlag := flag.Bool("regenerateSSHHostKeys", false, "Force-regenerate SSH host keys")
 	firstInstallFlag := flag.Bool("firstInstall", false, "Bootstrap first admin user")
+	syncFlag := flag.Bool("sync", false, "Sync DB state to OS (DB is source of truth)")
 	flag.Parse()
 
 	switch {
@@ -71,28 +73,31 @@ func handleAdminFlags(db *gorm.DB, log *slog.Logger) {
 			os.Exit(1)
 		}
 
+	case *syncFlag:
+		if err := sync.EnforceFromDB(db, *log); err != nil {
+			log.Error("Error during sync", slog.Any("error", err))
+			os.Exit(1)
+		}
+
 	default:
 		runStartup(db, log)
 	}
 }
 
 // runStartup is the automatic startup sequence:
-//  1. Restore system state from DB if data already exists (container restart).
+//  1. Sync DB → OS if data already exists (container restart).
 //  2. Exit 0 if an admin user exists, exit 1 otherwise.
 //     When no admin is found, print a one-time instruction and let entrypoint retry.
 func runStartup(db *gorm.DB, log *slog.Logger) {
 	var userCount int64
 	db.Model(&models.User{}).Count(&userCount)
 	if userCount > 0 {
-		fmt.Println("[goBastion] Existing database found, restoring state...")
-		if err := sync.RestoreBastionSSHHostKeys(db); err != nil {
-			log.Error("Error restoring SSH host keys", slog.Any("error", err))
+		fmt.Println("[goBastion] Existing database found, syncing state...")
+		if err := sync.EnforceFromDB(db, *log); err != nil {
+			log.Error("Error during startup sync", slog.Any("error", err))
 		}
-		if err := sync.CreateSystemUsersFromSystemToDb(db); err != nil {
-			log.Error("Error syncing system users", slog.Any("error", err))
-		}
-		if err := sync.CreateUsersFromDB(db, *log); err != nil {
-			log.Error("Error restoring users from DB", slog.Any("error", err))
+		if err := sshConnector.CompressLegacyTtyrecFiles(); err != nil {
+			log.Error("Error compressing legacy ttyrec files", slog.Any("error", err))
 		}
 	}
 

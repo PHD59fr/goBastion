@@ -69,7 +69,10 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfGenerateEgressKey          Generate a new egress key")
 	}
 	if hasPerm("selfRemoveHostFromKnownHosts") {
-		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfRemoveHostFromKnownHosts   Remove host from Known_hosts file")
+		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfRemoveHostFromKnownHosts   Remove a host from known hosts")
+	}
+	if hasPerm("selfReplaceKnownHost") {
+		egressBody = append(egressBody, " "+utils.FgGreen("-")+" selfReplaceKnownHost           Trust new host key (after key change)")
 	}
 	if len(egressBody) > 0 {
 		sections = append(sections, console.SectionContent{
@@ -296,7 +299,7 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	// TTY SESSIONS
 	var ttyBody []string
 	if hasPerm("ttyList") {
-		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions")
+		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyList                   List recorded tty sessions [--host] [--startDate] [--endDate]")
 	}
 	if hasPerm("ttyPlay") {
 		ttyBody = append(ttyBody, " "+utils.FgGreen("-")+" ttyPlay                   Replay a recorded tty session")
