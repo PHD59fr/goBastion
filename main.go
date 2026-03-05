@@ -24,6 +24,7 @@ import (
 // main is the binary entry point; routes to admin flags, startup or user session.
 func main() {
 	log := logger.NewLogger()
+	slog.SetDefault(log)
 
 	db, err := internalDB.Init(log)
 	if err != nil {

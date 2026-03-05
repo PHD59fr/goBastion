@@ -96,6 +96,7 @@ func migrate(db *gorm.DB) error {
 		&models.Aliases{},
 		&models.SshHostKey{},
 		&models.KnownHostsEntry{},
+		&models.PIVTrustAnchor{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate models: %w", err)

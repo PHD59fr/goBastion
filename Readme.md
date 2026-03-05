@@ -38,12 +38,12 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | Command                          | Description                                                                  |
 |----------------------------------|------------------------------------------------------------------------------|
 | 🔑 `selfListIngressKeys`         | List your ingress SSH keys (keys for connecting to the bastion).             |
-| ➕ `selfAddIngressKey`            | Add a new ingress SSH key.                                                   |
+| ➕ `selfAddIngressKey`            | Add a new ingress SSH key (optional expiry).                                 |
 | ❌ `selfDelIngressKey`            | Delete an ingress SSH key.                                                   |
 | 🔑 `selfListEgressKeys`          | List your egress SSH keys (keys for connecting from the bastion to servers). |
 | 🔑 `selfGenerateEgressKey`       | Generate a new egress SSH key.                                               |
 | 📋 `selfListAccesses`            | List your personal server accesses.                                          |
-| ➕ `selfAddAccess`                | Add access to a personal server.                                             |
+| ➕ `selfAddAccess`                | Add access to a personal server (supports IP restriction, TTL, protocol).    |
 | ❌ `selfDelAccess`                | Remove access to a personal server.                                          |
 | 📋 `selfListAliases`             | List your personal SSH aliases.                                              |
 | ➕ `selfAddAlias`                 | Add a personal SSH alias.                                                    |
@@ -52,6 +52,9 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔄 `selfReplaceKnownHost`        | Trust a new host key after it changed (TOFU reset).                          |
 | 🔐 `selfSetupTOTP`               | Enable TOTP two-factor authentication (generates QR/OTP URI).                |
 | 🔐 `selfDisableTOTP`             | Disable TOTP two-factor authentication.                                      |
+| 🔑 `selfSetPassword`             | Set a password second factor (MFA). Required at every login if set.          |
+| 🔑 `selfChangePassword`          | Change your password second factor.                                          |
+| 🛡️ `selfAddIngressKeyPIV`       | Add a PIV/YubiKey hardware-attested ingress key.                             |
 
 ---
 
@@ -66,11 +69,15 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ✏️ `accountModify`          | Modify a user account (promote/demote to admin/user). |
 | 🔑 `accountListIngressKeys` | List the ingress SSH keys of a user.                  |
 | 🔑 `accountListEgressKeys`  | List the egress SSH keys of a user.                   |
-| 📋 `accountListAccess`      | List all server accesses of a user.                   |
-| ➕ `accountAddAccess`        | Grant a user access to a server.                      |
-| ❌ `accountDelAccess`        | Remove a user's access to a server.                   |
-| 📋 `whoHasAccessTo`         | Show all users with access to a specific server.      |
-| 🔐 `accountDisableTOTP`    | Disable TOTP two-factor authentication for a user.    |
+| 📋 `accountListAccess`      | List all server accesses of a user.                                          |
+| ➕ `accountAddAccess`        | Grant a user access to a server (supports IP restriction, TTL, protocol).    |
+| ❌ `accountDelAccess`        | Remove a user's access to a server.                                          |
+| 📋 `whoHasAccessTo`         | Show all users with access to a specific server (supports CIDR).             |
+| 🔐 `accountDisableTOTP`    | Disable TOTP two-factor authentication for a user.                           |
+| 🔑 `accountSetPassword`    | *(admin)* Set or clear a user's password second factor.                       |
+| 🛡️ `pivAddTrustAnchor`     | Register a Yubico PIV CA certificate as a trust anchor.                      |
+| 📋 `pivListTrustAnchors`    | List all registered PIV trust anchor CAs.                                    |
+| ❌ `pivRemoveTrustAnchor`   | Remove a PIV trust anchor CA.                                                |
 
 ---
 
@@ -87,8 +94,9 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group.      |
 | 🔑 `groupListEgressKeys`    | List all egress SSH keys associated with a group. |
 | 📋 `groupListAccesses`      | List all accesses assigned to a group.            |
-| ➕ `groupAddAccess`          | Grant access to a group.                          |
+| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction).                    |
 | ❌ `groupDelAccess`          | Remove access from a group.                       |
+| 🔐 `groupSetMFA`            | Enable or disable JIT MFA requirement for a group (owner/admin only).       |
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
 | ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
 | 📋 `groupListAliases`       | List all group SSH aliases.                       |
@@ -97,7 +105,9 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 
 ### 🔐 **MFA / TOTP (Two-Factor Authentication)**
 
-goBastion supports RFC 6238 TOTP for users who want an extra layer of security on their bastion sessions.
+goBastion supports multiple second-factor authentication methods that stack: password, TOTP, and JIT MFA per group.
+
+#### TOTP
 
 | Command               | Description                                                            |
 |-----------------------|------------------------------------------------------------------------|
@@ -107,18 +117,64 @@ goBastion supports RFC 6238 TOTP for users who want an extra layer of security o
 
 Once TOTP is enabled, the bastion will prompt for a 6-digit code at every interactive or passthrough login.
 
+#### Password Second Factor
+
+| Command                  | Description                                                               |
+|--------------------------|---------------------------------------------------------------------------|
+| `selfSetPassword`        | Set a bcrypt-hashed password as a second factor. Required at every login. |
+| `selfChangePassword`     | Change your password second factor (requires current password).           |
+| `accountSetPassword`     | *(admin)* Set or clear a user's password second factor.                   |
+
+Password MFA is independent of TOTP — both can be active simultaneously.
+
+#### JIT MFA (per-group)
+
+When a group has JIT MFA enabled via `groupSetMFA`, any user connecting via that group must pass a TOTP challenge at connection time, even if global TOTP is not enabled for their account. The user must have a TOTP secret configured (`selfSetupTOTP`) for this to work.
+
+| Command         | Description                                              |
+|-----------------|----------------------------------------------------------|
+| `groupSetMFA`   | *(owner/admin)* Enable or disable JIT MFA for a group.                   |
+
 ---
 
 ### 📡 **SCP / SFTP / rsync Passthrough**
 
-goBastion supports transparent file transfer passthrough via the standard OpenSSH `-W` proxy mechanism.
-Configure your `~/.ssh/config` to use the bastion as a `ProxyJump` or `ProxyCommand`:
+goBastion supports two passthrough modes depending on whether you need to use the bastion's egress key (recommended) or your own key on the target.
+
+#### Mode 1 — sftp-session (recommended, uses bastion's egress key)
+
+goBastion acts as a minimal SSH server and connects to the target with its own egress key. **Your local key does not need to be on the target server.**
 
 ```ssh-config
 Host my-server
     HostName 192.168.1.10
-    ProxyJump user@bastion:2222
+    User myuser
+    ProxyCommand ssh -p 2222 -- bastion_user@bastion "sftp-session myuser@%h:%p"
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
 ```
+
+> `StrictHostKeyChecking no` is required because goBastion generates an ephemeral host key for the fake SSH server on each connection.
+
+Then use sftp normally:
+```sh
+sftp my-server
+```
+
+#### Mode 2 — TCP proxy (requires your key on the target)
+
+Passes `-W %h:%p` **as a quoted string** after `--` so glibc does not treat it as a native SSH flag:
+
+```ssh-config
+Host my-server
+    HostName 192.168.1.10
+    User myuser
+    ProxyCommand ssh -p 2222 -- bastion_user@bastion "-W %h:%p"
+```
+
+> **Why `--` before the hostname?**  
+> On Linux (glibc), `ssh -W host:port` opens a raw `direct-tcpip` channel that bypasses goBastion's access controls — and is refused by the bastion's sshd.  
+> The `--` tells SSH's option parser to stop processing flags, so `-W %h:%p` becomes the **remote exec command** forwarded to goBastion, which handles it as a controlled TCP proxy via `parseTCPProxyRequest`.
 
 This enables:
 - `scp file.txt user@my-server:/path/`
@@ -127,14 +183,88 @@ This enables:
 
 All passthrough connections are subject to the same access control rules as interactive SSH sessions.
 
+#### Protocol Restriction
+
+Access entries can be restricted to a specific transfer protocol using the `--protocol` flag on `selfAddAccess`, `accountAddAccess`, and `groupAddAccess`:
+
+| Value         | Meaning                                     |
+|---------------|---------------------------------------------|
+| `ssh`         | All protocols (default, backwards-compatible) |
+| `scpupload`   | SCP upload only (`scp -t`)                  |
+| `scpdownload` | SCP download only (`scp -f`)                |
+| `sftp`        | SFTP only                                   |
+| `rsync`       | rsync only                                  |
+
+Example: grant a user rsync-only access to a backup server:
+```
+groupAddAccess --group backups --server 10.0.0.5 --username backup --protocol rsync
+```
+
+---
+
+### ⏱️ **Access TTL and IP Restriction**
+
+Every access entry (`selfAddAccess`, `accountAddAccess`, `groupAddAccess`) supports two optional constraints:
+
+| Flag | Description |
+|------|-------------|
+| `--ttl <days>` | Access expires automatically after N days. Omit for permanent access. |
+| `--from <CIDRs>` | Restrict access to specific source IP ranges (comma-separated, e.g. `10.0.0.0/8,192.168.1.0/24`). Omit to allow all IPs. |
+
+Both constraints are enforced at connection time - expired or out-of-range connections are denied.
+The `Expires` and `From` columns appear in all `listAccesses` outputs.
+
+---
+
+### 🛡️ **Yubico PIV / Hardware Key Attestation**
+
+PIV attestation lets users prove that their SSH private key was generated inside a hardware token
+(e.g. YubiKey) and cannot be exported. The full x509 attestation chain is verified against
+admin-registered CA certificates before the key is accepted.
+
+**Admin setup:**
+```
+pivAddTrustAnchor --name yubico-root --cert /path/to/yubico-piv-ca.pem
+pivListTrustAnchors
+pivRemoveTrustAnchor --name yubico-root
+```
+
+**User workflow (YubiKey):**
+```bash
+# Export attestation data from YubiKey
+yubico-piv-tool --action=attest --slot=9a > attest.pem
+yubico-piv-tool --action=read-cert --slot=f9 > intermediate.pem
+ssh-keygen -D /usr/lib/x86_64-linux-gnu/libykcs11.so -e > my_piv_key.pub
+
+# Add the key to the bastion (chain is verified server-side)
+selfAddIngressKeyPIV --attest attest.pem --intermediate intermediate.pem $(cat my_piv_key.pub)
+```
+
+Keys added via PIV attestation are marked `PIV` in `selfListIngressKeys`.
+
+---
+
+### 🐚 **Mosh Support**
+
+goBastion transparently passes through `mosh-server` invocations, enabling [Mosh](https://mosh.org/)
+sessions through the bastion. No special configuration is needed on the client side.
+
+```bash
+# Standard mosh usage - works through the bastion
+mosh --ssh="ssh -J user@bastion:2222" user@my-server
+```
+
+The bastion detects the `mosh-server` command in `SSH_ORIGINAL_COMMAND` and exec's it directly.
+UDP ports 60001-61000 must be open on the **target server** (not the bastion) for the Mosh UDP connection.
+
 ---
 
 ### 📜 **TTY Session Recording**
 
-| Command      | Description                                                                         |
-|--------------|--------------------------------------------------------------------------------------|
-| 📋 `ttyList` | List recorded SSH sessions. Filters: `--host`, `--startDate`, `--endDate`, `--user` (admin). |
-| ▶️ `ttyPlay` | Replay a recorded SSH session.                                                       |
+| Command      | Description                                                                |
+|--------------|-----------------------------------------------------------------------------|
+| 📋 `ttyList` | List recorded SSH sessions. |
+| ▶️ `ttyPlay` | Replay a recorded SSH session.                                              |
 
 ---
 
@@ -162,12 +292,16 @@ All passthrough connections are subject to the same access control rules as inte
 - `accountListIngressKeys`
 - `accountListEgressKeys`
 - `accountModify`
+- `accountSetPassword`
 - `whoHasAccessTo`
 - `accountDisableTOTP`
+- `pivAddTrustAnchor`
+- `pivListTrustAnchors`
+- `pivRemoveTrustAnchor`
 - `groupCreate`
 - `groupDelete`
-- `ttyList`
-- `ttyPlay`
+
+> **Note**: `ttyList` and `ttyPlay` are available to all users (for their own sessions) and to admins (for all sessions).
 
 ### 👥 **Group Permissions**
 
@@ -175,12 +309,16 @@ All passthrough connections are subject to the same access control rules as inte
 | ------------------------ | :---: | :-------: | :--------: | :----: |
 | `groupAddAccess`         | ✅    | ✅        | ✅         |        |
 | `groupDelAccess`         | ✅    | ✅        | ✅         |        |
-| `groupAddMember`         | ✅    | ✅        |           |        |
-| `groupDelMember`         | ✅    | ✅        |           |        |
-| `groupGenerateEgressKey` | ✅    |          |           |        |
+| `groupSetMFA`            | ✅    |           |            |        |
+| `groupAddMember`         | ✅    | ✅        |            |        |
+| `groupDelMember`         | ✅    | ✅        |            |        |
+| `groupGenerateEgressKey` | ✅    |           |            |        |
+| `groupAddAlias`          | ✅    | ✅        | ✅         |        |
+| `groupDelAlias`          | ✅    | ✅        | ✅         |        |
 | `groupInfo`              | ✅    | ✅        | ✅         | ✅     |
 | `groupList`              | ✅    | ✅        | ✅         | ✅     |
 | `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     |
+| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     |
 | `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     |
 
 ### 👤 **Self Permissions**
@@ -188,9 +326,12 @@ All passthrough connections are subject to the same access control rules as inte
 - `selfAddAccess`
 - `selfAddAlias`
 - `selfAddIngressKey`
+- `selfAddIngressKeyPIV`
+- `selfChangePassword`
 - `selfDelAccess`
 - `selfDelAlias`
 - `selfDelIngressKey`
+- `selfDisableTOTP`
 - `selfGenerateEgressKey`
 - `selfListAccesses`
 - `selfListAliases`
@@ -198,8 +339,10 @@ All passthrough connections are subject to the same access control rules as inte
 - `selfListIngressKeys`
 - `selfRemoveHostFromKnownHosts`
 - `selfReplaceKnownHost`
+- `selfSetPassword`
 - `selfSetupTOTP`
-- `selfDisableTOTP`
+- `ttyList` *(own sessions only)*
+- `ttyPlay` *(own sessions only)*
 
 ⚠ **Alias Priority Warning**:
 If an alias is defined by the user (`selfAddAlias`) and the group defines an alias with the same name (`groupAddAlias`), **the user-defined alias always takes precedence**
@@ -238,8 +381,6 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
    ```sh
    docker run --name gobastion --hostname goBastion -it -p 2222:22 phd59fr/gobastion:latest
    ```
-
-   > **Note**: Use `-it` on first run - the container will interactively prompt for the first admin username and SSH public key before starting sshd. On subsequent starts (existing database), it restores automatically and starts sshd without any prompt.
 
    (optional) 3a. Launch the container with a volume to persist the database and ttyrec:
 
@@ -282,22 +423,7 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
    ssh -tp 2222 user@localhost -- user@targethost (ssh options supported) (or alias gobastion user@targethost)
    ```
 
-   (optional) 5c. Use SCP / SFTP / rsync through the bastion (configure ProxyJump):
-
-   ```ssh-config
-   # ~/.ssh/config
-   Host my-server
-       HostName 192.168.1.10
-       ProxyJump user@bastion-host:2222
-   ```
-
-   Then use standard tools transparently:
-
-   ```sh
-   scp file.txt user@my-server:/path/
-   sftp user@my-server
-   rsync -avz ./dir/ user@my-server:/path/
-   ```
+   (optional) 5c. Use SFTP / SCP / rsync through the bastion — see [SCP / SFTP / rsync Passthrough](#-scp--sftp--rsync-passthrough) for full configuration details.
 
 ---
 

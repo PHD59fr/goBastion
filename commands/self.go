@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -20,7 +21,9 @@ import (
 	"goBastion/utils/sync"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 	"gorm.io/gorm"
 )
 
@@ -430,18 +433,37 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 	}
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tComment\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tProtocol\tComment\tFrom\tExpires\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		expiresStr := "Never"
+		if access.ExpiresAt != nil {
+			if access.ExpiresAt.Before(time.Now()) {
+				expiresStr = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
+			} else {
+				expiresStr = access.ExpiresAt.Format("2006-01-02")
+			}
+		}
+		fromStr := access.AllowedFrom
+		if fromStr == "" {
+			fromStr = "*"
+		}
+		proto := access.Protocol
+		if proto == "" {
+			proto = "ssh"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
 			access.Port,
+			proto,
 			access.Comment,
+			fromStr,
+			expiresStr,
 			lastUsed,
 			access.CreatedAt.Format("2006-01-02 15:04:05"),
 		)
@@ -463,18 +485,22 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 // SelfAddAccess adds a personal SSH access entry for the current user.
 func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddAccess", flag.ContinueOnError)
-	var server, username, comment string
+	var server, username, comment, allowedFrom, protocol string
 	var port int64
+	var ttlDays int
 	fs.StringVar(&server, "server", "", "Server name")
 	fs.StringVar(&username, "username", "", "SSH username")
 	fs.Int64Var(&port, "port", 22, "Port number")
 	fs.StringVar(&comment, "comment", "", "Comment")
+	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated, e.g. 10.0.0.0/8,192.168.1.0/24)")
+	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
+	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
 	if err := fs.Parse(args); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfAddAccess --server <server> --username <username> --port <port> --comment <comment>"}},
+				{SubTitle: "Usage Error", Body: []string{"Usage: selfAddAccess --server <server> --username <username> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}},
 			},
 		})
 		return err
@@ -484,8 +510,17 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"selfAddAccess --server <server> --username <username> --port <port> --comment <comment>"}},
+				{SubTitle: "Usage", Body: []string{"selfAddAccess --server <server> --username <username> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}},
 			},
+		})
+		return nil
+	}
+	validProtocols := map[string]bool{"ssh": true, "scpupload": true, "scpdownload": true, "sftp": true, "rsync": true}
+	if !validProtocols[protocol] {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
 		})
 		return nil
 	}
@@ -511,11 +546,17 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 		return fmt.Errorf("database error: %v", result.Error)
 	}
 	access := models.SelfAccess{
-		UserID:   user.ID,
-		Server:   server,
-		Username: username,
-		Port:     port,
-		Comment:  comment,
+		UserID:      user.ID,
+		Server:      server,
+		Username:    username,
+		Port:        port,
+		Comment:     comment,
+		AllowedFrom: allowedFrom,
+		Protocol:    protocol,
+	}
+	if ttlDays > 0 {
+		t := time.Now().AddDate(0, 0, ttlDays)
+		access.ExpiresAt = &t
 	}
 	if err := db.Create(&access).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -893,4 +934,118 @@ func removeHostFromKnownHosts(db *gorm.DB, u *models.User, args []string, replac
 		},
 	})
 	return nil
+}
+
+// SelfSetPassword sets a password-based MFA second factor for the current user.
+// The password is stored as a bcrypt hash. It will be required at every login in addition to key auth.
+func SelfSetPassword(db *gorm.DB, user *models.User, args []string) error {
+	fmt.Print("Enter new password: ")
+	pass1, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("could not read password: %v", err)
+	}
+	fmt.Print("\nConfirm new password: ")
+	pass2, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("could not read password: %v", err)
+	}
+	fmt.Println()
+	if pass1 != pass2 {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Passwords do not match."}}},
+		})
+		return nil
+	}
+	if len(pass1) < 8 {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Set Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
+		})
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass1), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("bcrypt error: %v", err)
+	}
+	if err := db.Model(user).Update("password_hash", string(hash)).Error; err != nil {
+		return fmt.Errorf("failed to save password: %v", err)
+	}
+	user.PasswordHash = string(hash)
+	slog.Default().Info("password mfa set", slog.String("user", user.Username))
+	console.DisplayBlock(console.ContentBlock{
+		Title: "Set Password MFA", BlockType: "success",
+		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password MFA configured. It will be required at every login."}}},
+	})
+	return nil
+}
+
+// SelfChangePassword changes the user's password MFA, verifying the current password first.
+func SelfChangePassword(db *gorm.DB, user *models.User, args []string) error {
+	if user.PasswordHash == "" {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Change Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"No password MFA configured. Use selfSetPassword first."}}},
+		})
+		return nil
+	}
+	fmt.Print("Enter current password: ")
+	current, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("could not read password: %v", err)
+	}
+	fmt.Println()
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
+		slog.Default().Warn("password mfa change denied - wrong current password", slog.String("user", user.Username))
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Change Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Current password is incorrect."}}},
+		})
+		return nil
+	}
+	fmt.Print("Enter new password: ")
+	pass1, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("could not read password: %v", err)
+	}
+	fmt.Print("\nConfirm new password: ")
+	pass2, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("could not read password: %v", err)
+	}
+	fmt.Println()
+	if pass1 != pass2 {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Change Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Passwords do not match."}}},
+		})
+		return nil
+	}
+	if len(pass1) < 8 {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Change Password MFA", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
+		})
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass1), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("bcrypt error: %v", err)
+	}
+	if err := db.Model(user).Update("password_hash", string(hash)).Error; err != nil {
+		return fmt.Errorf("failed to save password: %v", err)
+	}
+	user.PasswordHash = string(hash)
+	slog.Default().Info("password mfa changed", slog.String("user", user.Username))
+	console.DisplayBlock(console.ContentBlock{
+		Title: "Change Password MFA", BlockType: "success",
+		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password updated."}}},
+	})
+	return nil
+}
+
+// readPassword reads a password from stdin without echo.
+func readPassword() (string, error) {
+	pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+	return string(pass), err
 }

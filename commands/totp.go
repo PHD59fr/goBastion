@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -34,14 +35,17 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User) error {
 
 	url := totp.OtpAuthURL("goBastion", user.Username, secret)
 
-	// Print QR code directly to terminal
+	// Print QR code directly to terminal (half-block mode = half the size)
 	fmt.Println()
 	qrterminal.GenerateWithConfig(url, qrterminal.Config{
-		Level:     qrterminal.M,
-		Writer:    os.Stdout,
-		BlackChar: qrterminal.BLACK,
-		WhiteChar: qrterminal.WHITE,
-		QuietZone: 1,
+		Level:          qrterminal.L,
+		Writer:         os.Stdout,
+		BlackChar:      qrterminal.BLACK_BLACK,
+		WhiteChar:      qrterminal.WHITE_WHITE,
+		BlackWhiteChar: qrterminal.BLACK_WHITE,
+		WhiteBlackChar: qrterminal.WHITE_BLACK,
+		QuietZone:      1,
+		HalfBlocks:     true,
 	})
 	fmt.Println()
 
@@ -63,6 +67,7 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User) error {
 	code = strings.TrimSpace(code)
 
 	if !totp.Verify(secret, code) {
+		slog.Default().Warn("totp setup failed - bad confirmation code", slog.String("user", user.Username))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Setup TOTP",
 			BlockType: "error",
@@ -79,6 +84,7 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User) error {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}
 
+	slog.Default().Info("totp enabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Setup TOTP",
 		BlockType: "success",
@@ -112,6 +118,7 @@ func SelfDisableTOTP(db *gorm.DB, user *models.User) error {
 	code = strings.TrimSpace(code)
 
 	if !totp.Verify(user.TOTPSecret, code) {
+		slog.Default().Warn("totp disable failed - bad code", slog.String("user", user.Username))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable TOTP",
 			BlockType: "error",
@@ -128,6 +135,7 @@ func SelfDisableTOTP(db *gorm.DB, user *models.User) error {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}
 
+	slog.Default().Info("totp disabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Disable TOTP",
 		BlockType: "success",
@@ -172,6 +180,7 @@ func AccountDisableTOTP(db *gorm.DB, currentUser *models.User, args []string) er
 		return fmt.Errorf("failed to save: %w", err)
 	}
 
+	slog.Default().Info("totp admin-disabled", slog.String("target", username), slog.String("by", currentUser.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Disable TOTP",
 		BlockType: "success",

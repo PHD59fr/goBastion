@@ -14,8 +14,9 @@ type SelfAccess struct {
 	Username       string     `gorm:"not null"`
 	Server         string     `gorm:"not null"`
 	Port           int64      `gorm:"not null"`
+	Protocol       string     `gorm:"default:ssh"` // ssh, scpupload, scpdownload, sftp, rsync
 	Comment        string     `gorm:"default:null"`
-	AllowedFrom    string     `gorm:"default:null"` // comma-separated CIDRs, empty = unrestricted
+	AllowedFrom    string     `gorm:"default:null"`
 	ExpiresAt      *time.Time `gorm:"default:null"`
 	LastConnection time.Time  `gorm:"default:null"`
 	CreatedAt      time.Time
@@ -36,8 +37,9 @@ type GroupAccess struct {
 	Username       string     `gorm:"not null"`
 	Server         string     `gorm:"not null"`
 	Port           int64      `gorm:"not null"`
+	Protocol       string     `gorm:"default:ssh"` // ssh, scpupload, scpdownload, sftp, rsync
 	Comment        string     `gorm:"default:null"`
-	AllowedFrom    string     `gorm:"default:null"` // comma-separated CIDRs, empty = unrestricted
+	AllowedFrom    string     `gorm:"default:null"`
 	ExpiresAt      *time.Time `gorm:"default:null"`
 	LastConnection time.Time  `gorm:"default:null"`
 	CreatedAt      time.Time
@@ -53,7 +55,7 @@ func (ga *GroupAccess) BeforeCreate(*gorm.DB) (err error) {
 
 type AccessRight struct {
 	ID             uuid.UUID
-	Source         string // "account", "group", "admin"
+	Source         string
 	Username       string
 	Server         string
 	Port           int64
@@ -66,4 +68,5 @@ type AccessRight struct {
 	PublicKey      string
 	PrivateKey     string
 	RemoteCmd      string // non-empty for non-interactive sessions (e.g. SCP commands)
+	MFARequired    bool   // JIT MFA required for this access (from group policy)
 }

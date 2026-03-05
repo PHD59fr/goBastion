@@ -19,8 +19,20 @@ import (
 	"gorm.io/gorm"
 )
 
+// isNonInteractiveCmd reports whether cmd is a binary file-transfer protocol
+// (sftp, scp, rsync) that must not run through ttyrec — a PTY-based recorder
+// that would corrupt binary data.
+func isNonInteractiveCmd(cmd string) bool {
+	c := strings.ToLower(strings.TrimSpace(cmd))
+	return strings.Contains(c, "sftp-server") ||
+		strings.HasPrefix(c, "scp ") ||
+		strings.HasPrefix(c, "rsync ") ||
+		strings.Contains(c, "rsync --server")
+}
+
 // SshConnection writes the egress key to a temp file and executes an SSH session via ttyrec.
-// It performs TOFU host key verification before connecting.
+// For non-interactive binary protocols (sftp, scp, rsync) ttyrec is bypassed to avoid
+// PTY corruption of binary data. It performs TOFU host key verification before connecting.
 func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) error {
 	if err := checkAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {
 		return err
@@ -42,6 +54,33 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	defer func(name string) {
 		_ = os.Remove(name)
 	}(tmpFilePath)
+
+	knownHostsFile := fmt.Sprintf("/home/%s/.ssh/known_hosts", strings.ToLower(user.Username))
+	sshArgs := []string{
+		"-i", tmpFilePath,
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + knownHostsFile,
+		access.Username + "@" + access.Server, "-p", strconv.FormatInt(access.Port, 10),
+	}
+	if access.RemoteCmd != "" {
+		sshArgs = append(sshArgs, "--", access.RemoteCmd)
+	}
+
+	// Binary protocols must not go through ttyrec: the PTY would corrupt the data stream.
+	if access.RemoteCmd != "" && isNonInteractiveCmd(access.RemoteCmd) {
+		sshCmd := exec.Command("ssh", sshArgs...)
+		sshCmd.Stdin = os.Stdin
+		sshCmd.Stdout = os.Stdout
+		sshCmd.Stderr = os.Stderr
+		if cmdErr := sshCmd.Run(); cmdErr != nil {
+			switch cmdErr.Error() {
+			case "exit status 100", "exit status 130", "signal: interrupt":
+				return nil
+			}
+			return fmt.Errorf("ssh execution error: %v", cmdErr)
+		}
+		return nil
+	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	dir := fmt.Sprintf("/app/ttyrec/%s/%s/", user.Username, access.Server)
@@ -111,16 +150,6 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		}
 	}()
 
-	knownHostsFile := fmt.Sprintf("/home/%s/.ssh/known_hosts", strings.ToLower(user.Username))
-	sshArgs := []string{
-		"-i", tmpFilePath,
-		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + knownHostsFile,
-		access.Username + "@" + access.Server, "-p", strconv.FormatInt(access.Port, 10),
-	}
-	if access.RemoteCmd != "" {
-		sshArgs = append(sshArgs, "--", access.RemoteCmd)
-	}
 	cmd := exec.Command("ttyrec", append([]string{"-f", ttyrecFile, "--", "ssh"}, sshArgs...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
