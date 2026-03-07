@@ -45,6 +45,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 		dialector = postgres.Open(dsn)
 
 	default: // sqlite
+		driver = "sqlite"
 		if dsn == "" {
 			if err := os.MkdirAll(dbDir, 0777); err != nil {
 				return nil, fmt.Errorf("failed to create DB directory %s: %w", dbDir, err)
@@ -70,12 +71,18 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+	if log != nil {
+		log.Info("db_connect", slog.String("event", "db_connect"), slog.String("driver", driver))
+	}
 
 	if err = migrate(db); err != nil {
 		return nil, err
 	}
+	if log != nil {
+		log.Info("db_migrate", slog.String("event", "db_migrate"), slog.String("driver", driver))
+	}
 
-	if err = configure(db); err != nil {
+	if err = configure(db, driver); err != nil {
 		return nil, err
 	}
 
@@ -110,8 +117,8 @@ func migrate(db *gorm.DB) error {
 	return nil
 }
 
-// configure sets connection pool parameters and SQLite pragmas.
-func configure(db *gorm.DB) error {
+// configure sets connection pool parameters and SQLite-specific pragmas (SQLite only).
+func configure(db *gorm.DB, driver string) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get generic database object: %w", err)
@@ -121,10 +128,12 @@ func configure(db *gorm.DB) error {
 	sqlDB.SetMaxIdleConns(1)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	db.Exec("PRAGMA journal_mode=WAL;")
-	db.Exec("PRAGMA synchronous=NORMAL;")
-	db.Exec("PRAGMA cache_size=-2000;")
-	db.Exec("PRAGMA busy_timeout=20000;")
+	if driver == "sqlite" {
+		db.Exec("PRAGMA journal_mode=WAL;")
+		db.Exec("PRAGMA synchronous=NORMAL;")
+		db.Exec("PRAGMA cache_size=-2000;")
+		db.Exec("PRAGMA busy_timeout=20000;")
+	}
 
 	return nil
 }

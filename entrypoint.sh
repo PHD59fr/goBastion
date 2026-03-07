@@ -1,8 +1,15 @@
 #!/bin/sh
 
+# Tail GELF app logs immediately so docker logs captures startup events
+# (DB connect, migrations, no-admin warnings) before sshd even starts.
+touch /goBastion.log
+tail -f /goBastion.log &
+
 # Auto startup: syncs DB state to OS if present.
-# Exits 1 if no admin exists (no TTY) — retry every 5s until one is created via --firstInstall.
+# Exits 1 if no admin exists (no TTY) — waits until one is created via --firstInstall.
 until /app/goBastion; do
+    printf '{"version":"1.1","host":"%s","timestamp":%s,"level":4,"short_message":"Waiting for first admin. Run: docker exec -it %s goBastion --firstInstall","_mode":"system","_event":"first_install_required"}\n' \
+      "${HOSTNAME:-goBastion}" "$(date +%s)" "${HOSTNAME:-goBastion}"
     sleep 5
 done
 
@@ -230,7 +237,4 @@ BEGIN {
 
   emit(msg, host, lvl, ev, from, port, user, to, fp)
 }
-' &
-
-# Tail GELF app logs (goBastion events: logins, commands, errors).
-tail -f /goBastion.log
+'

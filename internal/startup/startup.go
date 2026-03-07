@@ -71,7 +71,10 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 		return
 	}
 
-	log.Warn("startup", slog.String("event", "startup"), slog.String("reason", "no_admin_configured"))
+	log.Warn("No admin user configured. Run: docker exec -it <container> goBastion --firstInstall",
+		slog.String("event", "startup"),
+		slog.String("reason", "no_admin_configured"),
+	)
 	os.Exit(1)
 }
 
