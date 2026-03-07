@@ -42,11 +42,11 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		slog.String("protocol", protocol),
 	)
 
-	log.Info("ssh connection attempt")
+	log.Info("ssh_connect", slog.String("event", "ssh_connect"))
 
 	forcedHost, err := resolveForcedHost(db, user, sshHost)
 	if err != nil {
-		log.Error("alias resolution failed", slog.String("error", err.Error()))
+		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
 		return fmt.Errorf("error searching host: %v", err)
 	}
 
@@ -54,13 +54,13 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	fmt.Printf("⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(sshUser+"@"+sshHost+":"+sshPort))
 
 	if forcedHost.Host != "" {
-		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("resolved_host", forcedHost.Host))
+		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
 		sshHost = forcedHost.Host
 	}
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
-		log.Warn("ssh access denied", slog.String("error", err.Error()))
+		log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "access denied"), slog.String("error", err.Error()))
 		return fmt.Errorf("%v\n", err)
 	}
 
@@ -85,7 +85,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 				if user.TOTPSecret == "" {
 					fmt.Println("⛔ This group requires MFA but you have no TOTP secret configured.")
 					fmt.Println("   Run selfSetupTOTP first, then ask your admin to enable JIT MFA for this group.")
-					log.Warn("jit mfa blocked - no totp secret", slog.String("source", access.Source))
+					log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
 					return nil
 				}
 				if !promptTOTP(user, log) {
@@ -93,20 +93,20 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 				}
 			}
 
-			log.Info("ssh connection started", slog.String("source", access.Source), slog.String("key_id", access.KeyId.String()))
+			log.Info("ssh_connect", slog.String("event", "ssh_connect"), slog.String("to", access.Source), slog.String("key_id", access.KeyId.String()))
 			access.RemoteCmd = remoteCmd
 			err = sshConnector.SshConnection(db, user, access)
 			if err != nil {
-				log.Error("ssh connection failed", slog.String("source", access.Source), slog.String("error", err.Error()))
+				log.Error("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source), slog.String("error", err.Error()))
 				fmt.Printf("Key verification failed: %v\n", err)
 			} else {
-				log.Info("ssh connection closed", slog.String("source", access.Source))
+				log.Info("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source))
 			}
 			return nil
 		}
 	}
 
-	log.Warn("ssh connection blocked", slog.String("reason", "no valid key found"))
+	log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "no valid key found"))
 	fmt.Println("No valid key found for the user or group.")
 	return nil
 }
@@ -308,16 +308,16 @@ func promptTOTP(user models.User, log *slog.Logger) bool {
 	reader := bufio.NewReader(os.Stdin)
 	code, err := reader.ReadString('\n')
 	if err != nil {
-		log.Warn("jit mfa read error", slog.String("user", user.Username), slog.String("error", err.Error()))
+		log.Warn("mfa_error", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("error", err.Error()))
 		fmt.Fprintln(os.Stderr, "⛔ Could not read TOTP code.")
 		return false
 	}
 	if !totpUtil.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
-		log.Warn("jit mfa failure", slog.String("user", user.Username))
+		log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
 		fmt.Println("⛔ Invalid TOTP code. Access denied.")
 		return false
 	}
-	log.Info("jit mfa success", slog.String("user", user.Username))
+	log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
 	return true
 }
 
@@ -460,25 +460,25 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 	// Resolve alias (e.g. "test" → actual hostname/IP), mirroring SSHConnect behaviour.
 	forcedHost, err := resolveForcedHost(db, user, host)
 	if err != nil {
-		log.Error("alias resolution failed", slog.String("error", err.Error()))
+		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
 		return fmt.Errorf("error searching host: %v", err)
 	}
 	if forcedHost.Host != "" {
-		log.Info("alias resolved", slog.String("alias", host), slog.String("resolved_host", forcedHost.Host))
+		log.Info("alias resolved", slog.String("alias", host), slog.String("to", forcedHost.Host))
 		host = forcedHost.Host
 	}
 
 	if !hasAnyAccessToHost(db, user, host, portInt) {
-		log.Warn("tcp proxy access denied")
+		log.Warn("tcp_proxy", slog.String("event", "tcp_proxy"), slog.String("reason", "access denied"))
 		return fmt.Errorf("⛔ Access denied for %s to %s:%s", user.Username, host, port)
 	}
 
-	log.Info("tcp proxy started")
+	log.Info("tcp_proxy", slog.String("event", "tcp_proxy"))
 	if err := tcpProxy.Proxy(host, port); err != nil {
-		log.Error("tcp proxy error", slog.String("error", err.Error()))
+		log.Error("tcp_proxy", slog.String("event", "tcp_proxy"), slog.String("error", err.Error()))
 		return err
 	}
-	log.Info("tcp proxy closed")
+	log.Info("tcp_proxy", slog.String("event", "tcp_proxy"), slog.String("reason", "closed"))
 	return nil
 }
 
@@ -513,31 +513,31 @@ func SftpSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 	// Resolve alias (e.g. "master2" → actual hostname/IP).
 	forcedHost, err := resolveForcedHost(db, user, sshHost)
 	if err != nil {
-		log.Error("alias resolution failed", slog.String("error", err.Error()))
+		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
 		return fmt.Errorf("error searching host: %v", err)
 	}
 	if forcedHost.Host != "" {
-		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("resolved_host", forcedHost.Host))
+		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
 		sshHost = forcedHost.Host
 	}
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, "sftp")
 	if err != nil {
-		log.Warn("sftp-session access denied", slog.String("error", err.Error()))
+		log.Warn("sftp_session", slog.String("event", "sftp_session"), slog.String("reason", "access denied"), slog.String("error", err.Error()))
 		return err
 	}
 	if len(accesses) == 0 {
-		log.Warn("sftp-session access denied", slog.String("reason", "no matching access"))
+		log.Warn("sftp_session", slog.String("event", "sftp_session"), slog.String("reason", "no matching access"))
 		return fmt.Errorf("⛔ Access denied for %s to %s@%s:%s", user.Username, sshUser, sshHost, sshPort)
 	}
 
 	access := accesses[0]
-	log.Info("sftp-session started", slog.String("source", access.Source))
+	log.Info("sftp_session", slog.String("event", "sftp_session"), slog.String("to", access.Source))
 	if err = sftpProxy.Proxy(access); err != nil {
-		log.Error("sftp-session error", slog.String("error", err.Error()))
+		log.Error("sftp_session", slog.String("event", "sftp_session"), slog.String("error", err.Error()))
 		return err
 	}
-	log.Info("sftp-session closed")
+	log.Info("sftp_session", slog.String("event", "sftp_session"), slog.String("reason", "closed"))
 	return nil
 }
 

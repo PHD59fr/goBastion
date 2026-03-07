@@ -13,7 +13,8 @@ done
     /app/goBastion --sync
 done) &
 
-echo "[goBastion] Starting sshd..."
+printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"starting sshd","_mode":"system","_event":"sshd_start"}\n' \
+  "${HOSTNAME:-goBastion}" "$(date +%s)"
 # -e sends sshd logs to stderr instead of syslog; 2>&1 forwards them to docker logs.
 /usr/sbin/sshd -D -e 2>&1 \
 | sed -r '
