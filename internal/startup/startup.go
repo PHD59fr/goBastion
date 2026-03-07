@@ -65,7 +65,7 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 	}
 
 	var adminCount int64
-	db.Model(&models.User{}).Where("system_user = ? AND role = ?", false, models.RoleAdmin).Count(&adminCount)
+	db.Model(&models.User{}).Where("system_user = ? AND role = ?", 0, models.RoleAdmin).Count(&adminCount)
 	if adminCount > 0 {
 		log.Info("startup", slog.String("event", "startup"), slog.String("reason", "ready"))
 		return
@@ -81,7 +81,7 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 // createFirstAdminUser bootstraps the very first administrator account interactively.
 func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, adapter osadapter.SystemAdapter) error {
 	var userCount int64
-	if err := db.Model(&models.User{}).Where("system_user = ?", false).Count(&userCount).Error; err != nil {
+	if err := db.Model(&models.User{}).Where("system_user = ?", 0).Count(&userCount).Error; err != nil {
 		return fmt.Errorf("error counting users: %w", err)
 	}
 	if userCount > 0 {

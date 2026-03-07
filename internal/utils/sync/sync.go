@@ -58,7 +58,7 @@ return nil
 }
 
 var users []models.User
-if err := s.db.Where("system_user = ?", false).Find(&users).Error; err != nil {
+if err := s.db.Where("system_user = ?", 0).Find(&users).Error; err != nil {
 return fmt.Errorf("error retrieving users: %w", err)
 }
 for _, u := range users {
@@ -82,7 +82,7 @@ return nil
 // CreateSystemUsersFromSystemToDb imports existing OS users into the database.
 func (s *Syncer) CreateSystemUsersFromSystemToDb() error {
 var userCount int64
-if err := s.db.Model(&models.User{}).Where("system_user = ?", true).Count(&userCount).Error; err != nil {
+if err := s.db.Model(&models.User{}).Where("system_user = ?", 1).Count(&userCount).Error; err != nil {
 return fmt.Errorf("error counting users: %w", err)
 }
 if userCount > 0 {
@@ -315,7 +315,7 @@ s.log.Error("[sync] Error syncing SSH host keys", slog.Any("error", err))
 }
 
 var dbUsers []models.User
-if err := s.db.Where("system_user = ?", false).Find(&dbUsers).Error; err != nil {
+if err := s.db.Where("system_user = ?", 0).Find(&dbUsers).Error; err != nil {
 return fmt.Errorf("[sync] error querying DB users: %w", err)
 }
 

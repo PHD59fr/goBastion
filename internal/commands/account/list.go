@@ -12,7 +12,7 @@ import (
 // AccountList displays all non-system user accounts.
 func AccountList(db *gorm.DB, currentUser *models.User) error {
 	var users []models.User
-	if err := db.Where("system_user = ?", false).Find(&users).Error; err != nil {
+	if err := db.Where("system_user = ?", 0).Find(&users).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account List",
 			BlockType: "error",
