@@ -17,12 +17,12 @@ type User struct {
 	ID            uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Username      string    `gorm:"not null;index:idx_username_deletedat,unique"`
 	Role          string    `gorm:"not null"` // "admin" or "user"
-	Enabled       bool      `gorm:"default:true"`
-	SystemUser    bool      `gorm:"default:false"`
+	Enabled       bool      `gorm:"type:boolean;default:true"`
+	SystemUser    bool      `gorm:"type:boolean;default:false"`
 	LastLoginFrom string    `gorm:"default:null"`
 	LastLoginAt   time.Time
 	TOTPSecret    string `gorm:"default:null"`
-	TOTPEnabled   bool   `gorm:"default:false"`
+	TOTPEnabled   bool   `gorm:"type:boolean;default:false"`
 	PasswordHash  string `gorm:"default:null"` // bcrypt hash for password MFA second factor
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
@@ -56,7 +56,7 @@ func (u *User) BeforeCreate(*gorm.DB) (err error) {
 type Group struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Name        string    `gorm:"not null;index:idx_groupname_deletedat,unique"`
-	MFARequired bool      `gorm:"default:false"` // JIT MFA: require TOTP when connecting via this group
+	MFARequired bool      `gorm:"type:boolean;default:false"` // JIT MFA: require TOTP when connecting via this group
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index:idx_groupname_deletedat"`

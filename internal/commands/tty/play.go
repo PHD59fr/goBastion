@@ -81,7 +81,7 @@ func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
 			Title:     "TTY Session Playback",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "TTY Session Not Found", Body: []string{fmt.Sprintf("Specified TTY Session does not exist")}},
+				{SubTitle: "TTY Session Not Found", Body: []string{"Specified TTY Session does not exist"}},
 			},
 		})
 		return nil

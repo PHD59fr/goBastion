@@ -11,6 +11,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 
+	internaldb "goBastion/internal/db"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils/sshHostKey"
@@ -65,20 +66,23 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 	}
 
 	var adminCount int64
-	db.Model(&models.User{}).Where("system_user = ? AND role = ?", false, models.RoleAdmin).Count(&adminCount)
+	db.Model(&models.User{}).Where(internaldb.BoolFalseExpr(db, "system_user")+" AND role = ?", models.RoleAdmin).Count(&adminCount)
 	if adminCount > 0 {
 		log.Info("startup", slog.String("event", "startup"), slog.String("reason", "ready"))
 		return
 	}
 
-	log.Warn("startup", slog.String("event", "startup"), slog.String("reason", "no_admin_configured"))
+	log.Warn("No admin user configured. Run: docker exec -it <container> goBastion --firstInstall",
+		slog.String("event", "startup"),
+		slog.String("reason", "no_admin_configured"),
+	)
 	os.Exit(1)
 }
 
 // createFirstAdminUser bootstraps the very first administrator account interactively.
 func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, adapter osadapter.SystemAdapter) error {
 	var userCount int64
-	if err := db.Model(&models.User{}).Where("system_user = ?", false).Count(&userCount).Error; err != nil {
+	if err := db.Model(&models.User{}).Where(internaldb.BoolFalseExpr(db, "system_user")).Count(&userCount).Error; err != nil {
 		return fmt.Errorf("error counting users: %w", err)
 	}
 	if userCount > 0 {

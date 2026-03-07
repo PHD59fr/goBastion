@@ -38,7 +38,7 @@ type IngressKey struct {
 	Fingerprint string     `gorm:"not null"`
 	Comment     string
 	ExpiresAt   *time.Time `gorm:"default:null"`
-	PIVAttested bool       `gorm:"default:false"`
+	PIVAttested bool       `gorm:"type:boolean;default:false"`
 	User        User       `gorm:"foreignKey:UserID"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

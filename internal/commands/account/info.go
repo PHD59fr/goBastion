@@ -94,7 +94,7 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("Last Login: %s", user.LastLoginAt),
 		fmt.Sprintf("Last Login From: %s", user.LastLoginFrom),
-		fmt.Sprintf("Groups:"),
+		"Groups:",
 	}
 
 	if len(userGroups) == 0 {

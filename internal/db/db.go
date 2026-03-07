@@ -45,6 +45,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 		dialector = postgres.Open(dsn)
 
 	default: // sqlite
+		driver = "sqlite"
 		if dsn == "" {
 			if err := os.MkdirAll(dbDir, 0777); err != nil {
 				return nil, fmt.Errorf("failed to create DB directory %s: %w", dbDir, err)
@@ -70,20 +71,59 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-
-	if err = migrate(db); err != nil {
-		return nil, err
+	if log != nil {
+		log.Info("db_connect", slog.String("event", "db_connect"), slog.String("driver", driver))
 	}
 
-	if err = configure(db); err != nil {
+	if err = migrate(db, driver); err != nil {
+		return nil, err
+	}
+	if log != nil {
+		log.Info("db_migrate", slog.String("event", "db_migrate"), slog.String("driver", driver))
+	}
+
+	if driver == "postgres" {
+		fixPostgresBoolColumns(db, log)
+	}
+
+	if err = configure(db, driver); err != nil {
 		return nil, err
 	}
 
 	return db, nil
 }
 
+// fixPostgresBoolColumns ensures boolean-intended columns are of type boolean.
+// Columns created by older images without explicit type tags may be text.
+// Uses a USING expression safe for both text ('false'/'true') and boolean values.
+func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
+	type colFix struct{ table, column string }
+	fixes := []colFix{
+		{"users", "system_user"},
+		{"users", "enabled"},
+		{"users", "totp_enabled"},
+		{"groups", "mfa_required"},
+		{"ingress_keys", "piv_attested"},
+	}
+	for _, f := range fixes {
+		sql := fmt.Sprintf(
+			`ALTER TABLE IF EXISTS "%s" ALTER COLUMN "%s" TYPE boolean `+
+				`USING CASE WHEN "%s"::text = ANY(ARRAY['false','f','0','']) THEN false ELSE true END`,
+			f.table, f.column, f.column,
+		)
+		if err := db.Exec(sql).Error; err != nil && log != nil {
+			log.Warn("db_bool_migrate",
+				slog.String("event", "db_bool_migrate"),
+				slog.String("table", f.table),
+				slog.String("column", f.column),
+				slog.Any("error", err),
+			)
+		}
+	}
+}
+
 // migrate runs GORM AutoMigrate for all models and creates custom indexes.
-func migrate(db *gorm.DB) error {
+func migrate(db *gorm.DB, driver string) error {
 	err := db.AutoMigrate(
 		&models.User{},
 		&models.Group{},
@@ -107,11 +147,12 @@ func migrate(db *gorm.DB) error {
 		ON known_hosts_entries(user_id, entry)
 		WHERE deleted_at IS NULL;
 	`)
+
 	return nil
 }
 
-// configure sets connection pool parameters and SQLite pragmas.
-func configure(db *gorm.DB) error {
+// configure sets connection pool parameters and SQLite-specific pragmas (SQLite only).
+func configure(db *gorm.DB, driver string) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get generic database object: %w", err)
@@ -121,10 +162,38 @@ func configure(db *gorm.DB) error {
 	sqlDB.SetMaxIdleConns(1)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	db.Exec("PRAGMA journal_mode=WAL;")
-	db.Exec("PRAGMA synchronous=NORMAL;")
-	db.Exec("PRAGMA cache_size=-2000;")
-	db.Exec("PRAGMA busy_timeout=20000;")
+	if driver == "sqlite" {
+		db.Exec("PRAGMA journal_mode=WAL;")
+		db.Exec("PRAGMA synchronous=NORMAL;")
+		db.Exec("PRAGMA cache_size=-2000;")
+		db.Exec("PRAGMA busy_timeout=20000;")
+	}
 
 	return nil
+}
+
+// BoolFalseExpr returns a SQL WHERE fragment matching rows where column is false/0.
+// Dispatches to the correct expression based on the active database driver.
+func BoolFalseExpr(db *gorm.DB, column string) string {
+	switch db.Dialector.Name() {
+	case "postgres":
+		return boolFalseExprPostgres(column)
+	case "mysql":
+		return boolFalseExprMySQL(column)
+	default: // sqlite
+		return boolFalseExprSQLite(column)
+	}
+}
+
+// BoolTrueExpr returns a SQL WHERE fragment matching rows where column is true/1.
+// Dispatches to the correct expression based on the active database driver.
+func BoolTrueExpr(db *gorm.DB, column string) string {
+	switch db.Dialector.Name() {
+	case "postgres":
+		return boolTrueExprPostgres(column)
+	case "mysql":
+		return boolTrueExprMySQL(column)
+	default: // sqlite
+		return boolTrueExprSQLite(column)
+	}
 }
