@@ -24,6 +24,9 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 	regenerateSSHHostKeysFlag := flag.Bool("regenerateSSHHostKeys", false, "Force-regenerate SSH host keys")
 	firstInstallFlag := flag.Bool("firstInstall", false, "Bootstrap first admin user")
 	syncFlag := flag.Bool("sync", false, "Sync DB state to OS (DB is source of truth)")
+	dbExportToSqliteFlag := flag.Bool("dbExportToSqlite", false, "Dump database as SQLite-dialect SQL to stdout")
+	dbExportToMysqlFlag := flag.Bool("dbExportToMysql", false, "Dump database as MySQL-dialect SQL to stdout")
+	dbExportToPgFlag := flag.Bool("dbExportToPg", false, "Dump database as PostgreSQL-dialect SQL to stdout")
 	flag.Parse()
 
 	syncer := gosync.New(db, adapter, *log)
@@ -42,14 +45,37 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 		}
 
 	case *syncFlag:
+		fmt.Fprintln(os.Stderr, "Syncing database state to OS...")
 		if err := syncer.EnforceFromDB(); err != nil {
 			log.Error("sync", slog.String("event", "sync"), slog.Any("error", err))
+			fmt.Fprintf(os.Stderr, "Sync failed: %v\n", err)
 			os.Exit(1)
 		}
+		fmt.Fprintln(os.Stderr, "✅ Sync complete.")
+
+	case *dbExportToSqliteFlag:
+		runDBExport(db, log, "sqlite")
+
+	case *dbExportToMysqlFlag:
+		runDBExport(db, log, "mysql")
+
+	case *dbExportToPgFlag:
+		runDBExport(db, log, "postgres")
 
 	default:
 		runStartup(db, log, syncer)
 	}
+}
+
+// runDBExport dumps the current database as SQL INSERT statements to stdout.
+func runDBExport(db *gorm.DB, log *slog.Logger, targetDialect string) {
+	fmt.Fprintf(os.Stderr, "Exporting database as %s SQL...\n", targetDialect)
+	if err := internaldb.ExportTo(db, targetDialect, os.Stdout, log); err != nil {
+		log.Error("db_export", slog.String("event", "db_export"), slog.String("dialect", targetDialect), slog.Any("error", err))
+		fmt.Fprintf(os.Stderr, "Export failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "✅ Export complete.\n")
 }
 
 // runStartup is the automatic startup sequence:
@@ -95,6 +121,7 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 	}
 	if userCount > 0 {
 		log.Warn("startup", slog.String("event", "startup"), slog.String("reason", "first_install_aborted"))
+		fmt.Fprintln(os.Stderr, "⚠️  --firstInstall aborted: users already exist in the database.")
 		return nil
 	}
 
