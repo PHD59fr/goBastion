@@ -1,5 +1,16 @@
 #!/bin/sh
 
+# Write DB config to a file so ForceCommand sessions can read it.
+# sshd strips Docker env vars from child processes; SetEnv doesn't support
+# values with spaces (DB_DSN), so we use a config file instead.
+# goBastion reads /run/gobastion/db.conf as fallback when env vars are absent.
+mkdir -p /run/gobastion
+{
+  [ -n "$DB_DRIVER" ] && printf 'DB_DRIVER=%s\n' "$DB_DRIVER"
+  [ -n "$DB_DSN" ]    && printf 'DB_DSN=%s\n'    "$DB_DSN"
+} > /run/gobastion/db.conf
+chmod 600 /run/gobastion/db.conf
+
 # Tail GELF app logs immediately so docker logs captures startup events
 # (DB connect, migrations, no-admin warnings) before sshd even starts.
 touch /goBastion.log
@@ -210,6 +221,9 @@ BEGIN {
 
   # --- Disconnects ---
   # "Received disconnect from <ip> port <p>:11: ..."
+  # This is always paired with a "Disconnected from [user|invalid user] X" line — we
+  # emit only this one to avoid duplicates. It carries IP+port; the username was already
+  # logged in the auth_success / auth_failed event above.
   else if (msg ~ /^Received disconnect from /) {
     for (i=1; i<=n; i++) {
       if (f[i] == "from" && i+1 <= n) from = f[i+1]
@@ -218,6 +232,7 @@ BEGIN {
     ev="disconnect"
   }
   # "Disconnected from authenticating user <user> <ip> port <p> [preauth]"
+  # Emitted when auth fails before a session is established (no Received disconnect pair).
   # f[1]=Disconnected f[2]=from f[3]=authenticating f[4]=user f[5]=USER f[6]=IP f[7]=port f[8]=PORT
   else if (msg ~ /^Disconnected from authenticating user /) {
     if (n >= 8) {
@@ -226,13 +241,10 @@ BEGIN {
       lvl=4
     }
   }
-  # "Disconnected from user <user> <ip> port <p>"
-  # f[1]=Disconnected f[2]=from f[3]=user f[4]=USER f[5]=IP f[6]=port f[7]=PORT
-  else if (msg ~ /^Disconnected from user /) {
-    if (n >= 7) {
-      user=f[4]; from=f[5]; port=port_clean(f[7])
-      ev="disconnect"
-    }
+  # "Disconnected from user <user> <ip> port <p>" — always paired with Received disconnect; skip.
+  # "Disconnected from invalid user <user> <ip> port <p>" — same; skip.
+  else if (msg ~ /^Disconnected from (user |invalid user )/) {
+    next
   }
 
   emit(msg, host, lvl, ev, from, port, user, to, fp)

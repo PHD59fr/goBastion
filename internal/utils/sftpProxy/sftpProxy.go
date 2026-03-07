@@ -52,7 +52,7 @@ func Proxy(access models.AccessRight) error {
 	if err != nil {
 		return fmt.Errorf("connect to target %s: %v", targetAddr, err)
 	}
-	defer netConn.Close()
+	defer func() { _ = netConn.Close() }()
 
 	clientConfig := &ssh.ClientConfig{
 		User: access.Username,
@@ -68,14 +68,14 @@ func Proxy(access models.AccessRight) error {
 		return fmt.Errorf("ssh connect to %s: %v", targetAddr, err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// 2. Request the sftp subsystem on the target.
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("open ssh session: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	if err = session.RequestSubsystem("sftp"); err != nil {
 		return fmt.Errorf("request sftp subsystem: %v", err)
@@ -114,7 +114,7 @@ func Proxy(access models.AccessRight) error {
 	if err != nil {
 		return fmt.Errorf("ssh server handshake: %v", err)
 	}
-	defer serverConn.Close()
+	defer func() { _ = serverConn.Close() }()
 	go ssh.DiscardRequests(globalReqs)
 
 	// 5. Accept the session channel and sftp subsystem request from the client.

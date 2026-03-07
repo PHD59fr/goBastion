@@ -66,7 +66,15 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 	}
 
 	var adminCount int64
-	db.Model(&models.User{}).Where(internaldb.BoolFalseExpr(db, "system_user")+" AND role = ?", models.RoleAdmin).Count(&adminCount)
+	expr := internaldb.BoolFalseExpr(db, "system_user") + " AND role = ?"
+	if err := db.Model(&models.User{}).Where(expr, models.RoleAdmin).Count(&adminCount).Error; err != nil {
+		log.Error("startup: error counting admin users",
+			slog.String("event", "startup"),
+			slog.String("reason", "admin_count_error"),
+			slog.Any("error", err),
+		)
+		os.Exit(1)
+	}
 	if adminCount > 0 {
 		log.Info("startup", slog.String("event", "startup"), slog.String("reason", "ready"))
 		return

@@ -194,297 +194,101 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 
 	type entry struct {
 		Perm    string
-		Handler func()
+		Handler func() error
 	}
 
 	commandsMap := map[string]entry{
 		// Self
-		"selfListIngressKeys": {"selfListIngressKeys", func() {
-			if err := cmdself.SelfListIngressKeys(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfListIngressKeys"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfAddIngressKey": {"selfAddIngressKey", func() {
-			if err := cmdself.SelfAddIngressKey(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfAddIngressKey"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfDelIngressKey": {"selfDelIngressKey", func() {
-			if err := cmdself.SelfDelIngressKey(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfDelIngressKey"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfGenerateEgressKey": {"selfGenerateEgressKey", func() {
-			if err := cmdself.SelfGenerateEgressKey(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfGenerateEgressKey"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfListEgressKeys": {"selfListEgressKeys", func() {
-			if err := cmdself.SelfListEgressKeys(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfListEgressKeys"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfListAccesses": {"selfListAccesses", func() {
-			if err := cmdself.SelfListAccesses(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfListAccesses"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfAddAccess": {"selfAddAccess", func() {
-			if err := cmdself.SelfAddAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfAddAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfDelAccess": {"selfDelAccess", func() {
-			if err := cmdself.SelfDelAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfDelAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfAddAlias": {"selfAddAlias", func() {
-			if err := cmdself.SelfAddAlias(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfAddAlias"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfDelAlias": {"selfDelAlias", func() {
-			if err := cmdself.SelfDelAlias(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfDelAlias"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfListAliases": {"selfListAliases", func() {
-			if err := cmdself.SelfListAliases(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfListAliases"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfRemoveHostFromKnownHosts": {"selfRemoveHostFromKnownHosts", func() {
-			if err := cmdself.SelfRemoveHostFromKnownHosts(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfRemoveHostFromKnownHosts"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfReplaceKnownHost": {"selfReplaceKnownHost", func() {
-			if err := cmdself.SelfReplaceKnownHost(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfReplaceKnownHost"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfSetupTOTP": {"selfSetupTOTP", func() {
-			if err := cmdtotp.SelfSetupTOTP(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfSetupTOTP"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfDisableTOTP": {"selfDisableTOTP", func() {
-			if err := cmdtotp.SelfDisableTOTP(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfDisableTOTP"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
+		"selfListIngressKeys":          {"selfListIngressKeys", func() error { return cmdself.SelfListIngressKeys(db, currentUser) }},
+		"selfAddIngressKey":            {"selfAddIngressKey", func() error { return cmdself.SelfAddIngressKey(db, currentUser, args) }},
+		"selfDelIngressKey":            {"selfDelIngressKey", func() error { return cmdself.SelfDelIngressKey(db, currentUser, args) }},
+		"selfGenerateEgressKey":        {"selfGenerateEgressKey", func() error { return cmdself.SelfGenerateEgressKey(db, currentUser, args) }},
+		"selfListEgressKeys":           {"selfListEgressKeys", func() error { return cmdself.SelfListEgressKeys(db, currentUser) }},
+		"selfListAccesses":             {"selfListAccesses", func() error { return cmdself.SelfListAccesses(db, currentUser) }},
+		"selfAddAccess":                {"selfAddAccess", func() error { return cmdself.SelfAddAccess(db, currentUser, args) }},
+		"selfDelAccess":                {"selfDelAccess", func() error { return cmdself.SelfDelAccess(db, currentUser, args) }},
+		"selfAddAlias":                 {"selfAddAlias", func() error { return cmdself.SelfAddAlias(db, currentUser, args) }},
+		"selfDelAlias":                 {"selfDelAlias", func() error { return cmdself.SelfDelAlias(db, currentUser, args) }},
+		"selfListAliases":              {"selfListAliases", func() error { return cmdself.SelfListAliases(db, currentUser) }},
+		"selfRemoveHostFromKnownHosts": {"selfRemoveHostFromKnownHosts", func() error { return cmdself.SelfRemoveHostFromKnownHosts(db, currentUser, args) }},
+		"selfReplaceKnownHost":         {"selfReplaceKnownHost", func() error { return cmdself.SelfReplaceKnownHost(db, currentUser, args) }},
+		"selfSetupTOTP":                {"selfSetupTOTP", func() error { return cmdtotp.SelfSetupTOTP(db, currentUser) }},
+		"selfDisableTOTP":              {"selfDisableTOTP", func() error { return cmdtotp.SelfDisableTOTP(db, currentUser) }},
+		"selfSetPassword":              {"selfSetPassword", func() error { return cmdself.SelfSetPassword(db, currentUser, args) }},
+		"selfChangePassword":           {"selfChangePassword", func() error { return cmdself.SelfChangePassword(db, currentUser, args) }},
+		"selfAddIngressKeyPIV":         {"selfAddIngressKeyPIV", func() error { return cmdself.SelfAddIngressKeyPIV(db, currentUser, args) }},
 
 		// Account
-		"accountList": {"accountList", func() {
-			if err := cmdaccount.AccountList(db, currentUser); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountList"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountInfo": {"accountInfo", func() {
-			if err := cmdaccount.AccountInfo(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountInfo"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountCreate": {"accountCreate", func() {
-			if err := cmdaccount.AccountCreate(db, adapter, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountCreate"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountListIngressKeys": {"accountListIngressKeys", func() {
-			if err := cmdaccount.AccountListIngressKeys(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountListIngressKeys"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountListEgressKeys": {"accountListEgressKeys", func() {
-			if err := cmdaccount.AccountListEgressKeys(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountListEgressKeys"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountModify": {"accountModify", func() {
-			if err := cmdaccount.AccountModify(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountModify"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountDelete": {"accountDelete", func() {
-			if err := cmdaccount.AccountDelete(db, adapter, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountDelete"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountAddAccess": {"accountAddAccess", func() {
-			if err := cmdaccount.AccountAddAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountAddAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountDelAccess": {"accountDelAccess", func() {
-			if err := cmdaccount.AccountDelAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountDelAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountListAccess": {"accountListAccess", func() {
-			if err := cmdaccount.AccountListAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountListAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountDisableTOTP": {"accountDisableTOTP", func() {
-			if err := cmdaccount.AccountDisableTOTP(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountDisableTOTP"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
+		"accountList":            {"accountList", func() error { return cmdaccount.AccountList(db, currentUser) }},
+		"accountInfo":            {"accountInfo", func() error { return cmdaccount.AccountInfo(db, currentUser, args) }},
+		"accountCreate":          {"accountCreate", func() error { return cmdaccount.AccountCreate(db, adapter, currentUser, args) }},
+		"accountListIngressKeys": {"accountListIngressKeys", func() error { return cmdaccount.AccountListIngressKeys(db, currentUser, args) }},
+		"accountListEgressKeys":  {"accountListEgressKeys", func() error { return cmdaccount.AccountListEgressKeys(db, currentUser, args) }},
+		"accountModify":          {"accountModify", func() error { return cmdaccount.AccountModify(db, currentUser, args) }},
+		"accountDelete":          {"accountDelete", func() error { return cmdaccount.AccountDelete(db, adapter, currentUser, args) }},
+		"accountAddAccess":       {"accountAddAccess", func() error { return cmdaccount.AccountAddAccess(db, currentUser, args) }},
+		"accountDelAccess":       {"accountDelAccess", func() error { return cmdaccount.AccountDelAccess(db, currentUser, args) }},
+		"accountListAccess":      {"accountListAccess", func() error { return cmdaccount.AccountListAccess(db, currentUser, args) }},
+		"accountDisableTOTP":     {"accountDisableTOTP", func() error { return cmdaccount.AccountDisableTOTP(db, currentUser, args) }},
+		"accountSetPassword":     {"accountSetPassword", func() error { return cmdaccount.AccountSetPassword(db, currentUser, args) }},
+		"whoHasAccessTo":         {"whoHasAccessTo", func() error { return cmdaccount.WhoHasAccessTo(db, currentUser, args) }},
 
-		// PIV attestation (admin)
-		"pivAddTrustAnchor": {"pivAddTrustAnchor", func() {
-			if err := cmdpiv.PivAddTrustAnchor(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "pivAddTrustAnchor"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"pivListTrustAnchors": {"pivListTrustAnchors", func() {
-			if err := cmdpiv.PivListTrustAnchors(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "pivListTrustAnchors"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"pivRemoveTrustAnchor": {"pivRemoveTrustAnchor", func() {
-			if err := cmdpiv.PivRemoveTrustAnchor(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "pivRemoveTrustAnchor"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-
-		// PIV attestation (self)
-		"selfAddIngressKeyPIV": {"selfAddIngressKeyPIV", func() {
-			if err := cmdself.SelfAddIngressKeyPIV(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfAddIngressKeyPIV"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
+		// PIV attestation
+		"pivAddTrustAnchor":    {"pivAddTrustAnchor", func() error { return cmdpiv.PivAddTrustAnchor(db, currentUser, args) }},
+		"pivListTrustAnchors":  {"pivListTrustAnchors", func() error { return cmdpiv.PivListTrustAnchors(db, currentUser, args) }},
+		"pivRemoveTrustAnchor": {"pivRemoveTrustAnchor", func() error { return cmdpiv.PivRemoveTrustAnchor(db, currentUser, args) }},
 
 		// Group
-		"groupInfo": {"groupInfo", func() {
-			if err := cmdgroup.GroupInfo(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupInfo"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupList": {"groupList", func() {
-			if err := cmdgroup.GroupList(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupList"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupCreate": {"groupCreate", func() {
-			if err := cmdgroup.GroupCreate(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupCreate"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupDelete": {"groupDelete", func() {
-			if err := cmdgroup.GroupDelete(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupDelete"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupAddAccess": {"groupAddAccess", func() {
-			if err := cmdgroup.GroupAddAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupAddAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupDelAccess": {"groupDelAccess", func() {
-			if err := cmdgroup.GroupDelAccess(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupDelAccess"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupAddMember": {"groupAddMember", func() {
-			if err := cmdgroup.GroupAddMember(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupAddMember"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupDelMember": {"groupDelMember", func() {
-			if err := cmdgroup.GroupDelMember(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupDelMember"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupGenerateEgressKey": {"groupGenerateEgressKey", func() {
-			if err := cmdgroup.GroupGenerateEgressKey(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupGenerateEgressKey"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupListEgressKeys": {"groupListEgressKeys", func() {
-			if err := cmdgroup.GroupListEgressKeys(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupListEgressKeys"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupListAccesses": {"groupListAccesses", func() {
-			if err := cmdgroup.GroupListAccesses(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupListAccesses"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupAddAlias": {"groupAddAlias", func() {
-			if err := cmdgroup.GroupAddAlias(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupAddAlias"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupDelAlias": {"groupDelAlias", func() {
-			if err := cmdgroup.GroupDelAlias(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupDelAlias"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupListAliases": {"groupListAliases", func() {
-			if err := cmdgroup.GroupListAliases(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupListAliases"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"groupSetMFA": {"groupSetMFA", func() {
-			if err := cmdgroup.GroupSetMFA(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "groupSetMFA"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-
-		// Password MFA
-		"selfSetPassword": {"selfSetPassword", func() {
-			if err := cmdself.SelfSetPassword(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfSetPassword"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"selfChangePassword": {"selfChangePassword", func() {
-			if err := cmdself.SelfChangePassword(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "selfChangePassword"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"accountSetPassword": {"accountSetPassword", func() {
-			if err := cmdaccount.AccountSetPassword(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "accountSetPassword"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
+		"groupInfo":             {"groupInfo", func() error { return cmdgroup.GroupInfo(db, currentUser, args) }},
+		"groupList":             {"groupList", func() error { return cmdgroup.GroupList(db, currentUser, args) }},
+		"groupCreate":           {"groupCreate", func() error { return cmdgroup.GroupCreate(db, currentUser, args) }},
+		"groupDelete":           {"groupDelete", func() error { return cmdgroup.GroupDelete(db, currentUser, args) }},
+		"groupAddAccess":        {"groupAddAccess", func() error { return cmdgroup.GroupAddAccess(db, currentUser, args) }},
+		"groupDelAccess":        {"groupDelAccess", func() error { return cmdgroup.GroupDelAccess(db, currentUser, args) }},
+		"groupAddMember":        {"groupAddMember", func() error { return cmdgroup.GroupAddMember(db, currentUser, args) }},
+		"groupDelMember":        {"groupDelMember", func() error { return cmdgroup.GroupDelMember(db, currentUser, args) }},
+		"groupGenerateEgressKey": {"groupGenerateEgressKey", func() error { return cmdgroup.GroupGenerateEgressKey(db, currentUser, args) }},
+		"groupListEgressKeys":   {"groupListEgressKeys", func() error { return cmdgroup.GroupListEgressKeys(db, currentUser, args) }},
+		"groupListAccesses":     {"groupListAccesses", func() error { return cmdgroup.GroupListAccesses(db, currentUser, args) }},
+		"groupAddAlias":         {"groupAddAlias", func() error { return cmdgroup.GroupAddAlias(db, currentUser, args) }},
+		"groupDelAlias":         {"groupDelAlias", func() error { return cmdgroup.GroupDelAlias(db, currentUser, args) }},
+		"groupListAliases":      {"groupListAliases", func() error { return cmdgroup.GroupListAliases(db, currentUser, args) }},
+		"groupSetMFA":           {"groupSetMFA", func() error { return cmdgroup.GroupSetMFA(db, currentUser, args) }},
 
 		// TTY
-		"ttyList": {"ttyList", func() {
-			if err := cmdtty.TtyList(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "ttyList"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"ttyPlay": {"ttyPlay", func() {
-			if err := cmdtty.TtyPlay(db, currentUser, args); err != nil {
-				resetStdIn()
-				log.Error("command_error", slog.String("cmd", "ttyPlay"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
-		}},
-		"whoHasAccessTo": {"whoHasAccessTo", func() {
-			if err := cmdaccount.WhoHasAccessTo(db, currentUser, args); err != nil {
-				log.Error("command_error", slog.String("cmd", "whoHasAccessTo"), slog.String("event", "command_error"), slog.String("error", err.Error()))
-			}
+		"ttyList": {"ttyList", func() error { return cmdtty.TtyList(db, currentUser, args) }},
+		"ttyPlay": {"ttyPlay", func() error {
+			err := cmdtty.TtyPlay(db, currentUser, args)
+			resetStdIn()
+			return err
 		}},
 
 		// Misc
-		"help": {"help", func() { cmdhelp.DisplayHelp(db, *currentUser) }},
-		"info": {"info", func() { cmdhelp.DisplayInfo() }},
-		"exit": {"exit", func() {
+		"help": {"help", func() error { cmdhelp.DisplayHelp(db, *currentUser); return nil }},
+		"info": {"info", func() error { cmdhelp.DisplayInfo(); return nil }},
+		"exit": {"exit", func() error {
 			log.Info("session end", slog.String("reason", "exit"))
 			os.Exit(0)
+			return nil
 		}},
 	}
 	if e, ok := commandsMap[cmd]; !ok {
-		log.Warn("command_error", slog.String("cmd", cmd), slog.String("event", "command_error"), slog.String("reason", "unknown command"))
+		log.Warn("command", slog.String("cmd", cmd), slog.String("event", "command"),
+			slog.Any("args", args), slog.String("result", "unknown_command"))
 		fmt.Printf("Unknown command: %s\n", cmd)
 	} else if !hasPerm(e.Perm) {
-		log.Warn("command_error", slog.String("cmd", cmd), slog.String("event", "command_error"), slog.String("reason", "permission denied"))
+		log.Warn("command", slog.String("cmd", cmd), slog.String("event", "command"),
+			slog.Any("args", args), slog.String("result", "permission_denied"))
 		fmt.Printf("Permission denied: %s\n", cmd)
 	} else {
-		log.Info("command", slog.String("cmd", cmd), slog.String("event", "command"))
-		e.Handler()
+		err := e.Handler()
+		if err != nil {
+			log.Error("command", slog.String("cmd", cmd), slog.String("event", "command"),
+				slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
+		} else {
+			log.Info("command", slog.String("cmd", cmd), slog.String("event", "command"),
+				slog.Any("args", args), slog.String("result", "ok"))
+		}
 	}
 }
 

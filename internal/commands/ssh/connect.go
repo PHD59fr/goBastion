@@ -61,7 +61,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
 		log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "access denied"), slog.String("error", err.Error()))
-		return fmt.Errorf("%v\n", err)
+		return fmt.Errorf("%v", err)
 	}
 
 	if len(accesses) > 0 {

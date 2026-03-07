@@ -24,7 +24,7 @@ func TestInit_SQLite_InMemory(t *testing.T) {
 }
 
 func TestInit_SQLite_DefaultDriver(t *testing.T) {
-	os.Unsetenv("DB_DRIVER")
+	_ = os.Unsetenv("DB_DRIVER")
 	// Use a temp dir so the test doesn't need /var/lib/goBastion.
 	tmp := t.TempDir()
 	t.Setenv("DB_DSN", "file:"+tmp+"/test.db?cache=shared&mode=rwc")
@@ -37,7 +37,7 @@ func TestInit_SQLite_DefaultDriver(t *testing.T) {
 
 func TestInit_MySQL_MissingDSN(t *testing.T) {
 	t.Setenv("DB_DRIVER", "mysql")
-	os.Unsetenv("DB_DSN")
+	_ = os.Unsetenv("DB_DSN")
 
 	_, err := Init(nil)
 	if err == nil {
@@ -47,7 +47,7 @@ func TestInit_MySQL_MissingDSN(t *testing.T) {
 
 func TestInit_Postgres_MissingDSN(t *testing.T) {
 	t.Setenv("DB_DRIVER", "postgres")
-	os.Unsetenv("DB_DSN")
+	_ = os.Unsetenv("DB_DSN")
 
 	_, err := Init(nil)
 	if err == nil {

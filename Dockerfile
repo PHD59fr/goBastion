@@ -44,6 +44,5 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 22
-EXPOSE 60001-61000/udp
 
 CMD ["/entrypoint.sh"]

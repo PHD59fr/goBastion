@@ -1,10 +1,12 @@
 package db
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"goBastion/internal/models"
@@ -17,7 +19,44 @@ import (
 	gormLogger "gorm.io/gorm/logger"
 )
 
-const dbDir = "/var/lib/goBastion"
+const (
+	dbDir      = "/var/lib/goBastion"
+	dbConfFile = "/run/gobastion/db.conf"
+)
+
+// Init opens the database, runs migrations and applies configuration.
+// resolveDBConfig returns DB_DRIVER and DB_DSN from environment variables, falling
+// back to /run/gobastion/db.conf when the env vars are not set (e.g. SSH ForceCommand
+// sessions where sshd strips the Docker environment).
+func resolveDBConfig() (driver, dsn string) {
+	driver = os.Getenv("DB_DRIVER")
+	dsn = os.Getenv("DB_DSN")
+	if driver != "" {
+		return
+	}
+	f, err := os.Open(dbConfFile)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if k, v, ok := strings.Cut(line, "="); ok {
+			switch k {
+			case "DB_DRIVER":
+				if driver == "" {
+					driver = v
+				}
+			case "DB_DSN":
+				if dsn == "" {
+					dsn = v
+				}
+			}
+		}
+	}
+	return
+}
 
 // Init opens the database, runs migrations and applies configuration.
 // The database backend is selected via the DB_DRIVER environment variable:
@@ -26,9 +65,12 @@ const dbDir = "/var/lib/goBastion"
 //	                              Override path with DB_DSN.
 //	DB_DRIVER=mysql              - requires DB_DSN (e.g. "user:pass@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=True")
 //	DB_DRIVER=postgres           - requires DB_DSN (e.g. "host=... user=... password=... dbname=... port=5432 sslmode=disable")
+//
+// When env vars are absent (e.g. in an SSH ForceCommand session where sshd strips the
+// environment), goBastion falls back to reading /run/gobastion/db.conf written by the
+// entrypoint at container startup.
 func Init(log *slog.Logger) (*gorm.DB, error) {
-	driver := os.Getenv("DB_DRIVER")
-	dsn := os.Getenv("DB_DSN")
+	driver, dsn := resolveDBConfig()
 
 	var dialector gorm.Dialector
 	switch driver {
@@ -44,7 +86,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 		}
 		dialector = postgres.Open(dsn)
 
-	default: // sqlite
+	case "", "sqlite":
 		driver = "sqlite"
 		if dsn == "" {
 			if err := os.MkdirAll(dbDir, 0777); err != nil {
@@ -53,6 +95,9 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 			dsn = "file:" + filepath.Join(dbDir, "bastion.db") + "?cache=shared&mode=rwc"
 		}
 		dialector = sqlite.Open(dsn)
+
+	default:
+		return nil, fmt.Errorf("unsupported DB_DRIVER %q — supported values: sqlite, mysql, postgres", driver)
 	}
 
 	gormLogCfg := gormLogger.Config{
@@ -175,12 +220,14 @@ func configure(db *gorm.DB, driver string) error {
 // BoolFalseExpr returns a SQL WHERE fragment matching rows where column is false/0.
 // Dispatches to the correct expression based on the active database driver.
 func BoolFalseExpr(db *gorm.DB, column string) string {
-	switch db.Dialector.Name() {
+	switch db.Name() {
 	case "postgres":
 		return boolFalseExprPostgres(column)
 	case "mysql":
 		return boolFalseExprMySQL(column)
-	default: // sqlite
+	case "sqlite":
+		return boolFalseExprSQLite(column)
+	default:
 		return boolFalseExprSQLite(column)
 	}
 }
@@ -188,12 +235,14 @@ func BoolFalseExpr(db *gorm.DB, column string) string {
 // BoolTrueExpr returns a SQL WHERE fragment matching rows where column is true/1.
 // Dispatches to the correct expression based on the active database driver.
 func BoolTrueExpr(db *gorm.DB, column string) string {
-	switch db.Dialector.Name() {
+	switch db.Name() {
 	case "postgres":
 		return boolTrueExprPostgres(column)
 	case "mysql":
 		return boolTrueExprMySQL(column)
-	default: // sqlite
+	case "sqlite":
+		return boolTrueExprSQLite(column)
+	default:
 		return boolTrueExprSQLite(column)
 	}
 }
