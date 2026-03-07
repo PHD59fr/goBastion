@@ -7,7 +7,7 @@ COPY . .
 RUN apk upgrade --no-cache && \
     apk add --no-cache upx build-base autoconf automake libtool wget git && \
     go mod tidy && \
-    CGO_ENABLED=0 go build -o goBastion && \
+    CGO_ENABLED=0 go build -o goBastion ./cmd/goBastion/ && \
     upx --best --lzma goBastion
 
 RUN git clone https://github.com/ovh/ovh-ttyrec.git /tmp/ovh-ttyrec && \
