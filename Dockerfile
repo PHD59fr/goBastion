@@ -15,7 +15,7 @@ RUN git clone https://github.com/ovh/ovh-ttyrec.git /tmp/ovh-ttyrec && \
     ./configure && \
     make && make install
 
-FROM alpine:latest
+FROM alpine:3.22
 
 RUN apk upgrade --no-cache && \
     apk add --no-cache bash gzip openssh sudo jq mosh
