@@ -30,19 +30,19 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 	switch {
 	case *regenerateSSHHostKeysFlag:
 		if err := sshHostKey.GenerateSSHHostKeys(db, true); err != nil {
-			log.Error("Error regenerating SSH host keys", slog.Any("error", err))
+			log.Error("startup", slog.String("event", "startup"), slog.String("reason", "regenerate_ssh_host_keys"), slog.Any("error", err))
 		}
 
 	case *firstInstallFlag:
 		if err := createFirstAdminUser(db, log, syncer, adapter); err != nil {
-			log.Error("Error creating first admin user", slog.Any("error", err))
+			log.Error("startup", slog.String("event", "startup"), slog.String("reason", "first_install"), slog.Any("error", err))
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 	case *syncFlag:
 		if err := syncer.EnforceFromDB(); err != nil {
-			log.Error("Error during sync", slog.Any("error", err))
+			log.Error("sync", slog.String("event", "sync"), slog.Any("error", err))
 			os.Exit(1)
 		}
 
@@ -58,21 +58,20 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 	var userCount int64
 	db.Model(&models.User{}).Count(&userCount)
 	if userCount > 0 {
-		fmt.Println("[goBastion] Existing database found, syncing state...")
+		log.Info("startup", slog.String("event", "startup"), slog.String("reason", "sync_state"))
 		if err := syncer.EnforceFromDB(); err != nil {
-			log.Error("Error during startup sync", slog.Any("error", err))
+			log.Error("startup", slog.String("event", "startup"), slog.Any("error", err))
 		}
 	}
 
 	var adminCount int64
 	db.Model(&models.User{}).Where("system_user = ? AND role = ?", false, models.RoleAdmin).Count(&adminCount)
 	if adminCount > 0 {
-		fmt.Println("[goBastion] Admin user confirmed. Ready.")
+		log.Info("startup", slog.String("event", "startup"), slog.String("reason", "ready"))
 		return
 	}
 
-	fmt.Println("[goBastion] No admin user configured.")
-	fmt.Println("[goBastion] Run: docker exec -it <container> /app/goBastion --firstInstall")
+	log.Warn("startup", slog.String("event", "startup"), slog.String("reason", "no_admin_configured"))
 	os.Exit(1)
 }
 
@@ -83,7 +82,7 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 		return fmt.Errorf("error counting users: %w", err)
 	}
 	if userCount > 0 {
-		fmt.Println("Cannot run --firstInstall: there are already users in the database.")
+		log.Warn("startup", slog.String("event", "startup"), slog.String("reason", "first_install_aborted"))
 		return nil
 	}
 
@@ -127,8 +126,8 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 		return fmt.Errorf("error promoting user to admin: %w", err)
 	}
 
-	log.Info("first admin user created", slog.String("username", username))
-	fmt.Printf("User %s created successfully as administrator.\n", username)
+	log.Info("startup", slog.String("event", "startup"), slog.String("reason", "first_admin_created"), slog.String("user", username))
+	fmt.Printf("✅ User %s created successfully as administrator.\n", username)
 	return nil
 }
 
