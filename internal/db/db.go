@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"goBastion/models"
-	"goBastion/utils/logger"
+	"goBastion/internal/models"
+	"goBastion/internal/utils/logger"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
