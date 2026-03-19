@@ -143,6 +143,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 // Uses a USING expression safe for both text ('false'/'true') and boolean values.
 func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 	type colFix struct{ table, column string }
+
 	fixes := []colFix{
 		{"users", "system_user"},
 		{"users", "enabled"},
@@ -150,6 +151,7 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 		{"groups", "mfa_required"},
 		{"ingress_keys", "piv_attested"},
 	}
+
 	for _, f := range fixes {
 		sql := fmt.Sprintf(
 			`ALTER TABLE IF EXISTS "%s" ALTER COLUMN "%s" TYPE boolean `+
@@ -167,23 +169,9 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 	}
 }
 
-// migrate runs GORM AutoMigrate for all models and creates custom indexes.
+// migrate runs GORM AutoMigrate for all managed models and creates custom indexes.
 func migrate(db *gorm.DB, driver string) error {
-	err := db.AutoMigrate(
-		&models.User{},
-		&models.Group{},
-		&models.UserGroup{},
-		&models.IngressKey{},
-		&models.SelfEgressKey{},
-		&models.GroupEgressKey{},
-		&models.SelfAccess{},
-		&models.GroupAccess{},
-		&models.Aliases{},
-		&models.SshHostKey{},
-		&models.KnownHostsEntry{},
-		&models.PIVTrustAnchor{},
-	)
-	if err != nil {
+	if err := db.AutoMigrate(ManagedModelsInDependencyOrder()...); err != nil {
 		return fmt.Errorf("failed to auto-migrate models: %w", err)
 	}
 
@@ -244,5 +232,22 @@ func BoolTrueExpr(db *gorm.DB, column string) string {
 		return boolTrueExprSQLite(column)
 	default:
 		return boolTrueExprSQLite(column)
+	}
+}
+
+func ManagedModelsInDependencyOrder() []any {
+	return []any{
+		&models.User{},
+		&models.Group{},
+		&models.SshHostKey{},
+		&models.UserGroup{},
+		&models.IngressKey{},
+		&models.SelfEgressKey{},
+		&models.GroupEgressKey{},
+		&models.SelfAccess{},
+		&models.GroupAccess{},
+		&models.Aliases{},
+		&models.KnownHostsEntry{},
+		&models.PIVTrustAnchor{},
 	}
 }

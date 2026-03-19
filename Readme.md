@@ -460,44 +460,67 @@ DB_DSN=file:/data/mybastion.db?cache=shared&mode=rwc
 
 These flags are only available when running as `root` outside an SSH session:
 
-| Flag | Command | Description |
-|------|---------|-------------|
-| `--firstInstall` | `docker exec -it goBastion /app/goBastion --firstInstall` | Manually bootstrap the first admin user (interactive) |
-| `--regenerateSSHHostKeys` | `docker exec -it goBastion /app/goBastion --regenerateSSHHostKeys` | Force-regenerate the bastion's SSH host keys |
+| Flag | Command | Description                                                                                              |
+|------|---------|----------------------------------------------------------------------------------------------------------|
+| `--firstInstall` | `docker exec -it goBastion /app/goBastion --firstInstall` | Manually bootstrap the first admin user (interactive)                                                    |
+| `--regenerateSSHHostKeys` | `docker exec -it goBastion /app/goBastion --regenerateSSHHostKeys` | Force-regenerate the bastion's SSH host keys                                                             |
 | `--sync` | `docker exec goBastion /app/goBastion --sync` | Enforce DB state onto the OS immediately (DB is source of truth); also runs automatically every 5 minutes |
-| `--dbExportToMysql` | `docker exec -i goBastion /app/goBastion --dbExportToMysql > dump.sql` | Dump the database as MySQL-dialect SQL to stdout |
-| `--dbExportToPg` | `docker exec -i goBastion /app/goBastion --dbExportToPg > dump.sql` | Dump the database as PostgreSQL-dialect SQL to stdout |
-| `--dbExportToSqlite` | `docker exec -i goBastion /app/goBastion --dbExportToSqlite > dump.sql` | Dump the database as SQLite-dialect SQL to stdout |
+| `--dbExport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbExport > dump` | Dump the database as encrypted file to stdout                                                            |
+| `--dbImport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbImport < dump` | Restore the database from encrypted file on stdin                                                        |
 
-### 📤 Database Export
+### 🔐 Database Export / Import
 
-The export flags write SQL `INSERT` statements to **stdout**, so you can redirect the output to a file:
+The export is now a **single encrypted file**, independent of SQL dialects.
+
+It is designed for portability across:
+
+- SQLite
+- MySQL
+- PostgreSQL
+
+Encryption is mandatory.
+
+---
+
+### 🔑 Generating and using the encryption key
 
 ```bash
-docker exec -i goBastion /app/goBastion --dbExportToMysql  > dump.sql
-docker exec -i goBastion /app/goBastion --dbExportToPg     > dump.sql
-docker exec -i goBastion /app/goBastion --dbExportToSqlite > dump.sql
-```
+openssl rand -base64 32 > export_key.txt
+export DB_EXPORT_KEY=$(cat export_key.txt)
+````
 
-All rows are exported (including soft-deleted ones), in foreign-key dependency order.  
-Status messages are written to stderr so they don't pollute the SQL output.
+`DB_EXPORT_KEY` can be:
 
-**Import workflow** (e.g. SQLite → PostgreSQL):
+* base64 AES key (16/24/32 bytes)
+* raw AES key
+* passphrase (derived using Argon2id)
+
+---
+
+### 📤 Encrypted export
 
 ```bash
-# 1. Start goBastion once with the target DB to create the schema via AutoMigrate
-docker run -e DB_DRIVER=postgres -e DB_DSN="host=db user=gobastion ..." gobastion
-
-# 2. Export from the source container
-docker exec -i goBastion /app/goBastion --dbExportToPg > dump.sql
-
-# 3. Import into the target database
-psql -U gobastion -d gobastion < dump.sql
+docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbExport > dump
 ```
 
-> MySQL and SQLite imports work the same way with `mysql … < dump.sql` and `sqlite3 bastion.db < dump.sql`.
+---
 
+### 📥 Encrypted import
 
+```bash
+docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbImport < dump
+```
+
+---
+
+### ⚠️ Notes
+
+* Target DB must already have schema (AutoMigrate)
+* Target DB must be empty
+* Same key must be used for export/import
+* Output goes to stdout, logs to stderr
+
+---
 
 ## 🤝 **Contributing**
 
