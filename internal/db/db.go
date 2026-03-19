@@ -34,11 +34,13 @@ func resolveDBConfig() (driver, dsn string) {
 	if driver != "" {
 		return
 	}
+
 	f, err := os.Open(dbConfFile)
 	if err != nil {
 		return
 	}
 	defer func() { _ = f.Close() }()
+
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -55,6 +57,7 @@ func resolveDBConfig() (driver, dsn string) {
 			}
 		}
 	}
+
 	return
 }
 
@@ -105,24 +108,27 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 		LogLevel:      gormLogger.Silent,
 		Colorful:      true,
 	}
+
 	var dbLog gormLogger.Interface
 	if log != nil {
 		dbLog = gormLogger.New(logger.NewGormLogger(log), gormLogCfg)
 	} else {
-		dbLog = gormLogger.Default.LogMode(gormLogger.Silent)
+		dbLog = gormLogger.Default.LogMode(gormLogger.Info)
 	}
 
 	db, err := gorm.Open(dialector, &gorm.Config{Logger: dbLog})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+
 	if log != nil {
 		log.Info("db_connect", slog.String("event", "db_connect"), slog.String("driver", driver))
 	}
 
 	if err = migrate(db, driver); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database migration failed for driver %s: %w", driver, err)
 	}
+
 	if log != nil {
 		log.Info("db_migrate", slog.String("event", "db_migrate"), slog.String("driver", driver))
 	}
@@ -143,6 +149,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 // Uses a USING expression safe for both text ('false'/'true') and boolean values.
 func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 	type colFix struct{ table, column string }
+
 	fixes := []colFix{
 		{"users", "system_user"},
 		{"users", "enabled"},
@@ -150,24 +157,26 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 		{"groups", "mfa_required"},
 		{"ingress_keys", "piv_attested"},
 	}
+
 	for _, f := range fixes {
 		sql := fmt.Sprintf(
 			`ALTER TABLE IF EXISTS "%s" ALTER COLUMN "%s" TYPE boolean `+
 				`USING CASE WHEN "%s"::text = ANY(ARRAY['false','f','0','']) THEN false ELSE true END`,
 			f.table, f.column, f.column,
 		)
+
 		if err := db.Exec(sql).Error; err != nil && log != nil {
 			log.Warn("db_bool_migrate",
 				slog.String("event", "db_bool_migrate"),
 				slog.String("table", f.table),
 				slog.String("column", f.column),
-				slog.Any("error", err),
+				slog.String("error_text", err.Error()),
 			)
 		}
 	}
 }
 
-// migrate runs GORM AutoMigrate for all models and creates custom indexes.
+// migrate runs GORM AutoMigrate for all managed models and creates custom indexes.
 func migrate(db *gorm.DB, driver string) error {
 	err := db.AutoMigrate(
 		&models.User{},
@@ -187,11 +196,20 @@ func migrate(db *gorm.DB, driver string) error {
 		return fmt.Errorf("failed to auto-migrate models: %w", err)
 	}
 
-	db.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS unique_user_entry
-		ON known_hosts_entries(user_id, entry)
-		WHERE deleted_at IS NULL;
-	`)
+	switch driver {
+	case "postgres", "sqlite":
+		if err := db.Exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS unique_user_entry
+			ON known_hosts_entries(user_id, entry)
+			WHERE deleted_at IS NULL;
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create unique_user_entry index: %w", err)
+		}
+
+	case "mysql":
+		// MySQL does not support this partial-index syntax.
+		// Skip it for now so DB initialization succeeds.
+	}
 
 	return nil
 }
@@ -244,5 +262,22 @@ func BoolTrueExpr(db *gorm.DB, column string) string {
 		return boolTrueExprSQLite(column)
 	default:
 		return boolTrueExprSQLite(column)
+	}
+}
+
+func ManagedModelsInDependencyOrder() []any {
+	return []any{
+		&models.User{},
+		&models.Group{},
+		&models.SshHostKey{},
+		&models.UserGroup{},
+		&models.IngressKey{},
+		&models.SelfEgressKey{},
+		&models.GroupEgressKey{},
+		&models.SelfAccess{},
+		&models.GroupAccess{},
+		&models.Aliases{},
+		&models.KnownHostsEntry{},
+		&models.PIVTrustAnchor{},
 	}
 }

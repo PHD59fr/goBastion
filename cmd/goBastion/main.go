@@ -30,7 +30,10 @@ func main() {
 
 	db, err := internalDB.Init(log)
 	if err != nil {
-		log.Error("Failed to initialize database", slog.Any("error", err))
+		log.Error("Failed to initialize database",
+			slog.Any("error", err),
+			slog.String("error_text", err.Error()),
+		)
 		return
 	}
 

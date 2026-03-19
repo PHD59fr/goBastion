@@ -24,9 +24,8 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 	regenerateSSHHostKeysFlag := flag.Bool("regenerateSSHHostKeys", false, "Force-regenerate SSH host keys")
 	firstInstallFlag := flag.Bool("firstInstall", false, "Bootstrap first admin user")
 	syncFlag := flag.Bool("sync", false, "Sync DB state to OS (DB is source of truth)")
-	dbExportToSqliteFlag := flag.Bool("dbExportToSqlite", false, "Dump database as SQLite-dialect SQL to stdout")
-	dbExportToMysqlFlag := flag.Bool("dbExportToMysql", false, "Dump database as MySQL-dialect SQL to stdout")
-	dbExportToPgFlag := flag.Bool("dbExportToPg", false, "Dump database as PostgreSQL-dialect SQL to stdout")
+	dbExportFlag := flag.Bool("dbExport", false, "Export the database as an encrypted JSON envelope to stdout")
+	dbImportFlag := flag.Bool("dbImport", false, "Import an encrypted JSON envelope from stdin into an empty database")
 	flag.Parse()
 
 	syncer := gosync.New(db, adapter, *log)
@@ -53,29 +52,37 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 		}
 		fmt.Fprintln(os.Stderr, "✅ Sync complete.")
 
-	case *dbExportToSqliteFlag:
-		runDBExport(db, log, "sqlite")
+	case *dbExportFlag:
+		runDBExport(db, log)
 
-	case *dbExportToMysqlFlag:
-		runDBExport(db, log, "mysql")
-
-	case *dbExportToPgFlag:
-		runDBExport(db, log, "postgres")
+	case *dbImportFlag:
+		runDBImport(db, log)
 
 	default:
 		runStartup(db, log, syncer)
 	}
 }
 
-// runDBExport dumps the current database as SQL INSERT statements to stdout.
-func runDBExport(db *gorm.DB, log *slog.Logger, targetDialect string) {
-	fmt.Fprintf(os.Stderr, "Exporting database as %s SQL...\n", targetDialect)
-	if err := internaldb.ExportTo(db, targetDialect, os.Stdout, log); err != nil {
-		log.Error("db_export", slog.String("event", "db_export"), slog.String("dialect", targetDialect), slog.Any("error", err))
+// runDBExport exports the current database as an encrypted envelope to stdout.
+func runDBExport(db *gorm.DB, log *slog.Logger) {
+	fmt.Fprintln(os.Stderr, "Exporting database...")
+	if err := internaldb.Export(db, os.Stdout, log); err != nil {
+		log.Error("db_export", slog.String("event", "db_export"), slog.Any("error", err))
 		fmt.Fprintf(os.Stderr, "Export failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "✅ Export complete.\n")
+	fmt.Fprintln(os.Stderr, "✅ Export complete.")
+}
+
+// runDBImport reads an encrypted database export from stdin and restores it into an empty database.
+func runDBImport(db *gorm.DB, log *slog.Logger) {
+	fmt.Fprintln(os.Stderr, "Importing database from stdin...")
+	if err := internaldb.Import(db, os.Stdin, log); err != nil {
+		log.Error("db_import", slog.String("event", "db_import"), slog.Any("error", err))
+		fmt.Fprintf(os.Stderr, "Import failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "✅ Import complete.")
 }
 
 // runStartup is the automatic startup sequence:
