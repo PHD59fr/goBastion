@@ -50,13 +50,93 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		return fmt.Errorf("error searching host: %v", err)
 	}
 
-	loginHostname := user.Username + "@" + hostname
-	fmt.Printf("⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(sshUser+"@"+sshHost+":"+sshPort))
-
 	if forcedHost.Host != "" {
 		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
 		sshHost = forcedHost.Host
 	}
+
+	if sshUser == "" {
+		portInt, err := strconv.ParseInt(sshPort, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid ssh port: %w", err)
+		}
+
+		now := time.Now()
+		candidate := ""
+		found := false
+
+		var userGroups []models.UserGroup
+		if err := db.Where("user_id = ?", user.ID).Find(&userGroups).Error; err == nil {
+			groupIDs := make([]uuid.UUID, 0, len(userGroups))
+			for _, ug := range userGroups {
+				groupIDs = append(groupIDs, ug.GroupID)
+			}
+
+			if len(groupIDs) > 0 {
+				var ga models.GroupAccess
+				err := db.
+					Where("group_id IN ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", groupIDs, sshHost, portInt, now).
+					First(&ga).Error
+				if err == nil {
+					if u, ok := resolveAccessUsername(ga.Username); ok {
+						candidate = u
+						found = true
+					}
+				}
+			}
+		}
+
+		if !found {
+			var sa models.SelfAccess
+			err := db.
+				Where("user_id = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, sshHost, portInt, now).
+				First(&sa).Error
+			if err == nil {
+				if u, ok := resolveAccessUsername(sa.Username); ok {
+					candidate = u
+					found = true
+				}
+			}
+		}
+
+		if !found && user.Role == models.RoleAdmin {
+			var ga models.GroupAccess
+			err := db.
+				Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", sshHost, portInt, now).
+				First(&ga).Error
+			if err == nil {
+				if u, ok := resolveAccessUsername(ga.Username); ok {
+					candidate = u
+					found = true
+				}
+			} else {
+				var sa models.SelfAccess
+				err := db.
+					Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", sshHost, portInt, now).
+					First(&sa).Error
+				if err == nil {
+					if u, ok := resolveAccessUsername(sa.Username); ok {
+						candidate = u
+						found = true
+					}
+				}
+			}
+		}
+
+		if !found {
+			candidate = "root"
+		}
+
+		sshUser = candidate
+	}
+
+	loginHostname := user.Username + "@" + hostname
+	// Show host:port if target username not provided; otherwise show user@host:port
+	target := sshHost + ":" + sshPort
+	if sshUser != "" {
+		target = sshUser + "@" + sshHost + ":" + sshPort
+	}
+	fmt.Printf("⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(target))
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
@@ -111,6 +191,17 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	return nil
 }
 
+func resolveAccessUsername(username string) (string, bool) {
+	switch {
+	case username == "*":
+		return "root", true
+	case username != "":
+		return username, true
+	default:
+		return "", false
+	}
+}
+
 // accessFilter returns the list of access rights matching username, host, port and protocol for the user.
 // protocol is one of: ssh, scpupload, scpdownload, sftp, rsync.
 // An access with protocol "ssh" grants all protocols (backwards-compatible).
@@ -128,11 +219,12 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 
 	// ADMIN LOGIC
 	if user.Role == models.RoleAdmin {
-		if err = DB.Where("username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
+		// Match exact username or wildcard '*'
+		if err = DB.Where("(username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
 			Find(&selfAccessList).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving self access for admin: %v", err)
 		}
-		if err = DB.Where("username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
+		if err = DB.Where("(username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
 			Preload("Group").
 			Find(&groupAccessList).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving group access for admin: %v", err)
@@ -141,7 +233,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		if len(groupAccessList) > 0 {
 			ga := groupAccessList[0]
 			if !ipAllowed(clientIP, ga.AllowedFrom) {
-				return nil, errors.New("⛔ " + utils.BgRedB("Access denied: your IP "+clientIP+" is not allowed for this access"))
+				return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
 			}
 			var groupEgressKey models.GroupEgressKey
 			if err = DB.Where("group_id = ?", ga.GroupID).
@@ -164,11 +256,19 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 				PrivateKey:     groupEgressKey.PrivKey,
 				MFARequired:    ga.Group.MFARequired,
 			}
+			// Normalize '*' to the requested username (if provided) or to 'root' when no username was requested
+			if access.Username == "*" {
+				if username != "" {
+					access.Username = username
+				} else {
+					access.Username = "root"
+				}
+			}
 			return []models.AccessRight{access}, nil
 		} else if len(selfAccessList) > 0 {
 			sa := selfAccessList[0]
 			if !ipAllowed(clientIP, sa.AllowedFrom) {
-				return nil, errors.New("⛔ " + utils.BgRedB("Access denied: your IP "+clientIP+" is not allowed for this access"))
+				return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
 			}
 			var selfEgressKey models.SelfEgressKey
 			if err = DB.Where("user_id = ?", sa.UserID).
@@ -190,6 +290,13 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 				PublicKey:      selfEgressKey.PubKey,
 				PrivateKey:     selfEgressKey.PrivKey,
 			}
+			if access.Username == "*" {
+				if username != "" {
+					access.Username = username
+				} else {
+					access.Username = "root"
+				}
+			}
 			return []models.AccessRight{access}, nil
 		} else {
 			return nil, errors.New("⛔ " + utils.BgRedB("Access denied for "+user.Username+" to "+username+"@"+host+":"+port))
@@ -197,7 +304,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	}
 
 	// USER LOGIC
-	if err = DB.Where("user_id = ? AND username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", user.ID, username, host, portInt, now, protocol).
+	if err = DB.Where("user_id = ? AND (username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", user.ID, username, host, portInt, now, protocol).
 		Find(&selfAccessList).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving self access: %v", err)
 	}
@@ -215,7 +322,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	}
 
 	if len(groupIDs) > 0 {
-		if err = DB.Where("group_id IN ? AND username = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", groupIDs, username, host, portInt, now, protocol).
+		if err = DB.Where("group_id IN ? AND (username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", groupIDs, username, host, portInt, now, protocol).
 			Preload("Group").
 			Find(&groupAccessList).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving group access: %v", err)
@@ -225,7 +332,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	if len(groupAccessList) > 0 {
 		ga := groupAccessList[0]
 		if !ipAllowed(clientIP, ga.AllowedFrom) {
-			return nil, errors.New("⛔ " + utils.BgRedB("Access denied: your IP "+clientIP+" is not allowed for this access"))
+			return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
 		}
 		var groupEgressKey models.GroupEgressKey
 		if err = DB.Where("group_id = ?", ga.GroupID).
@@ -248,11 +355,18 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 			PrivateKey:     groupEgressKey.PrivKey,
 			MFARequired:    ga.Group.MFARequired,
 		}
+		if access.Username == "*" {
+			if username != "" {
+				access.Username = username
+			} else {
+				access.Username = "root"
+			}
+		}
 		return []models.AccessRight{access}, nil
 	} else if len(selfAccessList) > 0 {
 		sa := selfAccessList[0]
 		if !ipAllowed(clientIP, sa.AllowedFrom) {
-			return nil, errors.New("⛔ " + utils.BgRedB("Access denied: your IP "+clientIP+" is not allowed for this access"))
+			return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
 		}
 		var selfEgressKey models.SelfEgressKey
 		if err = DB.Where("user_id = ?", sa.UserID).
@@ -273,6 +387,13 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 			KeyUpdatedAt:   selfEgressKey.UpdatedAt,
 			PublicKey:      selfEgressKey.PubKey,
 			PrivateKey:     selfEgressKey.PrivKey,
+		}
+		if access.Username == "*" {
+			if username != "" {
+				access.Username = username
+			} else {
+				access.Username = "root"
+			}
 		}
 		return []models.AccessRight{access}, nil
 	} else {
@@ -390,9 +511,8 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 	if port == "" {
 		port = "22"
 	}
-	if user == "" {
-		user = "root"
-	}
+	// Do not default the username here. If the caller omitted a username, SSHConnect
+	// will attempt to infer it from stored accesses and fall back to "root" when needed.
 	if host == "" {
 		return "", "", "", "", errors.New("invalid format: missing host")
 	}

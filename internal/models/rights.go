@@ -234,7 +234,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return true
 	case "selfAddIngressKeyPIV":
 		return true
-	case "selfSetPassword", "selfChangePassword":
+	case "selfSetPassword", "selfChangePassword", "selfDisablePassword":
 		return true
 
 	// TTY
