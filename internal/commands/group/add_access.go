@@ -5,32 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
-
-// isValidHost validates that the host string is a valid hostname or IP address without any disallowed characters.
-func isValidHost(h string) bool {
-	if strings.ContainsAny(h, " @/\\") {
-		return false
-	}
-	host := h
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		host = host[1 : len(host)-1]
-	}
-	if net.ParseIP(host) != nil {
-		return true
-	}
-	re := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	return re.MatchString(host)
-}
 
 // GroupAddAccess adds an SSH access entry to a group.
 func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
@@ -60,7 +43,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	if !isValidHost(server) {
+	if !validation.IsValidHost(server) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
@@ -69,19 +52,28 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	// Check TCP connectivity to server:port with 5s timeout (skip if --force)
+	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
+	// A failed connectivity check is a warning only — it must not block access creation.
+	// Network reachability can change after the access entry is saved.
 	if !force {
 		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "Add Group Access",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Unreachable", Body: []string{fmt.Sprintf("Unable to connect to %s: %v", addr, err)}}},
+				BlockType: "warning",
+				Sections: []console.SectionContent{{
+					SubTitle: "Connectivity Warning",
+					Body: []string{
+						fmt.Sprintf("Could not reach %s over TCP: %v", addr, err),
+						"The access entry was saved anyway. Verify the target is reachable before connecting.",
+						"Use --force to suppress this check.",
+					},
+				}},
 			})
-			return nil
+		} else {
+			_ = conn.Close()
 		}
-		_ = conn.Close()
 	}
 
 	if !currentUser.CanDo(db, "groupAddAccess", groupName) {
@@ -93,8 +85,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
-	validProtocols := map[string]bool{"ssh": true, "scpupload": true, "scpdownload": true, "sftp": true, "rsync": true}
-	if !validProtocols[protocol] {
+	if !validation.IsValidProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",

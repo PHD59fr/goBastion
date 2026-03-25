@@ -6,6 +6,40 @@ import (
 	"gorm.io/gorm"
 )
 
+// canDoInGroup checks whether any of the user's group memberships satisfies roleCheck.
+// If target is non-empty, at least one group with that name must pass roleCheck.
+// If target is empty, it returns true when the user has the required role in ANY group
+// (used for pre-dispatch availability checks in help/autocomplete).
+func (u *User) canDoInGroup(userGroups []UserGroup, target string, roleCheck func(*UserGroup) bool) bool {
+	hasRoleInAny := false
+	for i := range userGroups {
+		ug := &userGroups[i]
+		if roleCheck(ug) {
+			hasRoleInAny = true
+			if target == "" || ug.Group.Name == target {
+				return true
+			}
+		}
+	}
+	// target == "" and user has the role somewhere → allowed (pre-dispatch check).
+	return hasRoleInAny && target == ""
+}
+
+// isManagerOrAbove returns true for owner, aclkeeper, gatekeeper roles.
+func isManagerOrAbove(ug *UserGroup) bool {
+	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()
+}
+
+// isManagerOrMember returns true for owner, aclkeeper, gatekeeper, member roles.
+func isManagerOrMember(ug *UserGroup) bool {
+	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()
+}
+
+// isOwnerOrACLKeeper returns true for owner and aclkeeper roles.
+func isOwnerOrACLKeeper(ug *UserGroup) bool {
+	return ug.IsOwner() || ug.IsACLKeeper()
+}
+
 // CanDo returns true if the user has permission to perform the given right on the target.
 func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	if u == nil {
@@ -49,87 +83,41 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if u.IsAdmin() {
 			return true
 		}
-
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
 		}
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() {
-				isGroupManager = true
-			}
-			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
+		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListAccesses":
 		if u.IsAdmin() {
 			return true
 		}
-
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
 		}
-
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember() {
-				isGroupManager = true
-			}
-			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
+		return u.canDoInGroup(userGroups, target, isManagerOrMember)
 
 	case "groupAddAlias", "groupDelAlias":
 		if u.IsAdmin() {
 			return true
 		}
-
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
 		}
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() {
-				isGroupManager = true
-			}
-			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()) {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
+		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListAliases":
 		if u.IsAdmin() {
 			return true
 		}
-
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
 		}
-
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember() {
-				isGroupManager = true
-			}
-			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()) {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
+		return u.canDoInGroup(userGroups, target, isManagerOrMember)
 
 	case "groupSetMFA":
 		if u.IsAdmin() {
@@ -139,36 +127,17 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if err != nil {
 			return false
 		}
-		for _, ug := range userGroups {
-			if ug.IsOwner() {
-				// Allow if target is empty (pre-dispatch check) or matches group name
-				if target == "" || ug.Group.Name == target {
-					return true
-				}
-			}
-		}
-		return false
+		return u.canDoInGroup(userGroups, target, func(ug *UserGroup) bool { return ug.IsOwner() })
 
 	case "groupAddMember", "groupDelMember":
 		if u.IsAdmin() {
 			return true
 		}
-
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
 		}
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() || ug.IsACLKeeper() {
-				isGroupManager = true
-			}
-			if ug.Group.Name == target && (ug.IsOwner() || ug.IsACLKeeper()) {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
+		return u.canDoInGroup(userGroups, target, isOwnerOrACLKeeper)
 
 	case "groupCreate", "groupDelete":
 		return u.IsAdmin()
@@ -177,23 +146,11 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if u.IsAdmin() {
 			return true
 		}
-
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
 		}
-
-		isGroupManager := false
-
-		for _, ug := range userGroups {
-			if ug.IsOwner() {
-				isGroupManager = true
-			}
-			if ug.Group.Name == target && ug.IsOwner() {
-				return true
-			}
-		}
-		return isGroupManager && target == ""
+		return u.canDoInGroup(userGroups, target, func(ug *UserGroup) bool { return ug.IsOwner() })
 
 	case "groupInfo", "groupList":
 		return true

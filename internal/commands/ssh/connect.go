@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,24 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// Access selection priority scores. Higher score = higher priority.
+// The order enforces: self-exact > group-exact > self-wildcard > group-wildcard > admin-override.
+const (
+	scoreAdminOverride = 0
+	scoreGroupWildcard = 1
+	scoreSelfWildcard  = 2
+	scoreGroupExact    = 3
+	scoreSelfExact     = 4
+)
+
+// accessCandidate holds a candidate access entry and its selection score.
+type accessCandidate struct {
+	selfAccess  *models.SelfAccess
+	groupAccess *models.GroupAccess
+	score       int
+	reason      string
+}
 
 // SSHConnect resolves the target and establishes an SSH connection through the bastion.
 func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
@@ -61,73 +80,14 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 			return fmt.Errorf("invalid ssh port: %w", err)
 		}
 
-		now := time.Now()
-		candidate := ""
-		found := false
-
-		var userGroups []models.UserGroup
-		if err := db.Where("user_id = ?", user.ID).Find(&userGroups).Error; err == nil {
-			groupIDs := make([]uuid.UUID, 0, len(userGroups))
-			for _, ug := range userGroups {
-				groupIDs = append(groupIDs, ug.GroupID)
-			}
-
-			if len(groupIDs) > 0 {
-				var ga models.GroupAccess
-				err := db.
-					Where("group_id IN ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", groupIDs, sshHost, portInt, now).
-					First(&ga).Error
-				if err == nil {
-					if u, ok := resolveAccessUsername(ga.Username); ok {
-						candidate = u
-						found = true
-					}
-				}
-			}
+		resolved, ok := inferSSHUsername(db, user, sshHost, portInt)
+		if !ok {
+			return fmt.Errorf(
+				"no SSH username could be resolved for %s:%s — specify one explicitly (e.g. user@%s)",
+				sshHost, sshPort, sshHost,
+			)
 		}
-
-		if !found {
-			var sa models.SelfAccess
-			err := db.
-				Where("user_id = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, sshHost, portInt, now).
-				First(&sa).Error
-			if err == nil {
-				if u, ok := resolveAccessUsername(sa.Username); ok {
-					candidate = u
-					found = true
-				}
-			}
-		}
-
-		if !found && user.Role == models.RoleAdmin {
-			var ga models.GroupAccess
-			err := db.
-				Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", sshHost, portInt, now).
-				First(&ga).Error
-			if err == nil {
-				if u, ok := resolveAccessUsername(ga.Username); ok {
-					candidate = u
-					found = true
-				}
-			} else {
-				var sa models.SelfAccess
-				err := db.
-					Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", sshHost, portInt, now).
-					First(&sa).Error
-				if err == nil {
-					if u, ok := resolveAccessUsername(sa.Username); ok {
-						candidate = u
-						found = true
-					}
-				}
-			}
-		}
-
-		if !found {
-			candidate = "root"
-		}
-
-		sshUser = candidate
+		sshUser = resolved
 	}
 
 	loginHostname := user.Username + "@" + hostname
@@ -154,9 +114,13 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 			fmt.Printf("- "+utils.BgGreenB("%s")+" - ID: %s "+utils.FgBlueB("%s-%d")+" [%s]...\n", access.Source, access.KeyId.String(), strings.ToUpper(access.KeyType), access.KeySize, access.KeyUpdatedAt.Format("2006-01-02"))
 
 			if access.Type == "self" {
-				db.Model(&models.SelfAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now())
+				if err := db.Model(&models.SelfAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now()).Error; err != nil {
+					log.Warn("last_connection_update", slog.String("event", "last_connection_update"), slog.String("error", err.Error()))
+				}
 			} else {
-				db.Model(&models.GroupAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now())
+				if err := db.Model(&models.GroupAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now()).Error; err != nil {
+					log.Warn("last_connection_update", slog.String("event", "last_connection_update"), slog.String("error", err.Error()))
+				}
 			}
 
 			// JIT MFA: if the group requires MFA and the user hasn't done global TOTP,
@@ -191,6 +155,60 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	return nil
 }
 
+// inferSSHUsername resolves the SSH username to use when connecting to host:port
+// without an explicit username. It queries the user's own accesses and group accesses
+// using the same priority order as accessFilter. Returns ("", false) only when no
+// access entry exists — the caller must then return an explicit error.
+func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (string, bool) {
+	now := time.Now()
+
+	// Self accesses first (higher priority than group).
+	var sa models.SelfAccess
+	if err := db.Where("user_id = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+		user.ID, host, port, now).
+		Order("CASE WHEN username != '*' THEN 0 ELSE 1 END"). // exact before wildcard
+		First(&sa).Error; err == nil {
+		if u, ok := resolveAccessUsername(sa.Username); ok {
+			return u, true
+		}
+	}
+
+	// Group accesses.
+	var groupIDs []uuid.UUID
+	if err := db.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).
+		Pluck("group_id", &groupIDs).Error; err == nil && len(groupIDs) > 0 {
+		var ga models.GroupAccess
+		if err := db.Where("group_id IN ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+			groupIDs, host, port, now).
+			Order("CASE WHEN username != '*' THEN 0 ELSE 1 END").
+			First(&ga).Error; err == nil {
+			if u, ok := resolveAccessUsername(ga.Username); ok {
+				return u, true
+			}
+		}
+	}
+
+	// Admin override: any access entry in the system for this host.
+	if user.Role == models.RoleAdmin {
+		var ga models.GroupAccess
+		if err := db.Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", host, port, now).
+			First(&ga).Error; err == nil {
+			if u, ok := resolveAccessUsername(ga.Username); ok {
+				return u, true
+			}
+		}
+		var sa2 models.SelfAccess
+		if err := db.Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", host, port, now).
+			First(&sa2).Error; err == nil {
+			if u, ok := resolveAccessUsername(sa2.Username); ok {
+				return u, true
+			}
+		}
+	}
+
+	return "", false
+}
+
 func resolveAccessUsername(username string) (string, bool) {
 	switch {
 	case username == "*":
@@ -202,9 +220,16 @@ func resolveAccessUsername(username string) (string, bool) {
 	}
 }
 
-// accessFilter returns the list of access rights matching username, host, port and protocol for the user.
-// protocol is one of: ssh, scpupload, scpdownload, sftp, rsync.
-// An access with protocol "ssh" grants all protocols (backwards-compatible).
+// accessFilter returns the best-matching access right for the given user, target and protocol.
+//
+// Priority order (highest first):
+//  1. User's own access, exact username match (score 4)
+//  2. Group access, exact username match      (score 3)
+//  3. User's own access, wildcard '*' match   (score 2)
+//  4. Group access, wildcard '*' match        (score 1)
+//  5. Admin override: any matching system access (score 0, admin only)
+//
+// Within the same score, ordering is stable (database insertion order).
 func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol string) ([]models.AccessRight, error) {
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
@@ -214,191 +239,206 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	clientIP := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
 	now := time.Now()
 
-	var selfAccessList []models.SelfAccess
-	var groupAccessList []models.GroupAccess
+	var candidates []accessCandidate
 
-	// ADMIN LOGIC
-	if user.Role == models.RoleAdmin {
-		// Match exact username or wildcard '*'
-		if err = DB.Where("(username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
-			Find(&selfAccessList).Error; err != nil {
-			return nil, fmt.Errorf("error retrieving self access for admin: %v", err)
+	// --- Self accesses (scores 2 and 4) ---
+	var selfAccesses []models.SelfAccess
+	if err = DB.Where(
+		"user_id = ? AND (username = ? OR username = '*') AND server = ? AND port = ? "+
+			"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
+		user.ID, username, host, portInt, now, protocol,
+	).Find(&selfAccesses).Error; err != nil {
+		return nil, fmt.Errorf("error retrieving self accesses: %v", err)
+	}
+	for i := range selfAccesses {
+		sa := &selfAccesses[i]
+		score := scoreSelfWildcard
+		reason := "self-wildcard"
+		if sa.Username != "*" {
+			score = scoreSelfExact
+			reason = "self-exact"
 		}
-		if err = DB.Where("(username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", username, host, portInt, now, protocol).
-			Preload("Group").
-			Find(&groupAccessList).Error; err != nil {
-			return nil, fmt.Errorf("error retrieving group access for admin: %v", err)
-		}
-
-		if len(groupAccessList) > 0 {
-			ga := groupAccessList[0]
-			if !ipAllowed(clientIP, ga.AllowedFrom) {
-				return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
-			}
-			var groupEgressKey models.GroupEgressKey
-			if err = DB.Where("group_id = ?", ga.GroupID).
-				First(&groupEgressKey).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("error retrieving group egress key for group %v: %v", ga.GroupID, err)
-			}
-			access := models.AccessRight{
-				Source:         "admin-group-" + ga.Group.Name,
-				ID:             ga.ID,
-				Username:       ga.Username,
-				Server:         ga.Server,
-				Port:           ga.Port,
-				Type:           "group",
-				KeyId:          groupEgressKey.ID,
-				KeyType:        groupEgressKey.Type,
-				KeySize:        groupEgressKey.Size,
-				KeyFingerprint: groupEgressKey.Fingerprint,
-				KeyUpdatedAt:   groupEgressKey.UpdatedAt,
-				PublicKey:      groupEgressKey.PubKey,
-				PrivateKey:     groupEgressKey.PrivKey,
-				MFARequired:    ga.Group.MFARequired,
-			}
-			// Normalize '*' to the requested username (if provided) or to 'root' when no username was requested
-			if access.Username == "*" {
-				if username != "" {
-					access.Username = username
-				} else {
-					access.Username = "root"
-				}
-			}
-			return []models.AccessRight{access}, nil
-		} else if len(selfAccessList) > 0 {
-			sa := selfAccessList[0]
-			if !ipAllowed(clientIP, sa.AllowedFrom) {
-				return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
-			}
-			var selfEgressKey models.SelfEgressKey
-			if err = DB.Where("user_id = ?", sa.UserID).
-				First(&selfEgressKey).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("error retrieving self egress key for user %v: %v", sa.UserID, err)
-			}
-			access := models.AccessRight{
-				ID:             sa.ID,
-				Source:         "admin-account-" + sa.Username,
-				Username:       sa.Username,
-				Server:         sa.Server,
-				Port:           sa.Port,
-				Type:           "self",
-				KeyId:          selfEgressKey.ID,
-				KeyType:        selfEgressKey.Type,
-				KeySize:        selfEgressKey.Size,
-				KeyFingerprint: selfEgressKey.Fingerprint,
-				KeyUpdatedAt:   selfEgressKey.UpdatedAt,
-				PublicKey:      selfEgressKey.PubKey,
-				PrivateKey:     selfEgressKey.PrivKey,
-			}
-			if access.Username == "*" {
-				if username != "" {
-					access.Username = username
-				} else {
-					access.Username = "root"
-				}
-			}
-			return []models.AccessRight{access}, nil
-		} else {
-			return nil, errors.New("⛔ " + utils.BgRedB("Access denied for "+user.Username+" to "+username+"@"+host+":"+port))
-		}
+		candidates = append(candidates, accessCandidate{selfAccess: sa, score: score, reason: reason})
 	}
 
-	// USER LOGIC
-	if err = DB.Where("user_id = ? AND (username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", user.ID, username, host, portInt, now, protocol).
-		Find(&selfAccessList).Error; err != nil {
-		return nil, fmt.Errorf("error retrieving self access: %v", err)
-	}
-
+	// --- Group accesses (scores 1 and 3) ---
 	var userGroups []models.UserGroup
-	if err = DB.Where("user_id = ?", user.ID).
-		Preload("Group").
-		Find(&userGroups).Error; err != nil {
+	if err = DB.Where("user_id = ?", user.ID).Preload("Group").Find(&userGroups).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving user groups: %v", err)
 	}
-
 	groupIDs := make([]uuid.UUID, 0, len(userGroups))
 	for _, ug := range userGroups {
 		groupIDs = append(groupIDs, ug.GroupID)
 	}
 
 	if len(groupIDs) > 0 {
-		if err = DB.Where("group_id IN ? AND (username = ? OR username = '*') AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)", groupIDs, username, host, portInt, now, protocol).
-			Preload("Group").
-			Find(&groupAccessList).Error; err != nil {
-			return nil, fmt.Errorf("error retrieving group access: %v", err)
+		var groupAccesses []models.GroupAccess
+		if err = DB.Where(
+			"group_id IN ? AND (username = ? OR username = '*') AND server = ? AND port = ? "+
+				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
+			groupIDs, username, host, portInt, now, protocol,
+		).Preload("Group").Find(&groupAccesses).Error; err != nil {
+			return nil, fmt.Errorf("error retrieving group accesses: %v", err)
+		}
+		for i := range groupAccesses {
+			ga := &groupAccesses[i]
+			score := scoreGroupWildcard
+			reason := "group-wildcard"
+			if ga.Username != "*" {
+				score = scoreGroupExact
+				reason = "group-exact"
+			}
+			candidates = append(candidates, accessCandidate{groupAccess: ga, score: score, reason: reason})
 		}
 	}
 
-	if len(groupAccessList) > 0 {
-		ga := groupAccessList[0]
-		if !ipAllowed(clientIP, ga.AllowedFrom) {
-			return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
-		}
-		var groupEgressKey models.GroupEgressKey
-		if err = DB.Where("group_id = ?", ga.GroupID).
-			First(&groupEgressKey).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("error retrieving group egress key for group %v: %v", ga.GroupID, err)
-		}
-		access := models.AccessRight{
-			ID:             ga.ID,
-			Source:         "group-" + ga.Group.Name,
-			Username:       ga.Username,
-			Server:         ga.Server,
-			Port:           ga.Port,
-			Type:           "group",
-			KeyId:          groupEgressKey.ID,
-			KeyType:        groupEgressKey.Type,
-			KeySize:        groupEgressKey.Size,
-			KeyFingerprint: groupEgressKey.Fingerprint,
-			KeyUpdatedAt:   groupEgressKey.UpdatedAt,
-			PublicKey:      groupEgressKey.PubKey,
-			PrivateKey:     groupEgressKey.PrivKey,
-			MFARequired:    ga.Group.MFARequired,
-		}
-		if access.Username == "*" {
-			if username != "" {
-				access.Username = username
-			} else {
-				access.Username = "root"
+	// --- Admin override: any matching system access (score 0, last resort) ---
+	if user.Role == models.RoleAdmin && len(candidates) == 0 {
+		var adminSelfAccesses []models.SelfAccess
+		if err = DB.Where(
+			"(username = ? OR username = '*') AND server = ? AND port = ? "+
+				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
+			username, host, portInt, now, protocol,
+		).Find(&adminSelfAccesses).Error; err == nil {
+			for i := range adminSelfAccesses {
+				candidates = append(candidates, accessCandidate{
+					selfAccess: &adminSelfAccesses[i],
+					score:      scoreAdminOverride,
+					reason:     "admin-override-self",
+				})
 			}
 		}
-		return []models.AccessRight{access}, nil
-	} else if len(selfAccessList) > 0 {
-		sa := selfAccessList[0]
-		if !ipAllowed(clientIP, sa.AllowedFrom) {
-			return nil, errors.New("Access denied: your IP " + clientIP + " is not allowed for this access")
-		}
-		var selfEgressKey models.SelfEgressKey
-		if err = DB.Where("user_id = ?", sa.UserID).
-			First(&selfEgressKey).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("error retrieving self egress key for user %v: %v", sa.UserID, err)
-		}
-		access := models.AccessRight{
-			ID:             sa.ID,
-			Source:         "account-" + sa.Username,
-			Username:       sa.Username,
-			Server:         sa.Server,
-			Port:           sa.Port,
-			Type:           "self",
-			KeyId:          selfEgressKey.ID,
-			KeyType:        selfEgressKey.Type,
-			KeySize:        selfEgressKey.Size,
-			KeyFingerprint: selfEgressKey.Fingerprint,
-			KeyUpdatedAt:   selfEgressKey.UpdatedAt,
-			PublicKey:      selfEgressKey.PubKey,
-			PrivateKey:     selfEgressKey.PrivKey,
-		}
-		if access.Username == "*" {
-			if username != "" {
-				access.Username = username
-			} else {
-				access.Username = "root"
+		var adminGroupAccesses []models.GroupAccess
+		if err = DB.Where(
+			"(username = ? OR username = '*') AND server = ? AND port = ? "+
+				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
+			username, host, portInt, now, protocol,
+		).Preload("Group").Find(&adminGroupAccesses).Error; err == nil {
+			for i := range adminGroupAccesses {
+				candidates = append(candidates, accessCandidate{
+					groupAccess: &adminGroupAccesses[i],
+					score:       scoreAdminOverride,
+					reason:      "admin-override-group",
+				})
 			}
 		}
-		return []models.AccessRight{access}, nil
-	} else {
-		return nil, errors.New("⛔ " + utils.BgRedB("Access denied for "+user.Username+" to "+username+"@"+host+":"+port))
 	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("⛔ %s: no access entry found for %s@%s:%s — ask an admin to add one",
+			utils.BgRedB("Access denied for "+user.Username),
+			username, host, port)
+	}
+
+	// Sort by score descending; stable so DB insertion order breaks ties.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	best := candidates[0]
+
+	// IP allowance check.
+	allowedFrom := ""
+	if best.selfAccess != nil {
+		allowedFrom = best.selfAccess.AllowedFrom
+	} else {
+		allowedFrom = best.groupAccess.AllowedFrom
+	}
+	if !ipAllowed(clientIP, allowedFrom) {
+		return nil, fmt.Errorf("access denied to %s@%s:%s: your current IP %s is not allowed by this access rule; contact your admin to update the --from restriction on this access entry",
+			username, host, port, clientIP)
+	}
+
+	// Build the AccessRight from the best candidate.
+	var access models.AccessRight
+	if best.selfAccess != nil {
+		access, err = buildSelfAccessRight(DB, *best.selfAccess, username, best.reason)
+	} else {
+		access, err = buildGroupAccessRight(DB, *best.groupAccess, username, best.reason)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return []models.AccessRight{access}, nil
+}
+
+// buildGroupAccessRight constructs an AccessRight from a GroupAccess entry and its egress key.
+func buildGroupAccessRight(db *gorm.DB, ga models.GroupAccess, requestedUsername, reason string) (models.AccessRight, error) {
+	var key models.GroupEgressKey
+	if err := db.Where("group_id = ?", ga.GroupID).First(&key).Error; err != nil &&
+		!errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.AccessRight{}, fmt.Errorf("error retrieving egress key for group %v: %v", ga.GroupID, err)
+	}
+
+	sourcePrefix := "group"
+	if reason == "admin-override-group" {
+		sourcePrefix = "admin-group"
+	}
+
+	access := models.AccessRight{
+		ID:             ga.ID,
+		Source:         sourcePrefix + "-" + ga.Group.Name,
+		Username:       ga.Username,
+		Server:         ga.Server,
+		Port:           ga.Port,
+		Type:           "group",
+		KeyId:          key.ID,
+		KeyType:        key.Type,
+		KeySize:        key.Size,
+		KeyFingerprint: key.Fingerprint,
+		KeyUpdatedAt:   key.UpdatedAt,
+		PublicKey:      key.PubKey,
+		PrivateKey:     key.PrivKey,
+		MFARequired:    ga.Group.MFARequired,
+	}
+	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
+	return access, nil
+}
+
+// buildSelfAccessRight constructs an AccessRight from a SelfAccess entry and its egress key.
+func buildSelfAccessRight(db *gorm.DB, sa models.SelfAccess, requestedUsername, reason string) (models.AccessRight, error) {
+	var key models.SelfEgressKey
+	if err := db.Where("user_id = ?", sa.UserID).First(&key).Error; err != nil &&
+		!errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.AccessRight{}, fmt.Errorf("error retrieving egress key for user %v: %v", sa.UserID, err)
+	}
+
+	sourcePrefix := "account"
+	if reason == "admin-override-self" {
+		sourcePrefix = "admin-account"
+	}
+
+	access := models.AccessRight{
+		ID:             sa.ID,
+		Source:         sourcePrefix + "-" + sa.Username,
+		Username:       sa.Username,
+		Server:         sa.Server,
+		Port:           sa.Port,
+		Type:           "self",
+		KeyId:          key.ID,
+		KeyType:        key.Type,
+		KeySize:        key.Size,
+		KeyFingerprint: key.Fingerprint,
+		KeyUpdatedAt:   key.UpdatedAt,
+		PublicKey:      key.PubKey,
+		PrivateKey:     key.PrivKey,
+	}
+	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
+	return access, nil
+}
+
+// normalizeWildcardUsername replaces a wildcard username '*' with the requested username.
+// Falls back to "root" only when no username was explicitly requested (wildcard access,
+// no username specified — the access entry grants unrestricted user access).
+func normalizeWildcardUsername(stored, requested string) string {
+	if stored != "*" {
+		return stored
+	}
+	if requested != "" {
+		return requested
+	}
+	return "root"
 }
 
 // detectProtocol inspects the remote command string to determine the access protocol.
