@@ -63,7 +63,7 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"selfAddAccess --server <server> --username <username> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}},
+				{SubTitle: "Usage", Body: []string{"selfAddAccess --server <server> --username <username> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync] [--force]"}},
 			},
 		})
 		return nil

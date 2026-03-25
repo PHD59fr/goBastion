@@ -137,6 +137,9 @@ func DisplayHelp(db *gorm.DB, user models.User) {
 	if hasPerm("selfChangePassword") {
 		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfChangePassword        Change your password second factor")
 	}
+	if hasPerm("selfDisablePassword") {
+		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfDisablePassword       Disable password second factor (MFA)")
+	}
 	if hasPerm("selfAddIngressKeyPIV") {
 		totpBody = append(totpBody, " "+utils.FgGreen("-")+" selfAddIngressKeyPIV      Add a PIV/hardware-attested SSH key (YubiKey)")
 	}

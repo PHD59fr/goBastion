@@ -272,6 +272,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 		{Text: "selfReplaceKnownHost", Description: "Replace a changed host key (TOFU reset)"},
 		{Text: "selfSetupTOTP", Description: "Enable TOTP two-factor authentication"},
 		{Text: "selfDisableTOTP", Description: "Disable TOTP two-factor authentication"},
+		{Text: "selfDisablePassword", Description: "Disable password MFA"},
 		{Text: "selfAddIngressKeyPIV", Description: "Add a PIV/hardware-attested ingress key"},
 		{Text: "selfSetPassword", Description: "Set a password MFA second factor"},
 		{Text: "selfChangePassword", Description: "Change your password MFA"},
