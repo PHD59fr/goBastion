@@ -181,19 +181,19 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	return nil
 }
 
+// hostKeyTTL is how long a stored host key is considered fresh before re-scanning.
+const hostKeyTTL = 24 * time.Hour
+
 // checkAndUpdateHostKey implements TOFU (Trust On First Use) for the target server.
 //   - First connection: the scanned key is stored in DB and trusted.
-//   - Key unchanged: proceeds normally.
+//   - Key unchanged and fresh (< hostKeyTTL): skips the keyscan entirely.
 //   - Key changed: returns an error telling the user to run selfReplaceKnownHost.
+//
+// ssh-keyscan is only invoked when the host is unknown OR the stored entries are stale.
 func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port int64) error {
 	portStr := strconv.FormatInt(port, 10)
-	out, err := exec.Command("ssh-keyscan", "-p", portStr, "-T", "5", server).Output()
-	if err != nil || len(out) == 0 {
-		// Can't scan (unreachable, firewall…) - let SSH fail naturally
-		return nil
-	}
 
-	// Determine host token as stored in known_hosts
+	// Determine host token as stored in known_hosts.
 	var hostToken string
 	if port == 22 {
 		hostToken = server
@@ -201,7 +201,37 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 		hostToken = fmt.Sprintf("[%s]:%d", server, port)
 	}
 
-	// Parse scanned keys: keyType → full line
+	// Fetch existing DB entries for this user.
+	var dbEntries []models.KnownHostsEntry
+	db.Where("user_id = ?", user.ID).Find(&dbEntries)
+
+	// Build map keyType → stored entry for this specific host,
+	// and find the most recent update time.
+	existing := make(map[string]string)
+	var mostRecentUpdate time.Time
+	for _, e := range dbEntries {
+		parts := strings.Fields(e.Entry)
+		if len(parts) >= 3 && parts[0] == hostToken {
+			existing[parts[1]] = e.Entry
+			if e.UpdatedAt.After(mostRecentUpdate) {
+				mostRecentUpdate = e.UpdatedAt
+			}
+		}
+	}
+
+	// If the host is known and entries are still fresh, skip the network scan.
+	if len(existing) > 0 && time.Since(mostRecentUpdate) < hostKeyTTL {
+		return nil
+	}
+
+	// Run ssh-keyscan only when host is unknown or entries are stale.
+	out, err := exec.Command("ssh-keyscan", "-p", portStr, "-T", "5", server).Output()
+	if err != nil || len(out) == 0 {
+		// Can't scan (unreachable, firewall…) - let SSH fail naturally.
+		return nil
+	}
+
+	// Parse scanned keys: keyType → full line.
 	type scannedKey struct {
 		keyType string
 		line    string
@@ -222,20 +252,7 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 		return nil
 	}
 
-	// Fetch existing DB entries for this user
-	var dbEntries []models.KnownHostsEntry
-	db.Where("user_id = ?", user.ID).Find(&dbEntries)
-
-	// Build map keyType → stored line for this specific host
-	existing := make(map[string]string)
-	for _, e := range dbEntries {
-		parts := strings.Fields(e.Entry)
-		if len(parts) >= 3 && parts[0] == hostToken {
-			existing[parts[1]] = e.Entry
-		}
-	}
-
-	// TOFU: nothing known for this host yet
+	// TOFU: nothing known for this host yet — store and trust.
 	if len(existing) == 0 {
 		for _, sk := range scanned {
 			db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line})
@@ -243,7 +260,7 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 		return bastionSync.New(db, osadapter.NewLinuxAdapter(), *slog.Default()).KnownHostsFromDB(&user)
 	}
 
-	// Check each scanned key against stored keys
+	// Check each scanned key against stored keys.
 	changed := false
 	for _, sk := range scanned {
 		storedLine, found := existing[sk.keyType]
@@ -252,7 +269,7 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 			break
 		}
 		if !found {
-			// New key type added by the server - store it
+			// New key type added by the server — store it.
 			db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line})
 		}
 	}
@@ -265,7 +282,7 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 			server, server)
 	}
 
-	// Ensure file is up to date (e.g. new key type was added above)
+	// Ensure file is up to date (e.g. new key type was added or entries were stale).
 	return bastionSync.New(db, osadapter.NewLinuxAdapter(), *slog.Default()).KnownHostsFromDB(&user)
 }
 

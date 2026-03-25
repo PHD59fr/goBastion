@@ -205,10 +205,54 @@ func migrate(db *gorm.DB, driver string) error {
 		`).Error; err != nil {
 			return fmt.Errorf("failed to create unique_user_entry index: %w", err)
 		}
+		// Composite index for self access lookups (hot path: accessFilter + inferSSHUsername).
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_self_access_lookup
+			ON self_accesses(user_id, server, port, username, protocol)
+			WHERE deleted_at IS NULL;
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_self_access_lookup: %w", err)
+		}
+		// Composite index for group access lookups.
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_group_access_lookup
+			ON group_accesses(group_id, server, port, username, protocol)
+			WHERE deleted_at IS NULL;
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_group_access_lookup: %w", err)
+		}
+		// Composite index for user-group membership lookups.
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_user_group_lookup
+			ON user_groups(user_id, group_id)
+			WHERE deleted_at IS NULL;
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_user_group_lookup: %w", err)
+		}
 
 	case "mysql":
-		// MySQL does not support this partial-index syntax.
-		// Skip it for now so DB initialization succeeds.
+		// MySQL does not support partial indexes (no WHERE clause) and column
+		// type constraints make prefix lengths unreliable across configurations.
+		// Index only the most selective leading columns; MySQL will use them to
+		// narrow the row set before filtering on the remaining columns.
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_self_access_lookup
+			ON self_accesses(user_id);
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_self_access_lookup: %w", err)
+		}
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_group_access_lookup
+			ON group_accesses(group_id);
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_group_access_lookup: %w", err)
+		}
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_user_group_lookup
+			ON user_groups(user_id);
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_user_group_lookup: %w", err)
+		}
 	}
 
 	return nil
@@ -221,8 +265,18 @@ func configure(db *gorm.DB, driver string) error {
 		return fmt.Errorf("failed to get generic database object: %w", err)
 	}
 
-	sqlDB.SetMaxOpenConns(2)
-	sqlDB.SetMaxIdleConns(1)
+	// SQLite requires single-writer serialisation; Postgres/MySQL support real pools.
+	switch driver {
+	case "sqlite":
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+	case "postgres", "mysql":
+		sqlDB.SetMaxOpenConns(10)
+		sqlDB.SetMaxIdleConns(5)
+	default:
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+	}
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	if driver == "sqlite" {
