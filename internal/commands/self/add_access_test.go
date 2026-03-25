@@ -14,6 +14,7 @@ func TestSelfAddAccess_Success(t *testing.T) {
 		"--server", "1.2.3.4",
 		"--username", "root",
 		"--port", "22",
+		"--force",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

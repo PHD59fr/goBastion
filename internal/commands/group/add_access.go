@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"net"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"goBastion/internal/models"
@@ -12,12 +16,29 @@ import (
 	"gorm.io/gorm"
 )
 
+// isValidHost validates that the host string is a valid hostname or IP address without any disallowed characters.
+func isValidHost(h string) bool {
+	if strings.ContainsAny(h, " @/\\") {
+		return false
+	}
+	host := h
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	re := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	return re.MatchString(host)
+}
+
 // GroupAddAccess adds an SSH access entry to a group.
 func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddAccess", flag.ContinueOnError)
 	var groupName, server, username, comment, allowedFrom, protocol string
 	var port int64
 	var ttlDays int
+	var force bool
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&server, "server", "", "Server to add access for")
 	fs.Int64Var(&port, "port", 22, "Port number")
@@ -26,6 +47,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
 	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
 	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
+	fs.BoolVar(&force, "force", false, "Skip TCP connectivity check")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
@@ -33,9 +55,33 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync] [--force]"}}},
 		})
 		return nil
+	}
+
+	if !isValidHost(server) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Server", Body: []string{"Server hostname/IP contains invalid characters (e.g., '@')."}}},
+		})
+		return nil
+	}
+
+	// Check TCP connectivity to server:port with 5s timeout (skip if --force)
+	if !force {
+		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Add Group Access",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Unreachable", Body: []string{fmt.Sprintf("Unable to connect to %s: %v", addr, err)}}},
+			})
+			return nil
+		}
+		_ = conn.Close()
 	}
 
 	if !currentUser.CanDo(db, "groupAddAccess", groupName) {

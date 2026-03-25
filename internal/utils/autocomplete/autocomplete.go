@@ -128,6 +128,7 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 				{Text: "--from", Description: "Allowed source CIDRs (comma-separated)"},
 				{Text: "--ttl", Description: "Access expiry in days"},
 				{Text: "--protocol", Description: "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
+				{Text: "--force", Description: "Skip connectivity check"},
 			},
 			"groupDelAccess": {
 				{Text: "--group", Description: "Group name"},
