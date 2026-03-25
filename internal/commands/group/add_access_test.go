@@ -20,6 +20,7 @@ func TestGroupAddAccess_Success(t *testing.T) {
 		"--server", "10.0.0.1",
 		"--username", "deploy",
 		"--port", "22",
+		"--force",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
