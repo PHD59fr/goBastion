@@ -58,7 +58,14 @@ func GroupList(db *gorm.DB, user *models.User, args []string) error {
 		}
 	} else {
 		var userGroups []models.UserGroup
-		db.Preload("Group").Where("user_id = ?", user.ID).Find(&userGroups)
+		if err := db.Preload("Group").Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Group List",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Failed to load your groups."}}},
+			})
+			return err
+		}
 		if len(userGroups) == 0 {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "Group List",

@@ -2,8 +2,10 @@ package tty
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,23 +97,65 @@ func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
 		},
 	})
 
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("zcat %s | ttyplay", ttyFile))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		if err.Error() != "signal: interrupt" {
+	zcatCmd := exec.Command("zcat", ttyFile)
+	playCmd := exec.Command("ttyplay")
+
+	pipe, err := zcatCmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create pipe: %v", err)
+	}
+	playCmd.Stdin = pipe
+	playCmd.Stdout = os.Stdout
+	playCmd.Stderr = os.Stderr
+
+	if err := zcatCmd.Start(); err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{
+					SubTitle: "Playback Error",
+					Body:     []string{fmt.Sprintf("Failed to start zcat: %v", err)},
+				},
+			},
+		})
+		return err
+	}
+	if err := playCmd.Start(); err != nil {
+		_ = zcatCmd.Process.Kill()
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{
+					SubTitle: "Playback Error",
+					Body:     []string{fmt.Sprintf("Failed to start ttyplay: %v", err)},
+				},
+			},
+		})
+		return err
+	}
+
+	// Close the write end of the pipe in this process so ttyplay sees EOF.
+	// We need to get the underlying file to close it, but Stdin of zcatCmd
+	// is set to os.Stdin, so the pipe's write end is not used by zcatCmd.
+	// Just wait for both processes.
+	playErr := playCmd.Wait()
+	_ = zcatCmd.Wait()
+
+	if playErr != nil && playErr.Error() != "signal: interrupt" && playErr.Error() != "signal: killed" {
+		if !errors.Is(playErr, io.EOF) {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "TTY Session Playback",
 				BlockType: "error",
 				Sections: []console.SectionContent{
 					{
 						SubTitle: "Playback Error",
-						Body:     []string{fmt.Sprintf("Failed to play ttyrec file: %v", err)},
+						Body:     []string{fmt.Sprintf("Failed to play ttyrec file: %v", playErr)},
 					},
 				},
 			})
-			return err
+			return playErr
 		}
 	}
 	fmt.Printf("\n")

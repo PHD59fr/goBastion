@@ -17,7 +17,7 @@ import (
 
 // SelfSetupTOTP generates a TOTP secret, shows the enrollment URL, and asks the user to
 // confirm a code before persisting. This ensures the authenticator app is correctly set up.
-func SelfSetupTOTP(db *gorm.DB, user *models.User) error {
+func SelfSetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	if user.TOTPEnabled {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Setup TOTP",
@@ -66,7 +66,7 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User) error {
 	code = strings.TrimSpace(code)
 
 	if !totp.Verify(secret, code) {
-		slog.Default().Warn("totp setup failed - bad confirmation code", slog.String("user", user.Username))
+		log.Warn("totp setup failed - bad confirmation code", slog.String("user", user.Username))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Setup TOTP",
 			BlockType: "error",
@@ -83,7 +83,7 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User) error {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}
 
-	slog.Default().Info("totp enabled", slog.String("user", user.Username))
+	log.Info("totp enabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Setup TOTP",
 		BlockType: "success",

@@ -44,7 +44,7 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 		})
 		return err
 	}
@@ -59,13 +59,22 @@ func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
-	if err := db.Where("id = ? AND group_id = ?", accessID, group.ID).Delete(&models.GroupAccess{}).Error; err != nil {
+	result := db.Where("id = ? AND group_id = ?", accessID, group.ID).Delete(&models.GroupAccess{})
+	if result.Error != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Group Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error deleting group access."}}},
 		})
-		return err
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Access entry not found or does not belong to this group."}}},
+		})
+		return nil
 	}
 
 	console.DisplayBlock(console.ContentBlock{

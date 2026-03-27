@@ -3,11 +3,13 @@ package account
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"strings"
 	"time"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
@@ -56,12 +58,27 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		return nil
 	}
 
-	validProtocols := map[string]bool{"ssh": true, "scpupload": true, "scpdownload": true, "sftp": true, "rsync": true}
-	if !validProtocols[protocol] {
+	if !validation.IsValidProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
+		})
+		return nil
+	}
+	if !validation.IsValidPort(port) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Port", Body: []string{"Port must be between 1 and 65535"}}},
+		})
+		return nil
+	}
+	if !validation.IsValidCIDRs(allowedFrom) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDR notation (e.g. 10.0.0.0/8,192.168.1.0/24)"}}},
 		})
 		return nil
 	}
@@ -71,7 +88,7 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.", targetUser)}}},
 		})
 		return err
 	}

@@ -28,7 +28,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	fs.StringVar(&username, "username", "", "Connection username")
 	fs.StringVar(&comment, "comment", "", "Comment")
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
-	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
+	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never, must be positive if set)")
 	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
 	fs.BoolVar(&force, "force", false, "Skip TCP connectivity check")
 	var flagOutput bytes.Buffer
@@ -51,7 +51,24 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		})
 		return nil
 	}
+	if !validation.IsValidPort(port) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Port", Body: []string{"Port must be between 1 and 65535"}}},
+		})
+		return nil
+	}
+	if !validation.IsValidCIDRs(allowedFrom) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDR notation (e.g. 10.0.0.0/8,192.168.1.0/24)"}}},
+		})
+		return nil
+	}
 
+	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
 	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
 	// A failed connectivity check is a warning only — it must not block access creation.
 	// Network reachability can change after the access entry is saved.
@@ -93,13 +110,22 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		})
 		return nil
 	}
+	// Validate TTL - must be zero (never) or positive
+	if ttlDays < 0 {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid TTL", Body: []string{"TTL must be zero (never) or a positive number of days"}}},
+		})
+		return nil
+	}
 
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 		})
 		return err
 	}

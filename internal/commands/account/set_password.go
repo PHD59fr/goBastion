@@ -16,7 +16,7 @@ import (
 )
 
 // AccountSetPassword sets or clears a password MFA second factor for a user account (admin only).
-func AccountSetPassword(db *gorm.DB, currentUser *models.User, args []string) error {
+func AccountSetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("accountSetPassword", flag.ContinueOnError)
 	var targetUser string
 	var clear bool
@@ -45,7 +45,7 @@ func AccountSetPassword(db *gorm.DB, currentUser *models.User, args []string) er
 	if err := db.Where("username = ?", targetUser).First(&user).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Set Account Password MFA", BlockType: "error",
-			Sections: []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+			Sections: []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.", targetUser)}}},
 		})
 		return err
 	}
@@ -54,7 +54,7 @@ func AccountSetPassword(db *gorm.DB, currentUser *models.User, args []string) er
 		if err := db.Model(&user).Update("password_hash", "").Error; err != nil {
 			return fmt.Errorf("failed to clear password: %v", err)
 		}
-		slog.Default().Info("password mfa cleared by admin",
+		log.Info("password mfa cleared by admin",
 			slog.String("admin", currentUser.Username),
 			slog.String("user", targetUser),
 		)
@@ -86,7 +86,7 @@ func AccountSetPassword(db *gorm.DB, currentUser *models.User, args []string) er
 	if err := db.Model(&user).Update("password_hash", string(hash)).Error; err != nil {
 		return fmt.Errorf("failed to save password: %v", err)
 	}
-	slog.Default().Info("password mfa set by admin",
+	log.Info("password mfa set by admin",
 		slog.String("admin", currentUser.Username),
 		slog.String("user", targetUser),
 	)

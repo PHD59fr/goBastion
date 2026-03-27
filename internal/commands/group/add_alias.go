@@ -8,6 +8,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
@@ -45,9 +46,18 @@ func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Alias",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 		})
 		return err
+	}
+
+	if !validation.IsValidHost(hostname) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Alias",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Hostname", Body: []string{"Hostname contains invalid characters."}}},
+		})
+		return nil
 	}
 
 	newHost := models.Aliases{

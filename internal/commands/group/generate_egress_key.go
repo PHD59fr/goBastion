@@ -13,7 +13,9 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sshkey"
+	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
@@ -50,12 +52,22 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
+	validKeyTypes := map[string]bool{"ed25519": true, "rsa": true, "ecdsa": true}
+	if !validKeyTypes[keyType] {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Generate Egress Key",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Key Type", Body: []string{"Key type must be one of: ed25519, rsa, ecdsa"}}},
+		})
+		return nil
+	}
+
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 		})
 		return err
 	}
@@ -89,16 +101,22 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 	keySize = sshkey.GetKeySize(parsedKey)
 	_ = os.RemoveAll(tmpDir)
 
+	privKey := strings.TrimSpace(string(privKeyBytes))
+	encrypted, encErr := cryptokey.ReEncryptIfNeeded(privKey)
+	if encErr != nil {
+		return fmt.Errorf("error encrypting private key: %v", encErr)
+	}
+
 	newKey := models.GroupEgressKey{
 		GroupID:     group.ID,
 		PubKey:      strings.TrimSpace(string(pubKeyBytes)),
-		PrivKey:     strings.TrimSpace(string(privKeyBytes)),
+		PrivKey:     encrypted,
 		Type:        keyType,
 		Size:        keySize,
 		Fingerprint: fingerprint,
 	}
 	if err = db.Create(&newKey).Error; err != nil {
-		return fmt.Errorf("error storing group egress key in database: %v", err)
+		return validation.WrapDBError(err, "error storing group egress key in database")
 	}
 
 	console.DisplayBlock(console.ContentBlock{

@@ -16,7 +16,7 @@ import (
 
 // SelfDisableTOTP verifies the current TOTP code before disabling it, preventing a stolen
 // session from silently removing MFA.
-func SelfDisableTOTP(db *gorm.DB, user *models.User) error {
+func SelfDisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	if !user.TOTPEnabled {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable TOTP",
@@ -37,7 +37,7 @@ func SelfDisableTOTP(db *gorm.DB, user *models.User) error {
 	code = strings.TrimSpace(code)
 
 	if !totp.Verify(user.TOTPSecret, code) {
-		slog.Default().Warn("totp disable failed - bad code", slog.String("user", user.Username))
+		log.Warn("totp disable failed - bad code", slog.String("user", user.Username))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable TOTP",
 			BlockType: "error",
@@ -54,7 +54,7 @@ func SelfDisableTOTP(db *gorm.DB, user *models.User) error {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}
 
-	slog.Default().Info("totp disabled", slog.String("user", user.Username))
+	log.Info("totp disabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Disable TOTP",
 		BlockType: "success",

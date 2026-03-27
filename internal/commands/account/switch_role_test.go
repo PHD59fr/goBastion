@@ -1,6 +1,7 @@
 package account
 
 import (
+	"strings"
 	"testing"
 
 	"goBastion/internal/models"
@@ -29,6 +30,8 @@ func TestSwitchSysRoleUser_UserToAdmin(t *testing.T) {
 func TestSwitchSysRoleUser_AdminToUser(t *testing.T) {
 	db := newTestDB(t)
 	mock := osadapter.NewMockAdapter()
+	// Create a second admin so that demoting "eve" is allowed.
+	newAdminUser(t, db, "other_admin")
 	newAdminUser(t, db, "eve")
 
 	if err := SwitchSysRoleUser(db, mock, "eve"); err != nil {
@@ -39,6 +42,20 @@ func TestSwitchSysRoleUser_AdminToUser(t *testing.T) {
 	db.Where("username = ?", "eve").First(&u)
 	if u.Role != models.RoleUser {
 		t.Fatalf("expected role=user, got %s", u.Role)
+	}
+}
+
+func TestSwitchSysRoleUser_LastAdminDemotionBlocked(t *testing.T) {
+	db := newTestDB(t)
+	mock := osadapter.NewMockAdapter()
+	newAdminUser(t, db, "sole_admin")
+
+	err := SwitchSysRoleUser(db, mock, "sole_admin")
+	if err == nil {
+		t.Fatal("expected error when demoting the last admin, got nil")
+	}
+	if !strings.Contains(err.Error(), "last remaining admin") {
+		t.Fatalf("expected 'last remaining admin' error, got: %v", err)
 	}
 }
 

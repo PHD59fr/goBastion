@@ -70,6 +70,22 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
+	validRoles := map[string]bool{
+		models.GroupRoleOwner:      true,
+		models.GroupRoleACLKeeper:  true,
+		models.GroupRoleGatekeeper: true,
+		models.GroupRoleMember:     true,
+		models.GroupRoleGuest:      true,
+	}
+	if !validRoles[role] {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Member",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Role", Body: []string{"Role must be one of: owner, aclkeeper, gatekeeper, member, guest"}}},
+		})
+		return nil
+	}
+
 	newUG := models.UserGroup{UserID: u.ID, GroupID: g.ID, Role: role}
 	if err := db.Create(&newUG).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -79,6 +95,7 @@ func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error 
 		})
 		return err
 	}
+	currentUser.InvalidateGroupsCache()
 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Add Member",

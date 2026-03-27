@@ -16,6 +16,7 @@ import (
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils/console"
 	gosync "goBastion/internal/utils/sync"
+	"goBastion/internal/utils/validation"
 )
 
 // AccountCreate creates a new user account with an SSH ingress key.
@@ -91,7 +92,7 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 
 	var count int64
 	if err := db.Model(&models.User{}).Where("username = ? AND deleted_at IS NULL", username).Count(&count).Error; err != nil {
-		return fmt.Errorf("error querying database: %w", err)
+		return validation.WrapDBError(err, "error querying database")
 	}
 	if count > 0 {
 		return fmt.Errorf("user '%s' already exists", username)
@@ -117,12 +118,12 @@ func createDBUser(db *gorm.DB, username string) (*models.User, error) {
 	if err := db.Where("username = ?", username).First(&existing).Error; err == nil {
 		return &existing, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("error checking user existence: %w", err)
+		return nil, validation.WrapDBError(err, "error checking user existence")
 	}
 
 	newUser := models.User{Username: username, Role: models.RoleUser, Enabled: true}
 	if err := db.Create(&newUser).Error; err != nil {
-		return nil, err
+		return nil, validation.WrapDBError(err, "error creating user")
 	}
 	return &newUser, nil
 }

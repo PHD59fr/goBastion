@@ -52,7 +52,16 @@ func removeHostFromKnownHosts(db *gorm.DB, u *models.User, args []string, replac
 
 	// Match entries for this host (port 22: "hostname keytype key", other ports: "[hostname]:port keytype key")
 	var entries []models.KnownHostsEntry
-	db.Where("user_id = ?", u.ID).Find(&entries)
+	if err := db.Where("user_id = ?", u.ID).Find(&entries).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     title,
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Database Error", Body: []string{"Failed to query known hosts entries."}},
+			},
+		})
+		return err
+	}
 
 	var toDelete []string
 	for _, e := range entries {

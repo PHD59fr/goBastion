@@ -6,6 +6,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	cmdaccount "goBastion/internal/commands/account"
 	"goBastion/internal/models"
 )
 
@@ -28,14 +29,14 @@ func newTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestBootstrap_createDBIngressKey_Valid(t *testing.T) {
+func TestBootstrap_CreateDBIngressKey_Valid(t *testing.T) {
 	db := newTestDB(t)
 	user := models.User{Username: "admin", Role: models.RoleAdmin, Enabled: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
-	if err := createDBIngressKey(db, &user, testPubKey); err != nil {
+	if err := cmdaccount.CreateDBIngressKey(db, &user, testPubKey); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -48,27 +49,27 @@ func TestBootstrap_createDBIngressKey_Valid(t *testing.T) {
 	}
 }
 
-func TestBootstrap_createDBIngressKey_Empty(t *testing.T) {
+func TestBootstrap_CreateDBIngressKey_Empty(t *testing.T) {
 	db := newTestDB(t)
 	user := models.User{Username: "admin", Role: models.RoleAdmin, Enabled: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
-	err := createDBIngressKey(db, &user, "")
+	err := cmdaccount.CreateDBIngressKey(db, &user, "")
 	if err == nil {
 		t.Fatal("expected error for empty key, got nil")
 	}
 }
 
-func TestBootstrap_createDBIngressKey_Invalid(t *testing.T) {
+func TestBootstrap_CreateDBIngressKey_Invalid(t *testing.T) {
 	db := newTestDB(t)
 	user := models.User{Username: "admin", Role: models.RoleAdmin, Enabled: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
-	err := createDBIngressKey(db, &user, "not-a-valid-key garbage!!!")
+	err := cmdaccount.CreateDBIngressKey(db, &user, "not-a-valid-key garbage!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid key, got nil")
 	}

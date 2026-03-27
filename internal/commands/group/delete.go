@@ -38,7 +38,23 @@ func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
-	db.Where("name = ?", groupName).Delete(&models.Group{})
+	result := db.Where("name = ?", groupName).Delete(&models.Group{})
+	if result.Error != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Delete",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{fmt.Sprintf("Failed to delete group '%s'.", groupName)}}},
+		})
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Delete",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found.", groupName)}}},
+		})
+		return fmt.Errorf("group '%s' not found", groupName)
+	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Group Delete",
 		BlockType: "success",

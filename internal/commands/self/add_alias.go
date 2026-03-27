@@ -6,6 +6,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
@@ -32,6 +33,16 @@ func SelfAddAlias(db *gorm.DB, user *models.User, args []string) error {
 			BlockType: "error",
 			Sections: []console.SectionContent{
 				{SubTitle: "Usage", Body: []string{"selfAddAlias --alias <alias> --hostname <host_name>"}},
+			},
+		})
+		return nil
+	}
+	if !validation.IsValidHost(hostname) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Alias",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Invalid Hostname", Body: []string{"Hostname contains invalid characters."}},
 			},
 		})
 		return nil

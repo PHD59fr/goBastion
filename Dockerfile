@@ -38,7 +38,7 @@ COPY banner.txt /etc/ssh/banner
 
 RUN chown root:root /app/goBastion
 RUN chmod u+s /app/goBastion
-RUN touch /goBastion.log && chmod 644 /goBastion.log
+RUN touch /goBastion.log && chmod 640 /goBastion.log
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

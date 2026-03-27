@@ -11,6 +11,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 
+	cmdaccount "goBastion/internal/commands/account"
 	internaldb "goBastion/internal/db"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
@@ -26,6 +27,8 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 	syncFlag := flag.Bool("sync", false, "Sync DB state to OS (DB is source of truth)")
 	dbExportFlag := flag.Bool("dbExport", false, "Export the database as an encrypted JSON envelope to stdout")
 	dbImportFlag := flag.Bool("dbImport", false, "Import an encrypted JSON envelope from stdin into an empty database")
+	disableTOTPUser := flag.String("disableTOTP", "", "Disable TOTP + backup codes for a user (recovery)")
+	disablePasswordUser := flag.String("disablePassword", "", "Disable password MFA for a user (recovery)")
 	flag.Parse()
 
 	syncer := gosync.New(db, adapter, *log)
@@ -42,6 +45,12 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+	case *disableTOTPUser != "":
+		runDisableTOTP(db, log, *disableTOTPUser)
+
+	case *disablePasswordUser != "":
+		runDisablePassword(db, log, *disablePasswordUser)
 
 	case *syncFlag:
 		fmt.Fprintln(os.Stderr, "Syncing database state to OS...")
@@ -95,6 +104,8 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 		log.Info("startup", slog.String("event", "startup"), slog.String("reason", "sync_state"))
 		if err := syncer.EnforceFromDB(); err != nil {
 			log.Error("startup", slog.String("event", "startup"), slog.Any("error", err))
+			fmt.Fprintf(os.Stderr, "Startup sync failed: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
@@ -163,9 +174,7 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 		return fmt.Errorf("error syncing system users: %w", err)
 	}
 
-	// CreateUser and SwitchSysRoleUser are imported from the account package
-	// once the commands migration is complete. For now we call them directly.
-	if err = createUser(db, adapter, syncer, username, pubKey); err != nil {
+	if err = cmdaccount.CreateUser(db, adapter, username, pubKey); err != nil {
 		return fmt.Errorf("error creating user: %w", err)
 	}
 	if err = switchToAdmin(db, adapter, username); err != nil {
@@ -175,47 +184,6 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 	log.Info("startup", slog.String("event", "startup"), slog.String("reason", "first_admin_created"), slog.String("user", username))
 	fmt.Printf("✅ User %s created successfully as administrator.\n", username)
 	return nil
-}
-
-// createUser creates the DB record, registers the ingress key, and creates the OS user.
-func createUser(db *gorm.DB, adapter osadapter.SystemAdapter, syncer *gosync.Syncer, username, pubKey string) error {
-	username = strings.ToLower(strings.TrimSpace(username))
-
-	var count int64
-	if err := db.Model(&models.User{}).Where("username = ? AND deleted_at IS NULL", username).Count(&count).Error; err != nil {
-		return fmt.Errorf("error querying database: %w", err)
-	}
-	if count > 0 {
-		return fmt.Errorf("user '%s' already exists", username)
-	}
-
-	newUser := models.User{Username: username, Role: models.RoleUser, Enabled: true}
-	if err := db.Create(&newUser).Error; err != nil {
-		return err
-	}
-	if err := createDBIngressKey(db, &newUser, pubKey); err != nil {
-		return err
-	}
-	return syncer.CreateUserFromDB(newUser)
-}
-
-// createDBIngressKey validates and persists an SSH ingress public key.
-func createDBIngressKey(db *gorm.DB, user *models.User, pubKeyStr string) error {
-	pubKeyStr = strings.TrimSpace(pubKeyStr)
-	if pubKeyStr == "" {
-		return fmt.Errorf("public SSH key cannot be empty")
-	}
-	parsedKey, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
-	if err != nil || parsedKey == nil {
-		return fmt.Errorf("invalid SSH key: %w", err)
-	}
-	key := models.IngressKey{
-		UserID:  user.ID,
-		Type:    parsedKey.Type(),
-		Key:     pubKeyStr,
-		Comment: comment,
-	}
-	return db.Create(&key).Error
 }
 
 // switchToAdmin toggles the user's role to admin and updates sudoers.
@@ -229,4 +197,67 @@ func switchToAdmin(db *gorm.DB, adapter osadapter.SystemAdapter, username string
 		return fmt.Errorf("error updating role: %w", err)
 	}
 	return adapter.UpdateSudoers(&u)
+}
+
+// runDisableTOTP disables TOTP and clears backup codes for the given username.
+// This is a recovery mechanism when an admin loses access to their authenticator app.
+func runDisableTOTP(db *gorm.DB, log *slog.Logger, username string) {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		fmt.Fprintln(os.Stderr, "Usage: --disableTOTP <username>")
+		os.Exit(1)
+	}
+
+	var u models.User
+	if err := db.Where("username = ?", username).First(&u).Error; err != nil {
+		fmt.Fprintf(os.Stderr, "Error: user '%s' not found.\n", username)
+		os.Exit(1)
+	}
+
+	if !u.TOTPEnabled && u.PasswordHash == "" && u.BackupCodes == "" {
+		fmt.Fprintf(os.Stderr, "User '%s' has no MFA configured. Nothing to do.\n", username)
+		return
+	}
+
+	u.TOTPSecret = ""
+	u.TOTPEnabled = false
+	u.PasswordHash = ""
+	u.BackupCodes = ""
+	if err := db.Save(&u).Error; err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to update user: %v\n", err)
+		os.Exit(1)
+	}
+
+	log.Info("startup", slog.String("event", "disable_totp"), slog.String("user", username))
+	fmt.Printf("✅ TOTP, password MFA, and backup codes disabled for user '%s'.\n", username)
+}
+
+// runDisablePassword disables password MFA for the given username.
+// This is a recovery mechanism when an admin loses access to their password MFA.
+func runDisablePassword(db *gorm.DB, log *slog.Logger, username string) {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		fmt.Fprintln(os.Stderr, "Usage: --disablePassword <username>")
+		os.Exit(1)
+	}
+
+	var u models.User
+	if err := db.Where("username = ?", username).First(&u).Error; err != nil {
+		fmt.Fprintf(os.Stderr, "Error: user '%s' not found.\n", username)
+		os.Exit(1)
+	}
+
+	if u.PasswordHash == "" {
+		fmt.Fprintf(os.Stderr, "User '%s' has no password MFA configured. Nothing to do.\n", username)
+		return
+	}
+
+	u.PasswordHash = ""
+	if err := db.Save(&u).Error; err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to update user: %v\n", err)
+		os.Exit(1)
+	}
+
+	log.Info("startup", slog.String("event", "disable_password"), slog.String("user", username))
+	fmt.Printf("✅ Password MFA disabled for user '%s'.\n", username)
 }

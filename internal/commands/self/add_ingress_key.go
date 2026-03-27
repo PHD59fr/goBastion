@@ -35,13 +35,9 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return err
 	}
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--key" && i+1 < len(args) {
-			pubKey = strings.Join(args[i+1:], " ")
-			break
-		}
-	}
-	if strings.TrimSpace(pubKey) == "" {
+	// Get the public key from the parsed flags
+	pubKey = strings.TrimSpace(pubKey)
+	if pubKey == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Ingress Key",
 			BlockType: "error",
@@ -78,10 +74,16 @@ func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	if expiresDays > 0 {
 		expiresAt := time.Now().AddDate(0, 0, expiresDays)
 		if err := db.Model(&models.IngressKey{}).
-			Where("user_id = ? AND key = ?", user.ID, strings.TrimSpace(pubKey)).
+			Where("user_id = ? AND key = ?", user.ID, pubKey).
 			Update("expires_at", expiresAt).Error; err != nil {
-			// Non-fatal: key was created, just expiry update failed
-			fmt.Printf("⚠️  Key added but expiry could not be set: %v\n", err)
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Add Ingress Key",
+				BlockType: "error",
+				Sections: []console.SectionContent{
+					{SubTitle: "Error", Body: []string{fmt.Sprintf("Failed to set key expiry: %v", err)}},
+				},
+			})
+			return fmt.Errorf("failed to set key expiry: %w", err)
 		}
 	}
 

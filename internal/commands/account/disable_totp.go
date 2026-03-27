@@ -13,7 +13,7 @@ import (
 )
 
 // AccountDisableTOTP lets an admin force-disable TOTP for a user (e.g. lost phone).
-func AccountDisableTOTP(db *gorm.DB, currentUser *models.User, args []string) error {
+func AccountDisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("accountDisableTOTP", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username whose TOTP to disable")
@@ -42,11 +42,12 @@ func AccountDisableTOTP(db *gorm.DB, currentUser *models.User, args []string) er
 
 	target.TOTPSecret = ""
 	target.TOTPEnabled = false
+	target.BackupCodes = ""
 	if err := db.Save(&target).Error; err != nil {
 		return fmt.Errorf("failed to save: %w", err)
 	}
 
-	slog.Default().Info("totp admin-disabled", slog.String("target", username), slog.String("by", currentUser.Username))
+	log.Info("totp admin-disabled", slog.String("target", username), slog.String("by", currentUser.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Disable TOTP",
 		BlockType: "success",

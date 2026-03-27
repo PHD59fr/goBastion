@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"goBastion/internal/models"
@@ -11,6 +12,8 @@ import (
 
 	"gorm.io/gorm"
 )
+
+var groupNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // GroupCreate creates a new group.
 func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
@@ -27,6 +30,15 @@ func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupCreate --group <groupName>"}}},
 		})
 		return err
+	}
+
+	if len(groupName) > 64 || !groupNameRegexp.MatchString(groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group Create",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Name", Body: []string{"Group name must be alphanumeric (start with letter/digit), max 64 characters. Allowed: letters, digits, '.', '_', '-'."}}},
+		})
+		return nil
 	}
 
 	if !currentUser.CanDo(db, "groupCreate", groupName) {

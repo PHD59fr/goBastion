@@ -47,7 +47,10 @@ var BgGreenB = color.New(color.BgGreen, color.Bold).SprintFunc()
 
 // NormalizeUsername lowercases and trims a username.
 func NormalizeUsername(username string) string {
-	return strings.ToLower(strings.TrimSpace(username))
+	n := strings.ToLower(strings.TrimSpace(username))
+	n = strings.ReplaceAll(n, "/", "_")
+	n = strings.ReplaceAll(n, "..", "_")
+	return n
 }
 
 // ── Role helpers ──────────────────────────────────────────────────────────────

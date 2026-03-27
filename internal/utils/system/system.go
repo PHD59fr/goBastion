@@ -4,14 +4,34 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/validation"
 )
+
+// ClientIPFromEnv safely extracts the client IP address from the SSH_CLIENT
+// environment variable. Returns "unknown" if the variable is empty, missing,
+// or malformed.
+func ClientIPFromEnv() string {
+	raw := os.Getenv("SSH_CLIENT")
+	if raw == "" {
+		return "unknown"
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 0 || fields[0] == "" {
+		return "unknown"
+	}
+	return fields[0]
+}
 
 // CreateUser adds a new system OS user with disabled password.
 func CreateUser(username string) error {
 	username = utils.NormalizeUsername(username)
+	if !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
 	output, err := ExecCommand("/usr/bin/sudo", "adduser", "--disabled-password", "--gecos", "", username)
 	if err != nil {
 		return fmt.Errorf("error adding system user '%s': %s, output: %s", username, err, output)
@@ -27,6 +47,9 @@ func CreateUser(username string) error {
 // DeleteUser removes a system OS user and their home directory.
 func DeleteUser(username string) error {
 	username = utils.NormalizeUsername(username)
+	if !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
 	if _, err := ExecCommand("/usr/bin/sudo", "deluser", "--remove-home", username); err != nil {
 		return fmt.Errorf("error deleting system user: %w", err)
 	}
@@ -35,6 +58,9 @@ func DeleteUser(username string) error {
 
 // ChownDir recursively changes ownership of a directory to the given user.
 func ChownDir(user models.User, dir string) error {
+	if !validation.IsValidUsername(user.Username) {
+		return fmt.Errorf("invalid username: %s", user.Username)
+	}
 	// Without sudo
 	_, err := ExecCommand("chown", "-R", user.Username+":"+user.Username, dir)
 	if err != nil {
@@ -50,7 +76,7 @@ func ChownDir(user models.User, dir string) error {
 // UpdateSudoers writes or removes the sudoers entry for a user based on their role.
 func UpdateSudoers(user *models.User) error {
 	sudoersPath := "/etc/sudoers.d/" + user.Username
-	if user.Role == "admin" {
+	if user.Role == models.RoleAdmin {
 		sudoersConfig := fmt.Sprintf(`%s ALL=(ALL) NOPASSWD: /usr/sbin/adduser --disabled-password --gecos *
 %s ALL=(ALL) NOPASSWD: /usr/bin/passwd -d *
 %s ALL=(ALL) NOPASSWD: /usr/sbin/deluser --remove-home *

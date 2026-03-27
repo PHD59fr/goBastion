@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"goBastion/internal/models"
@@ -64,9 +65,26 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.", username)}}},
 		})
 		return err
+	}
+
+	// Prevent demoting the last admin (count all admins, not just enabled ones)
+	// because a disabled admin can be re-enabled and still has admin role.
+	if u.Role == models.RoleAdmin && newRole == models.RoleUser {
+		var adminCount int64
+		if err := db.Model(&models.User{}).Where("role = ? AND deleted_at IS NULL", models.RoleAdmin).Count(&adminCount).Error; err != nil {
+			return fmt.Errorf("error counting admins: %w", err)
+		}
+		if adminCount <= 1 {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Account Modify",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"Cannot demote the last remaining admin."}}},
+			})
+			return fmt.Errorf("cannot demote the last remaining admin")
+		}
 	}
 
 	u.Role = newRole
@@ -79,7 +97,16 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
-	_ = system.UpdateSudoers(&u)
+	if err := system.UpdateSudoers(&u); err != nil {
+		log := slog.Default()
+		log.Error("sudoers_update_failed", slog.String("user", u.Username), slog.String("error", err.Error()))
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Account Modify",
+			BlockType: "warning",
+			Sections:  []console.SectionContent{{SubTitle: "Warning", Body: []string{fmt.Sprintf("User role updated but sudoers file could not be updated: %v. Contact your admin.", err)}}},
+		})
+		return err
+	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Modify",
 		BlockType: "success",

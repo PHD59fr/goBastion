@@ -4,9 +4,10 @@
 // generated inside a hardware token (e.g. YubiKey) and cannot be exported.
 //
 // The chain is:
-//   attestationCert (device-specific, signed by intermediary)
-//   -> intermediateCert (signed by Yubico PIV CA)
-//   -> trustAnchorCert (Yubico root CA, stored in DB by admin)
+//
+//	attestationCert (device-specific, signed by intermediary)
+//	-> intermediateCert (signed by Yubico PIV CA)
+//	-> trustAnchorCert (Yubico root CA, stored in DB by admin)
 //
 // The attestation cert also embeds the public key that matches the SSH key
 // the user wants to add. We verify that they match.

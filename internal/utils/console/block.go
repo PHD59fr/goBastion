@@ -71,7 +71,7 @@ func DisplayBlock(block ContentBlock) {
 		space := "│ "
 		if section.SubTitle != "" {
 			if i > 0 {
-				fmt.Println(frameColor("│"))
+				fmt.Println(frameColor(space))
 			}
 			if section.SubTitleColor != nil {
 				fmt.Println(frameColor(space) + section.SubTitleColor(section.SubTitle))
@@ -83,7 +83,7 @@ func DisplayBlock(block ContentBlock) {
 			fmt.Println(frameColor(space+"  ") + utils.FgWhiteB(section.SubSubTitle))
 		}
 		for _, line := range section.Body {
-			fmt.Println(frameColor(space+"    ") + utils.FgWhite(line))
+			fmt.Println(frameColor(space+"   ") + utils.FgWhite(line))
 		}
 	}
 	if block.Footer != "" {

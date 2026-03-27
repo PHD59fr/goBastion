@@ -12,7 +12,7 @@ import (
 )
 
 // SelfDisablePassword lets a user disable their password-based MFA after verifying the current password.
-func SelfDisablePassword(db *gorm.DB, user *models.User, args []string) error {
+func SelfDisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
 	if user.PasswordHash == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable Password MFA",
@@ -30,7 +30,7 @@ func SelfDisablePassword(db *gorm.DB, user *models.User, args []string) error {
 	fmt.Println()
 
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
-		slog.Default().Warn("password mfa disable denied - wrong current password", slog.String("user", user.Username))
+		log.Warn("password mfa disable denied - wrong current password", slog.String("user", user.Username))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable Password MFA",
 			BlockType: "error",
@@ -43,7 +43,7 @@ func SelfDisablePassword(db *gorm.DB, user *models.User, args []string) error {
 		return fmt.Errorf("failed to clear password: %v", err)
 	}
 	user.PasswordHash = ""
-	slog.Default().Info("password mfa disabled", slog.String("user", user.Username))
+	log.Info("password mfa disabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Disable Password MFA",
 		BlockType: "success",

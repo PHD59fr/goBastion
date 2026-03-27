@@ -129,12 +129,12 @@ func TestUser_CanDo_UnknownCommand(t *testing.T) {
 
 func TestUserGroup_RoleMethods(t *testing.T) {
 	cases := []struct {
-		role      string
-		isOwner   bool
-		isGK      bool
-		isACL     bool
-		isMember  bool
-		isGuest   bool
+		role     string
+		isOwner  bool
+		isGK     bool
+		isACL    bool
+		isMember bool
+		isGuest  bool
 	}{
 		{"owner", true, false, false, false, false},
 		{"gatekeeper", false, true, false, false, false},

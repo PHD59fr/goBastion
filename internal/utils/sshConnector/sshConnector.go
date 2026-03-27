@@ -2,7 +2,6 @@ package sshConnector
 
 import (
 	"compress/gzip"
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -86,8 +85,13 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	dir := fmt.Sprintf("/app/ttyrec/%s/%s/", user.Username, access.Server)
-	if err = os.MkdirAll(dir, 0777); err != nil {
+	// Sanitize path components to prevent directory traversal.
+	safeUser := strings.ReplaceAll(user.Username, "/", "_")
+	safeUser = strings.ReplaceAll(safeUser, "..", "_")
+	safeServer := strings.ReplaceAll(access.Server, "/", "_")
+	safeServer = strings.ReplaceAll(safeServer, "..", "_")
+	dir := fmt.Sprintf("/app/ttyrec/%s/%s/", safeUser, safeServer)
+	if err = os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("error creating ttyrec dir: %v", err)
 	}
 
@@ -99,26 +103,33 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, access.Username, access.Server, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
 
-	outFile, err := os.Create(ttyrecGzFile)
+	// Create gzip output via temp file + atomic rename to prevent symlink attacks.
+	tmpGz, err := os.CreateTemp(dir, "*.gz.tmp")
 	if err != nil {
-		return fmt.Errorf("error creating gzip output file: %v", err)
+		return fmt.Errorf("error creating temp gzip file: %v", err)
 	}
-	gzipWriter := gzip.NewWriter(outFile)
+	tmpGzPath := tmpGz.Name()
+	defer func() { _ = os.Remove(tmpGzPath) }() // cleanup on failure
+	gzipWriter := gzip.NewWriter(tmpGz)
 
 	// Always remove the intermediate .ttyrec file on exit
 	defer func() { _ = os.Remove(ttyrecFile) }()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// cmdDone is signaled when ttyrec exits, so the gzip goroutine knows
+	// no more data will be written and can drain to EOF.
+	cmdDone := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		var f *os.File
+		// Wait for ttyrec to create the file.
 		for {
 			f, err = os.Open(ttyrecFile)
 			if err == nil {
 				break
 			}
 			select {
-			case <-ctx.Done():
+			case <-cmdDone:
+				// ttyrec exited before creating the file — nothing to compress.
 				done <- nil
 				return
 			default:
@@ -138,10 +149,24 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			}
 			if readErr == io.EOF {
 				select {
-				case <-ctx.Done():
-					done <- nil
-					return
+				case <-cmdDone:
+					// ttyrec finished, no more writes expected. Drain once more
+					// then exit.
+					for {
+						n, drainErr := f.Read(buf)
+						if n > 0 {
+							if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
+								done <- fmt.Errorf("gzip write error: %v", werr)
+								return
+							}
+						}
+						if drainErr != nil {
+							done <- nil
+							return
+						}
+					}
 				default:
+					// ttyrec still running, wait for more data.
 					time.Sleep(100 * time.Millisecond)
 					continue
 				}
@@ -162,13 +187,19 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 
 	cmdErr := cmd.Run()
 
-	// Give the goroutine a moment to flush remaining bytes, then stop it
-	time.Sleep(500 * time.Millisecond)
-	cancel()
+	// Signal the goroutine that ttyrec has exited, then wait for it to finish draining.
+	close(cmdDone)
 	<-done
 
 	_ = gzipWriter.Close()
-	_ = outFile.Close()
+	_ = tmpGz.Close()
+
+	// Atomic rename from temp to final path
+	if err := os.Rename(tmpGzPath, ttyrecGzFile); err != nil {
+		return fmt.Errorf("error renaming gzip file: %v", err)
+	}
+	// Prevent defer cleanup of successfully renamed temp file
+	tmpGzPath = ""
 
 	if cmdErr != nil {
 		switch cmdErr.Error() {
@@ -255,7 +286,9 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 	// TOFU: nothing known for this host yet — store and trust.
 	if len(existing) == 0 {
 		for _, sk := range scanned {
-			db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line})
+			if dbErr := db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line}).Error; dbErr != nil {
+				slog.Warn("known_hosts_store_failed", slog.String("event", "known_hosts"), slog.String("error", dbErr.Error()))
+			}
 		}
 		return bastionSync.New(db, osadapter.NewLinuxAdapter(), *slog.Default()).KnownHostsFromDB(&user)
 	}
@@ -270,7 +303,9 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 		}
 		if !found {
 			// New key type added by the server — store it.
-			db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line})
+			if dbErr := db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line}).Error; dbErr != nil {
+				slog.Warn("known_hosts_store_failed", slog.String("event", "known_hosts"), slog.String("error", dbErr.Error()))
+			}
 		}
 	}
 
@@ -284,56 +319,4 @@ func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 
 	// Ensure file is up to date (e.g. new key type was added or entries were stale).
 	return bastionSync.New(db, osadapter.NewLinuxAdapter(), *slog.Default()).KnownHostsFromDB(&user)
-}
-
-// CompressLegacyTtyrecFiles walks /app/ttyrec and compresses any bare .ttyrec file
-// that does not already have a corresponding .ttyrec.gz, then removes the original.
-// Safe to call only at startup before any session is active.
-func CompressLegacyTtyrecFiles() error {
-	const ttyrecRoot = "/app/ttyrec"
-	if _, err := os.Stat(ttyrecRoot); os.IsNotExist(err) {
-		return nil
-	}
-	return filepath.Walk(ttyrecRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		name := info.Name()
-		// Only target plain .ttyrec (not .ttyrec.gz)
-		if len(name) < 7 || name[len(name)-7:] != ".ttyrec" {
-			return nil
-		}
-		gzPath := path + ".gz"
-		// .gz already exists: just remove the plain file
-		if _, statErr := os.Stat(gzPath); statErr == nil {
-			return os.Remove(path)
-		}
-		// Compress then remove
-		if compErr := compressFile(path, gzPath); compErr != nil {
-			return compErr
-		}
-		return os.Remove(path)
-	})
-}
-
-func compressFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-
-	gz := gzip.NewWriter(out)
-	if _, err = io.Copy(gz, in); err != nil {
-		_ = gz.Close()
-		_ = os.Remove(dst)
-		return err
-	}
-	return gz.Close()
 }

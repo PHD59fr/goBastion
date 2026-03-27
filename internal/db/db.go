@@ -92,7 +92,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	case "", "sqlite":
 		driver = "sqlite"
 		if dsn == "" {
-			if err := os.MkdirAll(dbDir, 0777); err != nil {
+			if err := os.MkdirAll(dbDir, 0750); err != nil {
 				return nil, fmt.Errorf("failed to create DB directory %s: %w", dbDir, err)
 			}
 			dsn = "file:" + filepath.Join(dbDir, "bastion.db") + "?cache=shared&mode=rwc"
@@ -280,18 +280,41 @@ func configure(db *gorm.DB, driver string) error {
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	if driver == "sqlite" {
-		db.Exec("PRAGMA journal_mode=WAL;")
-		db.Exec("PRAGMA synchronous=NORMAL;")
-		db.Exec("PRAGMA cache_size=-2000;")
-		db.Exec("PRAGMA busy_timeout=20000;")
+		pragmas := []string{
+			"PRAGMA journal_mode=WAL;",
+			"PRAGMA synchronous=NORMAL;",
+			"PRAGMA cache_size=-2000;",
+			"PRAGMA busy_timeout=20000;",
+		}
+		for _, p := range pragmas {
+			if err := db.Exec(p).Error; err != nil {
+				slog.Default().Warn("sqlite_pragma_failed", slog.String("pragma", p), slog.String("error", err.Error()))
+			}
+		}
 	}
 
 	return nil
 }
 
+// allowedBoolColumns is the allowlist of column names that may be passed to
+// BoolFalseExpr / BoolTrueExpr.  This prevents accidental SQL injection if a
+// future caller passes user-controlled input.
+var allowedBoolColumns = map[string]bool{
+	"system_user":  true,
+	"enabled":      true,
+	"totp_enabled": true,
+	"mfa_required": true,
+	"piv_attested": true,
+}
+
 // BoolFalseExpr returns a SQL WHERE fragment matching rows where column is false/0.
 // Dispatches to the correct expression based on the active database driver.
+// Panics (development) or returns a safe default (production) if the column
+// name is not in the allowlist.
 func BoolFalseExpr(db *gorm.DB, column string) string {
+	if !allowedBoolColumns[column] {
+		return "1=0" // safe default: match nothing
+	}
 	switch db.Name() {
 	case "postgres":
 		return boolFalseExprPostgres(column)
@@ -307,6 +330,9 @@ func BoolFalseExpr(db *gorm.DB, column string) string {
 // BoolTrueExpr returns a SQL WHERE fragment matching rows where column is true/1.
 // Dispatches to the correct expression based on the active database driver.
 func BoolTrueExpr(db *gorm.DB, column string) string {
+	if !allowedBoolColumns[column] {
+		return "1=0" // safe default: match nothing
+	}
 	switch db.Name() {
 	case "postgres":
 		return boolTrueExprPostgres(column)

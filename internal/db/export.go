@@ -262,7 +262,8 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 
 // Import reads an encrypted logical JSON export from r and restores it into an empty DB.
 func Import(db *gorm.DB, r io.Reader, log *slog.Logger) error {
-	raw, err := io.ReadAll(r)
+	// Limit import to 512 MiB to prevent OOM from malicious input.
+	raw, err := io.ReadAll(io.LimitReader(r, 512*1024*1024))
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
 	}

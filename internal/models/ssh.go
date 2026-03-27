@@ -30,12 +30,12 @@ func (khe *KnownHostsEntry) BeforeCreate(*gorm.DB) (err error) {
 }
 
 type IngressKey struct {
-	ID          uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	UserID      uuid.UUID  `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
-	Key         string     `gorm:"not null"`
-	Type        string     `gorm:"not null"`
-	Size        int        `gorm:"not null"`
-	Fingerprint string     `gorm:"not null"`
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`
+	UserID      uuid.UUID `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
+	Key         string    `gorm:"not null"`
+	Type        string    `gorm:"not null"`
+	Size        int       `gorm:"not null"`
+	Fingerprint string    `gorm:"not null"`
 	Comment     string
 	ExpiresAt   *time.Time `gorm:"default:null"`
 	PIVAttested bool       `gorm:"type:boolean;default:false"`

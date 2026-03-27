@@ -13,7 +13,7 @@ import (
 )
 
 // AccountDisablePassword clears a user's password-based MFA (admin only).
-func AccountDisablePassword(db *gorm.DB, currentUser *models.User, args []string) error {
+func AccountDisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("accountDisablePassword", flag.ContinueOnError)
 	var targetUser string
 	var buf bytes.Buffer
@@ -43,7 +43,7 @@ func AccountDisablePassword(db *gorm.DB, currentUser *models.User, args []string
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable Account Password MFA",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.", targetUser)}}},
 		})
 		return err
 	}
@@ -52,7 +52,7 @@ func AccountDisablePassword(db *gorm.DB, currentUser *models.User, args []string
 		return fmt.Errorf("failed to clear password: %v", err)
 	}
 
-	slog.Default().Info("password mfa cleared by admin",
+	log.Info("password mfa cleared by admin",
 		slog.String("admin", currentUser.Username),
 		slog.String("user", targetUser),
 	)

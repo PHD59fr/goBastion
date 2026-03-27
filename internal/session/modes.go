@@ -9,26 +9,23 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
+	"time"
 
 	"github.com/c-bata/go-prompt"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 	"gorm.io/gorm"
 
+	"goBastion/internal/commands/help"
+	"goBastion/internal/commands/registry"
+	cmdssh "goBastion/internal/commands/ssh"
+	cmdtty "goBastion/internal/commands/tty"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/autocomplete"
+	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/totp"
-
-	cmdaccount "goBastion/internal/commands/account"
-	cmdgroup "goBastion/internal/commands/group"
-	cmdhelp "goBastion/internal/commands/help"
-	cmdpiv "goBastion/internal/commands/piv"
-	cmdself "goBastion/internal/commands/self"
-	cmdssh "goBastion/internal/commands/ssh"
-	cmdtotp "goBastion/internal/commands/totp"
-	cmdtty "goBastion/internal/commands/tty"
 )
 
 // Run is the main entry point after DB init: it looks up the current user,
@@ -42,9 +39,9 @@ func Run(db *gorm.DB, log *slog.Logger) {
 
 	var currentUser models.User
 	if err = db.Where("username = ?", sysUser).First(&currentUser).Error; err != nil {
-		ip := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+		ip := system.ClientIPFromEnv()
 		log.Warn("login rejected", slog.String("user", sysUser), slog.String("from", ip), slog.String("reason", "user not in database"))
-		fmt.Printf("User %s not found in database. Exiting.\n", sysUser)
+		fmt.Printf("User '%s' is not registered in the bastion. Contact your admin to create your account.\n", sysUser)
 		return
 	}
 
@@ -53,7 +50,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 	}
 
 	if len(os.Args) == 1 {
-		if !checkTOTP(&currentUser, log) {
+		if !checkTOTP(db, &currentUser, log) {
 			return
 		}
 		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("event", "session_start"), slog.String("cmd", "interactive"))
@@ -62,7 +59,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		cmd := os.Args[1]
 		args := os.Args[2:]
 		if strings.TrimSpace(cmd) == "" {
-			if !checkTOTP(&currentUser, log) {
+			if !checkTOTP(db, &currentUser, log) {
 				return
 			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("event", "session_start"), slog.String("cmd", "interactive"))
@@ -72,7 +69,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
 			isSftpSession := strings.HasPrefix(cmd, "sftp-session")
 			if !isTCPProxy && !isSftpSession {
-				if !checkTOTP(&currentUser, log) {
+				if !checkTOTP(db, &currentUser, log) {
 					return
 				}
 			}
@@ -105,12 +102,14 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		executeCommand(db, currentUser, log, command, args)
 	} else if host, port, ok := parseTCPProxyRequest(command, args); ok {
 		if err := cmdssh.TCPProxy(db, *currentUser, *log, host, port); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			log.Warn("tcp_proxy_failed", slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, "TCP proxy connection failed. Check the target host and your access rights.")
 		}
 	} else if strings.HasPrefix(command, "sftp-session") {
 		target := strings.TrimPrefix(strings.TrimPrefix(command, "sftp-session "), "sftp-session")
 		if err := cmdssh.SftpSession(db, *currentUser, *log, target); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			log.Warn("sftp_session_failed", slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, "SFTP session failed. Check the target host and your access rights.")
 		}
 	} else if isMoshServerRequest(command, args) {
 		runMoshServer(command, args, log)
@@ -179,111 +178,58 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 	log.Info("session_end", slog.String("user", currentUser.Username), slog.String("event", "session_end"), slog.String("reason", "disconnect"))
 }
 
-// executeCommand looks up and runs a command, enforcing permission checks.
+// executeCommand looks up and runs a command from the central registry, enforcing permission checks.
 func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) {
 	resetStdIn() // Mandatory: prevents the terminal from being left in a broken state.
 
-	// Attach user to all log records emitted during this command.
 	log = log.With(slog.String("user", currentUser.Username))
-
 	hasPerm := func(perm string) bool {
 		return currentUser.CanDo(db, perm, "")
 	}
 
 	adapter := osadapter.NewLinuxAdapter()
+	cmds := registry.BuildRegistry(db, currentUser, log, adapter, args, func() {
+		log.Info("session end", slog.String("reason", "exit"))
+		os.Exit(0)
+	})
 
-	type entry struct {
-		Perm    string
-		Handler func() error
+	var found *registry.CommandSpec
+	for i := range cmds {
+		if cmds[i].Name == cmd {
+			found = &cmds[i]
+			break
+		}
 	}
 
-	commandsMap := map[string]entry{
-		// Self
-		"selfListIngressKeys":          {"selfListIngressKeys", func() error { return cmdself.SelfListIngressKeys(db, currentUser) }},
-		"selfAddIngressKey":            {"selfAddIngressKey", func() error { return cmdself.SelfAddIngressKey(db, currentUser, args) }},
-		"selfDelIngressKey":            {"selfDelIngressKey", func() error { return cmdself.SelfDelIngressKey(db, currentUser, args) }},
-		"selfGenerateEgressKey":        {"selfGenerateEgressKey", func() error { return cmdself.SelfGenerateEgressKey(db, currentUser, args) }},
-		"selfListEgressKeys":           {"selfListEgressKeys", func() error { return cmdself.SelfListEgressKeys(db, currentUser) }},
-		"selfListAccesses":             {"selfListAccesses", func() error { return cmdself.SelfListAccesses(db, currentUser) }},
-		"selfAddAccess":                {"selfAddAccess", func() error { return cmdself.SelfAddAccess(db, currentUser, args) }},
-		"selfDelAccess":                {"selfDelAccess", func() error { return cmdself.SelfDelAccess(db, currentUser, args) }},
-		"selfAddAlias":                 {"selfAddAlias", func() error { return cmdself.SelfAddAlias(db, currentUser, args) }},
-		"selfDelAlias":                 {"selfDelAlias", func() error { return cmdself.SelfDelAlias(db, currentUser, args) }},
-		"selfListAliases":              {"selfListAliases", func() error { return cmdself.SelfListAliases(db, currentUser) }},
-		"selfRemoveHostFromKnownHosts": {"selfRemoveHostFromKnownHosts", func() error { return cmdself.SelfRemoveHostFromKnownHosts(db, currentUser, args) }},
-		"selfReplaceKnownHost":         {"selfReplaceKnownHost", func() error { return cmdself.SelfReplaceKnownHost(db, currentUser, args) }},
-		"selfSetupTOTP":                {"selfSetupTOTP", func() error { return cmdtotp.SelfSetupTOTP(db, currentUser) }},
-		"selfDisableTOTP":              {"selfDisableTOTP", func() error { return cmdtotp.SelfDisableTOTP(db, currentUser) }},
-		"selfDisablePassword":          {"selfDisablePassword", func() error { return cmdself.SelfDisablePassword(db, currentUser, args) }},
-		"selfSetPassword":              {"selfSetPassword", func() error { return cmdself.SelfSetPassword(db, currentUser, args) }},
-		"selfChangePassword":           {"selfChangePassword", func() error { return cmdself.SelfChangePassword(db, currentUser, args) }},
-		"selfAddIngressKeyPIV":         {"selfAddIngressKeyPIV", func() error { return cmdself.SelfAddIngressKeyPIV(db, currentUser, args) }},
-
-		// Account
-		"accountList":            {"accountList", func() error { return cmdaccount.AccountList(db, currentUser) }},
-		"accountInfo":            {"accountInfo", func() error { return cmdaccount.AccountInfo(db, currentUser, args) }},
-		"accountCreate":          {"accountCreate", func() error { return cmdaccount.AccountCreate(db, adapter, currentUser, args) }},
-		"accountListIngressKeys": {"accountListIngressKeys", func() error { return cmdaccount.AccountListIngressKeys(db, currentUser, args) }},
-		"accountListEgressKeys":  {"accountListEgressKeys", func() error { return cmdaccount.AccountListEgressKeys(db, currentUser, args) }},
-		"accountModify":          {"accountModify", func() error { return cmdaccount.AccountModify(db, currentUser, args) }},
-		"accountDelete":          {"accountDelete", func() error { return cmdaccount.AccountDelete(db, adapter, currentUser, args) }},
-		"accountAddAccess":       {"accountAddAccess", func() error { return cmdaccount.AccountAddAccess(db, currentUser, args) }},
-		"accountDelAccess":       {"accountDelAccess", func() error { return cmdaccount.AccountDelAccess(db, currentUser, args) }},
-		"accountListAccess":      {"accountListAccess", func() error { return cmdaccount.AccountListAccess(db, currentUser, args) }},
-		"accountDisableTOTP":     {"accountDisableTOTP", func() error { return cmdaccount.AccountDisableTOTP(db, currentUser, args) }},
-		"accountSetPassword":     {"accountSetPassword", func() error { return cmdaccount.AccountSetPassword(db, currentUser, args) }},
-		"accountDisablePassword": {"accountDisablePassword", func() error { return cmdaccount.AccountDisablePassword(db, currentUser, args) }},
-		"whoHasAccessTo":         {"whoHasAccessTo", func() error { return cmdaccount.WhoHasAccessTo(db, currentUser, args) }},
-
-		// PIV attestation
-		"pivAddTrustAnchor":    {"pivAddTrustAnchor", func() error { return cmdpiv.PivAddTrustAnchor(db, currentUser, args) }},
-		"pivListTrustAnchors":  {"pivListTrustAnchors", func() error { return cmdpiv.PivListTrustAnchors(db, currentUser, args) }},
-		"pivRemoveTrustAnchor": {"pivRemoveTrustAnchor", func() error { return cmdpiv.PivRemoveTrustAnchor(db, currentUser, args) }},
-
-		// Group
-		"groupInfo":              {"groupInfo", func() error { return cmdgroup.GroupInfo(db, currentUser, args) }},
-		"groupList":              {"groupList", func() error { return cmdgroup.GroupList(db, currentUser, args) }},
-		"groupCreate":            {"groupCreate", func() error { return cmdgroup.GroupCreate(db, currentUser, args) }},
-		"groupDelete":            {"groupDelete", func() error { return cmdgroup.GroupDelete(db, currentUser, args) }},
-		"groupAddAccess":         {"groupAddAccess", func() error { return cmdgroup.GroupAddAccess(db, currentUser, args) }},
-		"groupDelAccess":         {"groupDelAccess", func() error { return cmdgroup.GroupDelAccess(db, currentUser, args) }},
-		"groupAddMember":         {"groupAddMember", func() error { return cmdgroup.GroupAddMember(db, currentUser, args) }},
-		"groupDelMember":         {"groupDelMember", func() error { return cmdgroup.GroupDelMember(db, currentUser, args) }},
-		"groupGenerateEgressKey": {"groupGenerateEgressKey", func() error { return cmdgroup.GroupGenerateEgressKey(db, currentUser, args) }},
-		"groupListEgressKeys":    {"groupListEgressKeys", func() error { return cmdgroup.GroupListEgressKeys(db, currentUser, args) }},
-		"groupListAccesses":      {"groupListAccesses", func() error { return cmdgroup.GroupListAccesses(db, currentUser, args) }},
-		"groupAddAlias":          {"groupAddAlias", func() error { return cmdgroup.GroupAddAlias(db, currentUser, args) }},
-		"groupDelAlias":          {"groupDelAlias", func() error { return cmdgroup.GroupDelAlias(db, currentUser, args) }},
-		"groupListAliases":       {"groupListAliases", func() error { return cmdgroup.GroupListAliases(db, currentUser, args) }},
-		"groupSetMFA":            {"groupSetMFA", func() error { return cmdgroup.GroupSetMFA(db, currentUser, args) }},
-
-		// TTY
-		"ttyList": {"ttyList", func() error { return cmdtty.TtyList(db, currentUser, args) }},
-		"ttyPlay": {"ttyPlay", func() error {
-			err := cmdtty.TtyPlay(db, currentUser, args)
-			resetStdIn()
-			return err
-		}},
-
-		// Misc
-		"help": {"help", func() error { cmdhelp.DisplayHelp(db, *currentUser); return nil }},
-		"info": {"info", func() error { cmdhelp.DisplayInfo(); return nil }},
-		"exit": {"exit", func() error {
-			log.Info("session end", slog.String("reason", "exit"))
-			os.Exit(0)
-			return nil
-		}},
-	}
-	if e, ok := commandsMap[cmd]; !ok {
+	if found == nil {
 		log.Warn("command", slog.String("cmd", cmd), slog.String("event", "command"),
 			slog.Any("args", args), slog.String("result", "unknown_command"))
 		fmt.Printf("Unknown command: %s\n", cmd)
-	} else if !hasPerm(e.Perm) {
+		return
+	}
+
+	if found.Permission != "" && !hasPerm(found.Permission) {
 		log.Warn("command", slog.String("cmd", cmd), slog.String("event", "command"),
 			slog.Any("args", args), slog.String("result", "permission_denied"))
-		fmt.Printf("Permission denied: %s\n", cmd)
-	} else {
-		err := e.Handler()
+		fmt.Printf("Permission denied for '%s'. Contact your admin or type 'help' to see available commands.\n", cmd)
+		return
+	}
+
+	// Special commands with custom inline logic
+	switch cmd {
+	case "help":
+		help.DisplayHelpFromRegistry(cmds, db, *currentUser, hasPerm)
+		return
+	case "info":
+		help.DisplayInfo()
+		return
+	case "exit":
+		log.Info("session end", slog.String("reason", "exit"))
+		os.Exit(0)
+		return
+	case "ttyPlay":
+		err := cmdtty.TtyPlay(db, currentUser, args)
+		resetStdIn()
 		if err != nil {
 			log.Error("command", slog.String("cmd", cmd), slog.String("event", "command"),
 				slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
@@ -291,6 +237,20 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 			log.Info("command", slog.String("cmd", cmd), slog.String("event", "command"),
 				slog.Any("args", args), slog.String("result", "ok"))
 		}
+		return
+	}
+
+	if found.Handler == nil {
+		return
+	}
+
+	err := found.Handler()
+	if err != nil {
+		log.Error("command", slog.String("cmd", cmd), slog.String("event", "command"),
+			slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
+	} else {
+		log.Info("command", slog.String("cmd", cmd), slog.String("event", "command"),
+			slog.Any("args", args), slog.String("result", "ok"))
 	}
 }
 
@@ -298,14 +258,16 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 func resetStdIn() {
 	cmd := exec.Command("/bin/stty", "-raw", "echo")
 	cmd.Stdin = os.Stdin
-	_ = cmd.Run()
-	_ = cmd.Wait()
+	_ = cmd.Run() // Run() already calls Wait() internally
 }
+
+// maxMFAAttempts is the maximum number of TOTP/backup code attempts allowed per login.
+const maxMFAAttempts = 3
 
 // checkMFA prompts for TOTP and/or password second factors if configured.
 // Returns false if any check fails, which should cause the session to be terminated immediately.
-func checkMFA(user *models.User, log *slog.Logger) bool {
-	ip := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
+	ip := system.ClientIPFromEnv()
 
 	// Password MFA check (independent of TOTP)
 	if user.PasswordHash != "" {
@@ -321,9 +283,14 @@ func checkMFA(user *models.User, log *slog.Logger) bool {
 		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), pass) != nil {
 			log.Warn("mfa_failure", slog.String("event", "mfa_password"), slog.String("user", user.Username), slog.String("from", ip))
 			fmt.Println("⛔ Invalid password. Access denied.")
+			fmt.Println("Contact your admin to reset your password (accountSetPassword --user " + user.Username + " --clear).")
 			return false
 		}
 		log.Info("mfa_success", slog.String("event", "mfa_password"), slog.String("user", user.Username), slog.String("from", ip))
+	} else {
+		// Dummy bcrypt comparison to normalize timing regardless of whether
+		// password MFA is configured, preventing timing side-channel disclosure.
+		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$abcdefghijklmnopqrstuuXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"), []byte("x"))
 	}
 
 	// TOTP check
@@ -331,26 +298,58 @@ func checkMFA(user *models.User, log *slog.Logger) bool {
 		return true
 	}
 	log.Info("mfa_challenge", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
-	fmt.Print("🔐 Enter TOTP code: ")
-	reader := bufio.NewReader(os.Stdin)
-	code, err := reader.ReadString('\n')
-	if err != nil {
-		log.Warn("mfa_error", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.String("error", err.Error()))
-		fmt.Fprintln(os.Stderr, "\n⛔ Could not read TOTP code.")
-		return false
+
+	for attempt := 1; attempt <= maxMFAAttempts; attempt++ {
+		fmt.Printf("🔐 Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, maxMFAAttempts)
+		reader := bufio.NewReader(os.Stdin)
+		code, err := reader.ReadString('\n')
+		if err != nil {
+			log.Warn("mfa_error", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, "\n⛔ Could not read code.")
+			return false
+		}
+		code = strings.TrimSpace(code)
+
+		// Try TOTP first
+		if totp.Verify(user.TOTPSecret, code) {
+			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
+			return true
+		}
+
+		// Try backup code
+		if user.BackupCodes != "" {
+			matched, updatedJSON, err := totp.VerifyAndConsumeBackupCode(code, user.BackupCodes)
+			if err != nil {
+				log.Warn("mfa_error", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("error", err.Error()))
+			} else if matched {
+				if dbErr := db.Model(user).Update("backup_codes", updatedJSON).Error; dbErr != nil {
+					log.Error("mfa_backup_code_db_error", slog.String("user", user.Username), slog.String("error", dbErr.Error()))
+					fmt.Println("⛔ Internal error saving backup code. Contact your admin.")
+					return false
+				}
+				user.BackupCodes = updatedJSON
+				remaining := totp.CountBackupCodes(updatedJSON)
+				log.Info("mfa_success", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("from", ip))
+				fmt.Printf("✅ Backup code accepted. %d code(s) remaining.\n", remaining)
+				return true
+			}
+		}
+
+		if attempt < maxMFAAttempts {
+			fmt.Println("⛔ Invalid code. Try again.")
+			time.Sleep(time.Duration(attempt) * time.Second) // exponential backoff
+		}
 	}
-	if !totp.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
-		log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
-		fmt.Println("⛔ Invalid TOTP code. Access denied.")
-		return false
-	}
-	log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
-	return true
+
+	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.Int("attempts", maxMFAAttempts))
+	fmt.Printf("⛔ Invalid TOTP or backup code. Access denied after %d attempts.\n", maxMFAAttempts)
+	fmt.Println("If you lost access to your authenticator, contact your admin to disable TOTP (accountDisableTOTP --user " + user.Username + ").")
+	return false
 }
 
 // checkTOTP is kept for backward compatibility; delegates to checkMFA.
-func checkTOTP(user *models.User, log *slog.Logger) bool {
-	return checkMFA(user, log)
+func checkTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
+	return checkMFA(db, user, log)
 }
 
 // parseTCPProxyRequest detects an OpenSSH -W host:port proxy request and returns the target.

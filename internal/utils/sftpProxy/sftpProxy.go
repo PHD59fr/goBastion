@@ -20,14 +20,14 @@ import (
 // do not begin with "SSH-" before the version exchange.
 type stdinoutConn struct{}
 
-func (c *stdinoutConn) Read(p []byte) (n int, err error)      { return os.Stdin.Read(p) }
-func (c *stdinoutConn) Write(p []byte) (n int, err error)     { return os.Stdout.Write(p) }
-func (c *stdinoutConn) Close() error                          { return nil }
-func (c *stdinoutConn) LocalAddr() net.Addr                   { return &net.UnixAddr{Name: "stdin", Net: "unix"} }
-func (c *stdinoutConn) RemoteAddr() net.Addr                  { return &net.UnixAddr{Name: "stdout", Net: "unix"} }
-func (c *stdinoutConn) SetDeadline(_ time.Time) error         { return nil }
-func (c *stdinoutConn) SetReadDeadline(_ time.Time) error     { return nil }
-func (c *stdinoutConn) SetWriteDeadline(_ time.Time) error    { return nil }
+func (c *stdinoutConn) Read(p []byte) (n int, err error)   { return os.Stdin.Read(p) }
+func (c *stdinoutConn) Write(p []byte) (n int, err error)  { return os.Stdout.Write(p) }
+func (c *stdinoutConn) Close() error                       { return nil }
+func (c *stdinoutConn) LocalAddr() net.Addr                { return &net.UnixAddr{Name: "stdin", Net: "unix"} }
+func (c *stdinoutConn) RemoteAddr() net.Addr               { return &net.UnixAddr{Name: "stdout", Net: "unix"} }
+func (c *stdinoutConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *stdinoutConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *stdinoutConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 // Proxy connects to the target via SSH using the egress key, requests the sftp
 // subsystem, then presents a minimal SSH server on stdin/stdout so the local
@@ -57,8 +57,11 @@ func Proxy(access models.AccessRight) error {
 	clientConfig := &ssh.ClientConfig{
 		User: access.Username,
 		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		// Host key verification is handled by checkAndUpdateHostKey before
-		// this function is called; here we trust the established known_hosts.
+		// WARNING: Host key verification is intentionally disabled here.
+		// This function is ONLY called after checkAndUpdateHostKey() has already
+		// verified the target's host key via TOFU and stored it in known_hosts.
+		// Do NOT call Proxy() directly without first calling checkAndUpdateHostKey().
+		// TODO: Load known_hosts and pass ssh.FixedHostKey() for defense-in-depth.
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         15 * time.Second,
 	}
@@ -148,6 +151,7 @@ func Proxy(access models.AccessRight) error {
 			_, _ = io.Copy(ch, targetOut)
 			_ = ch.CloseWrite()
 		}()
+		<-done
 		<-done
 		return nil
 	}

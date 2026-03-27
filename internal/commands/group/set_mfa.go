@@ -3,6 +3,7 @@ package group
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"log/slog"
 
 	"goBastion/internal/models"
@@ -13,7 +14,7 @@ import (
 
 // GroupSetMFA enables or disables JIT MFA requirement for a group.
 // When enabled, users connecting via this group must pass a TOTP challenge even if TOTP is not globally enabled.
-func GroupSetMFA(db *gorm.DB, currentUser *models.User, args []string) error {
+func GroupSetMFA(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("groupSetMFA", flag.ContinueOnError)
 	var groupName string
 	var required, optional bool
@@ -46,7 +47,7 @@ func GroupSetMFA(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Group Set MFA",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 		})
 		return err
 	}
@@ -65,7 +66,7 @@ func GroupSetMFA(db *gorm.DB, currentUser *models.User, args []string) error {
 	if mfaRequired {
 		status = "enabled"
 	}
-	slog.Default().Info("group mfa policy updated",
+	log.Info("group mfa policy updated",
 		slog.String("admin", currentUser.Username),
 		slog.String("group", groupName),
 		slog.Bool("mfa_required", mfaRequired),

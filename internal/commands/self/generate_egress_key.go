@@ -13,6 +13,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sshkey"
 
 	"github.com/google/uuid"
@@ -43,6 +44,17 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 			BlockType: "error",
 			Sections: []console.SectionContent{
 				{SubTitle: "Usage", Body: []string{"selfGenerateEgressKey --type <keytype> --size <keysize>"}},
+			},
+		})
+		return nil
+	}
+	validKeyTypes := map[string]bool{"ed25519": true, "rsa": true, "ecdsa": true}
+	if !validKeyTypes[keyType] {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Generate Egress Key",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Invalid Key Type", Body: []string{"Key type must be one of: ed25519, rsa, ecdsa"}},
 			},
 		})
 		return nil
@@ -111,10 +123,17 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 	sha256Fingerprint := sha256.Sum256(pubKey.Marshal())
 	fingerprint := base64.StdEncoding.EncodeToString(sha256Fingerprint[:])
 	keySize = sshkey.GetKeySize(pubKey)
+
+	privKey := strings.TrimSpace(string(privKeyStr))
+	encrypted, encErr := cryptokey.ReEncryptIfNeeded(privKey)
+	if encErr != nil {
+		return fmt.Errorf("error encrypting private key: %v", encErr)
+	}
+
 	newKey := models.SelfEgressKey{
 		UserID:      user.ID,
 		PubKey:      strings.TrimSpace(string(pubKeyStr)),
-		PrivKey:     strings.TrimSpace(string(privKeyStr)),
+		PrivKey:     encrypted,
 		Type:        keyType,
 		Size:        keySize,
 		Fingerprint: fingerprint,

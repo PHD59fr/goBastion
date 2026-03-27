@@ -8,6 +8,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -65,10 +66,10 @@ func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Personal Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred. Please contact admin."}},
+				{SubTitle: "Error", Body: []string{"Database error while looking up alias. Please try again."}},
 			},
 		})
-		return fmt.Errorf("database error: %v", result.Error)
+		return validation.WrapDBError(result.Error, "database error while looking up alias")
 	}
 	if err := db.Delete(&host).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

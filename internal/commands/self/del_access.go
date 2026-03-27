@@ -75,7 +75,7 @@ func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred. Please contact admin."}},
+				{SubTitle: "Error", Body: []string{"Database error while looking up access entry. Please try again."}},
 			},
 		})
 		return fmt.Errorf("database error: %v", result.Error)

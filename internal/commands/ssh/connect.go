@@ -14,10 +14,13 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sftpProxy"
 	"goBastion/internal/utils/sshConnector"
+	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/tcpProxy"
 	totpUtil "goBastion/internal/utils/totp"
+	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -48,7 +51,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		return fmt.Errorf("invalid SSH command: %v", err)
 	}
 
-	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	sshFrom := system.ClientIPFromEnv()
 	hostname, _ := os.Hostname()
 	protocol := detectProtocol(remoteCmd)
 
@@ -66,7 +69,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	forcedHost, err := resolveForcedHost(db, user, sshHost)
 	if err != nil {
 		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
-		return fmt.Errorf("error searching host: %v", err)
+		return validation.WrapDBError(err, "error searching host")
 	}
 
 	if forcedHost.Host != "" {
@@ -142,7 +145,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 			err = sshConnector.SshConnection(db, user, access)
 			if err != nil {
 				log.Error("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source), slog.String("error", err.Error()))
-				fmt.Printf("Key verification failed: %v\n", err)
+				fmt.Printf("SSH connection to %s failed: %v\n", access.Source, err)
 			} else {
 				log.Info("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source))
 			}
@@ -151,7 +154,9 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	}
 
 	log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "no valid key found"))
-	fmt.Println("No valid key found for the user or group.")
+	fmt.Printf("No usable SSH egress key found for %s@%s:%s.\n", sshUser, sshHost, sshPort)
+	fmt.Println("Generate one with:")
+	fmt.Println("  selfGenerateEgressKey --type ed25519")
 	return nil
 }
 
@@ -233,10 +238,10 @@ func resolveAccessUsername(username string) (string, bool) {
 func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol string) ([]models.AccessRight, error) {
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("invalid port value: %v", err)
+		return nil, validation.WrapDBError(err, "error retrieving user groups")
 	}
 
-	clientIP := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	clientIP := system.ClientIPFromEnv()
 	now := time.Now()
 
 	var candidates []accessCandidate
@@ -278,7 +283,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
 			groupIDs, username, host, portInt, now, protocol,
 		).Preload("Group").Find(&groupAccesses).Error; err != nil {
-			return nil, fmt.Errorf("error retrieving group accesses: %v", err)
+			return nil, validation.WrapDBError(err, "error retrieving group accesses")
 		}
 		for i := range groupAccesses {
 			ga := &groupAccesses[i]
@@ -325,9 +330,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	}
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("⛔ %s: no access entry found for %s@%s:%s — ask an admin to add one",
-			utils.BgRedB("Access denied for "+user.Username),
-			username, host, port)
+		return nil, fmt.Errorf("⛔ Access denied: no access entry found for %s@%s:%s.\n"+
+			"Run: selfAddAccess --server %s --port %s --username %s",
+			user.Username, username, host, host, port, username)
 	}
 
 	// Sort by score descending; stable so DB insertion order breaks ties.
@@ -345,8 +350,13 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		allowedFrom = best.groupAccess.AllowedFrom
 	}
 	if !ipAllowed(clientIP, allowedFrom) {
-		return nil, fmt.Errorf("access denied to %s@%s:%s: your current IP %s is not allowed by this access rule; contact your admin to update the --from restriction on this access entry",
-			username, host, port, clientIP)
+		src := "personal"
+		if best.groupAccess != nil {
+			src = best.groupAccess.Group.Name
+		}
+		return nil, fmt.Errorf("⛔ Access denied: your IP %s is not in the allowed CIDRs for this access entry (%s)"+
+			" — contact your admin to update the --from restriction",
+			clientIP, src)
 	}
 
 	// Build the AccessRight from the best candidate.
@@ -368,7 +378,7 @@ func buildGroupAccessRight(db *gorm.DB, ga models.GroupAccess, requestedUsername
 	var key models.GroupEgressKey
 	if err := db.Where("group_id = ?", ga.GroupID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.AccessRight{}, fmt.Errorf("error retrieving egress key for group %v: %v", ga.GroupID, err)
+		return models.AccessRight{}, validation.WrapDBError(fmt.Errorf("error retrieving egress key for group %v: %v", ga.GroupID, err), "database error")
 	}
 
 	sourcePrefix := "group"
@@ -389,10 +399,11 @@ func buildGroupAccessRight(db *gorm.DB, ga models.GroupAccess, requestedUsername
 		KeyFingerprint: key.Fingerprint,
 		KeyUpdatedAt:   key.UpdatedAt,
 		PublicKey:      key.PubKey,
-		PrivateKey:     key.PrivKey,
+		PrivateKey:     decryptPrivKey(key.PrivKey),
 		MFARequired:    ga.Group.MFARequired,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
+	maybeReEncryptKey(db, "group", key.ID, key.PrivKey)
 	return access, nil
 }
 
@@ -401,7 +412,7 @@ func buildSelfAccessRight(db *gorm.DB, sa models.SelfAccess, requestedUsername, 
 	var key models.SelfEgressKey
 	if err := db.Where("user_id = ?", sa.UserID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.AccessRight{}, fmt.Errorf("error retrieving egress key for user %v: %v", sa.UserID, err)
+		return models.AccessRight{}, validation.WrapDBError(fmt.Errorf("error retrieving egress key for user %v: %v", sa.UserID, err), "database error")
 	}
 
 	sourcePrefix := "account"
@@ -422,10 +433,42 @@ func buildSelfAccessRight(db *gorm.DB, sa models.SelfAccess, requestedUsername, 
 		KeyFingerprint: key.Fingerprint,
 		KeyUpdatedAt:   key.UpdatedAt,
 		PublicKey:      key.PubKey,
-		PrivateKey:     key.PrivKey,
+		PrivateKey:     decryptPrivKey(key.PrivKey),
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
+	maybeReEncryptKey(db, "self", key.ID, key.PrivKey)
 	return access, nil
+}
+
+// decryptPrivKey returns the plaintext private key, handling both encrypted and legacy plaintext values.
+func decryptPrivKey(raw string) string {
+	return cryptokey.DecryptOrPassThrough(raw)
+}
+
+// maybeReEncryptKey re-encrypts a plaintext egress key if EGRESS_ENC_KEY is now set.
+// Runs synchronously to ensure the re-encryption is persisted before the session ends.
+func maybeReEncryptKey(db *gorm.DB, keyType string, keyID uuid.UUID, currentPrivKey string) {
+	if !cryptokey.Enabled() {
+		return
+	}
+	if cryptokey.IsEncrypted(currentPrivKey) {
+		return // already encrypted
+	}
+	encrypted, err := cryptokey.Encrypt(currentPrivKey)
+	if err != nil {
+		slog.Warn("re-encrypt_key", slog.String("event", "re_encrypt_key"), slog.String("error", err.Error()))
+		return
+	}
+	var updateErr error
+	switch keyType {
+	case "self":
+		updateErr = db.Model(&models.SelfEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
+	case "group":
+		updateErr = db.Model(&models.GroupEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
+	}
+	if updateErr != nil {
+		slog.Warn("re-encrypt_key", slog.String("event", "re_encrypt_key"), slog.String("key_type", keyType), slog.String("error", updateErr.Error()))
+	}
 }
 
 // normalizeWildcardUsername replaces a wildcard username '*' with the requested username.
@@ -465,32 +508,43 @@ func detectProtocol(remoteCmd string) string {
 // promptTOTP reads a TOTP code from stdin and verifies it.
 // Used for JIT MFA enforcement at connection time.
 func promptTOTP(user models.User, log *slog.Logger) bool {
-	fmt.Print("🔐 This group requires MFA. Enter TOTP code: ")
-	reader := bufio.NewReader(os.Stdin)
-	code, err := reader.ReadString('\n')
-	if err != nil {
-		log.Warn("mfa_error", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("error", err.Error()))
-		fmt.Fprintln(os.Stderr, "⛔ Could not read TOTP code.")
-		return false
+	for attempt := 1; attempt <= 3; attempt++ {
+		fmt.Printf("🔐 This group requires MFA. Enter TOTP code [attempt %d/3]: ", attempt)
+		reader := bufio.NewReader(os.Stdin)
+		code, err := reader.ReadString('\n')
+		if err != nil {
+			log.Warn("mfa_error", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, "⛔ Could not read TOTP code.")
+			return false
+		}
+		if totpUtil.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
+			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
+			return true
+		}
+		if attempt < 3 {
+			fmt.Println("⛔ Invalid TOTP code. Try again.")
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
 	}
-	if !totpUtil.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
-		log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
-		fmt.Println("⛔ Invalid TOTP code. Access denied.")
-		return false
-	}
-	log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
-	return true
+	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
+	fmt.Println("⛔ Invalid TOTP code. Access denied.")
+	return false
 }
 
 // ipAllowed checks whether clientIP is permitted by an allowedFrom CIDR list.
 // Empty allowedFrom means unrestricted.
+// Returns false when the clientIP cannot be parsed (fail-closed).
 func ipAllowed(clientIP, allowedFrom string) bool {
-	if allowedFrom == "" || clientIP == "" {
+	if allowedFrom == "" {
 		return true
+	}
+	if clientIP == "" {
+		return false
 	}
 	ip := net.ParseIP(clientIP)
 	if ip == nil {
-		return true // can't parse client IP - allow and log at connection level
+		slog.Warn("ip_parse_failed", slog.String("event", "ip_allowed"), slog.String("client_ip", clientIP))
+		return false
 	}
 	for _, cidr := range strings.Split(allowedFrom, ",") {
 		cidr = strings.TrimSpace(cidr)
@@ -569,7 +623,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 	if err == nil {
 		return host, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return host, fmt.Errorf("error retrieving user host: %v", err)
+		return host, validation.WrapDBError(err, "error retrieving user host")
 	}
 
 	var groupIDs []uuid.UUID
@@ -577,7 +631,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 		Where("user_id = ?", user.ID).
 		Pluck("group_id", &groupIDs).Error
 	if err != nil {
-		return host, fmt.Errorf("error retrieving user groups: %v", err)
+		return host, validation.WrapDBError(err, "error retrieving self accesses")
 	}
 
 	if len(groupIDs) == 0 {
@@ -590,7 +644,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return host, nil
 	} else if err != nil {
-		return host, fmt.Errorf("error retrieving group host: %v", err)
+		return host, validation.WrapDBError(err, "error retrieving group host")
 	}
 
 	return host, nil
@@ -609,7 +663,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 		return fmt.Errorf("invalid port: %v", err)
 	}
 
-	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	sshFrom := system.ClientIPFromEnv()
 	log := logger.With(
 		slog.String("user", user.Username),
 		slog.String("from", sshFrom),
@@ -661,7 +715,7 @@ func SftpSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 		return fmt.Errorf("invalid sftp-session command: %v", err)
 	}
 
-	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	sshFrom := system.ClientIPFromEnv()
 	log := logger.With(
 		slog.String("user", user.Username),
 		slog.String("from", sshFrom),

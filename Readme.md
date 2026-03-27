@@ -54,7 +54,10 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔐 `selfDisableTOTP`             | Disable TOTP two-factor authentication.                                      |
 | 🔑 `selfSetPassword`             | Set a password second factor (MFA). Required at every login if set.          |
 | 🔑 `selfChangePassword`          | Change your password second factor.                                          |
+| 🔑 `selfDisablePassword`         | Disable password second factor (MFA).                                        |
 | 🛡️ `selfAddIngressKeyPIV`       | Add a PIV/YubiKey hardware-attested ingress key.                             |
+| 🔐 `selfGenerateBackupCodes`     | Generate TOTP backup codes (single-use recovery codes).                     |
+| 🔐 `selfShowBackupCodeCount`     | Show remaining backup codes count.                                          |
 
 ---
 
@@ -66,7 +69,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ℹ️ `accountInfo`            | Show detailed information about a user account.       |
 | ➕ `accountCreate`           | Create a new user account.                            |
 | ❌ `accountDelete`           | Delete a user account.                                |
-| ✏️ `accountModify`          | Modify a user account (promote/demote to admin/user). |
+| ✏️ `accountModify`          | Modify a user account (promote/demote to admin/user). Cannot demote the last remaining admin. |
 | 🔑 `accountListIngressKeys` | List the ingress SSH keys of a user.                  |
 | 🔑 `accountListEgressKeys`  | List the egress SSH keys of a user.                   |
 | 📋 `accountListAccess`      | List all server accesses of a user.                                          |
@@ -94,7 +97,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group.      |
 | 🔑 `groupListEgressKeys`    | List all egress SSH keys associated with a group. |
 | 📋 `groupListAccesses`      | List all accesses assigned to a group.            |
-| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction).                    |
+| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
 | ❌ `groupDelAccess`          | Remove access from a group.                       |
 | 🔐 `groupSetMFA`            | Enable or disable JIT MFA requirement for a group (owner/admin only).       |
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
@@ -116,6 +119,19 @@ goBastion supports multiple second-factor authentication methods that stack: pas
 | `accountDisableTOTP`  | *(admin)* Disable TOTP for any user account.                           |
 
 Once TOTP is enabled, the bastion will prompt for a 6-digit code at every interactive or passthrough login.
+
+#### Backup Codes
+
+Backup codes are single-use recovery codes that can be used instead of a TOTP code when you lose access to your authenticator app.
+
+| Command                     | Description                                              |
+|-----------------------------|----------------------------------------------------------|
+| `selfGenerateBackupCodes`   | Generate 10 new backup codes. Previous codes are invalidated. |
+| `selfShowBackupCodeCount`   | Show how many backup codes remain unused.                |
+
+- Each code can only be used once and is removed after use.
+- Backup codes are accepted in the same prompt as TOTP codes (`Enter TOTP code (or backup code):`).
+- Generating new codes invalidates all previous codes.
 
 #### Password Second Factor
 
@@ -213,6 +229,10 @@ Every access entry (`selfAddAccess`, `accountAddAccess`, `groupAddAccess`) suppo
 
 Both constraints are enforced at connection time - expired or out-of-range connections are denied.
 The `Expires` and `From` columns appear in all `listAccesses` outputs.
+
+> **Security note (IP restrictions):** If a `--from` CIDR restriction is set on an access entry
+> and the bastion cannot determine the client IP (e.g. missing `SSH_CLIENT`), the connection
+> is **denied** (fail-closed policy). This prevents accidental bypass of IP-based access controls.
 
 ---
 
@@ -331,7 +351,9 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 - `selfDelAccess`
 - `selfDelAlias`
 - `selfDelIngressKey`
+- `selfDisablePassword`
 - `selfDisableTOTP`
+- `selfGenerateBackupCodes`
 - `selfGenerateEgressKey`
 - `selfListAccesses`
 - `selfListAliases`
@@ -341,6 +363,7 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 - `selfReplaceKnownHost`
 - `selfSetPassword`
 - `selfSetupTOTP`
+- `selfShowBackupCodeCount`
 - `ttyList` *(own sessions only)*
 - `ttyPlay` *(own sessions only)*
 
@@ -429,10 +452,12 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 
 ## ⚙️ **Environment Variables**
 
-| Variable    | Default | Description |
-|-------------|---------|-------------|
-| `DB_DRIVER` | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
-| `DB_DSN`    | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
+| Variable        | Default | Description |
+|-----------------|---------|-------------|
+| `DB_DRIVER`     | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
+| `DB_DSN`        | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
+| `EGRESS_ENC_KEY`| *(none)* | AES key for encrypting egress private keys at rest. See [Egress Key Encryption](#-egress-key-encryption). |
+| `LOG_FORMAT`    | `json`   | Log output format: `json` (structured JSON, compatible with log aggregators) or `plain` (human-readable text for local debugging). |
 
 ### DSN examples
 
@@ -454,6 +479,68 @@ DB_DRIVER=sqlite
 DB_DSN=file:/data/mybastion.db?cache=shared&mode=rwc
 ```
 
+### Manual Schema Setup
+
+If the goBastion app user does not have `CREATE TABLE` / `ALTER` permissions on your database, the DBA can pre-create the schema manually.
+
+The `sql/` directory contains ready-to-run schema files:
+
+| File | Database |
+|------|----------|
+| `sql/postgres.sql` | PostgreSQL |
+| `sql/mysql.sql` | MySQL |
+
+**PostgreSQL:**
+```sh
+psql -h <host> -U <admin> -d <dbname> -f sql/postgres.sql
+```
+
+**MySQL:**
+```sh
+mysql -h <host> -u <admin> -p <dbname> < sql/mysql.sql
+```
+
+After creating the schema, grant the goBastion app user minimal privileges:
+
+**PostgreSQL:**
+```sql
+GRANT USAGE ON SCHEMA public TO gobastion;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO gobastion;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO gobastion;
+```
+
+**MySQL:**
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON gobastion.* TO 'gobastion'@'%';
+FLUSH PRIVILEGES;
+```
+
+> The app user only needs `SELECT`, `INSERT`, `UPDATE`, `DELETE` — no `CREATE`, `ALTER`, or `DROP`.
+
+### 🔐 Egress Key Encryption
+
+By default, egress private keys are stored in the database in **plaintext**. To encrypt them at rest, set the `EGRESS_ENC_KEY` environment variable:
+
+```bash
+# Generate a 32-byte AES-256 key
+openssl rand -base64 32 > egress_key.txt
+export EGRESS_ENC_KEY=$(cat egress_key.txt)
+```
+
+`EGRESS_ENC_KEY` accepts:
+- Base64-encoded AES key (16/24/32 bytes)
+- 32-byte raw passphrase
+
+**Migration behavior:**
+- If `EGRESS_ENC_KEY` is set **after** keys were already stored in plaintext, existing keys are automatically re-encrypted on next use (transparent migration).
+- If `EGRESS_ENC_KEY` is **not set**, keys remain in plaintext (backward-compatible).
+
+```sh
+docker run --name gobastion --hostname goBastion -it -p 2222:22 \
+  -e EGRESS_ENC_KEY="$(openssl rand -base64 32)" \
+  gobastion:latest
+```
+
 ---
 
 ## 🛠️ **Admin CLI Flags**
@@ -467,6 +554,7 @@ These flags are only available when running as `root` outside an SSH session:
 | `--sync` | `docker exec goBastion /app/goBastion --sync` | Enforce DB state onto the OS immediately (DB is source of truth); also runs automatically every 5 minutes |
 | `--dbExport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbExport > dump` | Dump the database as encrypted file to stdout                                                            |
 | `--dbImport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbImport < dump` | Restore the database from encrypted file on stdin                                                        |
+| `--disableTOTP` | `docker exec -it goBastion /app/goBastion --disableTOTP <user>` | Disable TOTP, password MFA, and backup codes for a user (recovery)                                       |
 
 ### 🔐 Database Export / Import
 

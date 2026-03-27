@@ -12,6 +12,17 @@ import (
 
 // AccountList displays all non-system user accounts.
 func AccountList(db *gorm.DB, currentUser *models.User) error {
+	if !currentUser.CanDo(db, "accountList", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Account List",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view the account list."}},
+			},
+		})
+		return nil
+	}
+
 	var users []models.User
 	if err := db.Where(internaldb.BoolFalseExpr(db, "system_user")).Find(&users).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -22,17 +33,6 @@ func AccountList(db *gorm.DB, currentUser *models.User) error {
 			},
 		})
 		return err
-	}
-
-	if !currentUser.CanDo(db, "accountList", "") {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Account List",
-			BlockType: "error",
-			Sections: []console.SectionContent{
-				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view the account list."}},
-			},
-		})
-		return nil
 	}
 
 	if len(users) == 0 {

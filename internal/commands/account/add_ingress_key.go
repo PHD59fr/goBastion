@@ -9,6 +9,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/sshkey"
+	"goBastion/internal/utils/validation"
 
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
@@ -33,7 +34,7 @@ func CreateDBIngressKey(db *gorm.DB, user *models.User, pubKeyStr string) error 
 	var existingKey models.IngressKey
 	if err = db.Where("user_id = ? AND fingerprint = ?", user.ID, fingerprint).First(&existingKey).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("error checking for existing ingress key: %w", err)
+			return validation.WrapDBError(err, "error checking for existing ingress key")
 		}
 	} else {
 		return fmt.Errorf("key already exists with fingerprint: %s", fingerprint)

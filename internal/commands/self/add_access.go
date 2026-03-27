@@ -29,7 +29,7 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 	fs.Int64Var(&port, "port", 22, "Port number")
 	fs.StringVar(&comment, "comment", "", "Comment")
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated, e.g. 10.0.0.0/8,192.168.1.0/24)")
-	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
+	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never, must be positive if set)")
 	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
 	fs.BoolVar(&force, "force", false, "Skip TCP connectivity check")
 	if err := fs.Parse(args); err != nil {
@@ -60,12 +60,39 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return nil
 	}
+	// Validate TTL - must be zero (never) or positive
+	if ttlDays < 0 {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid TTL", Body: []string{"TTL must be zero (never) or a positive number of days"}}},
+		})
+		return nil
+	}
 	// Validate server host
 	if !validation.IsValidHost(server) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Server", Body: []string{"Server hostname/IP contains invalid characters (e.g., '@')."}}},
+		})
+		return nil
+	}
+	// Validate port range
+	if !validation.IsValidPort(port) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Port", Body: []string{"Port must be between 1 and 65535"}}},
+		})
+		return nil
+	}
+	// Validate CIDRs
+	if !validation.IsValidCIDRs(allowedFrom) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDR notation (e.g. 10.0.0.0/8,192.168.1.0/24)"}}},
 		})
 		return nil
 	}
@@ -110,7 +137,7 @@ func SelfAddAccess(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Personal Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"An error occurred. Please contact admin."}},
+				{SubTitle: "Error", Body: []string{"Database error while checking for existing access. Please try again."}},
 			},
 		})
 		return fmt.Errorf("database error: %v", result.Error)

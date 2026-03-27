@@ -56,13 +56,14 @@ func AccountDelete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 	return nil
 }
 
-// DeleteUser removes the user from the DB and deletes the OS system user.
+// DeleteUser removes the user from the OS first, then soft-deletes the DB record.
+// This order prevents orphaned OS users on partial failure.
 func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
-	if err := deleteDBUser(db, username); err != nil {
+	if err := adapter.DeleteUser(username); err != nil {
 		return err
 	}
-	return adapter.DeleteUser(username)
+	return deleteDBUser(db, username)
 }
 
 // deleteDBUser soft-deletes the user record from the database.

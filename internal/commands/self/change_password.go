@@ -12,7 +12,7 @@ import (
 )
 
 // SelfChangePassword changes the user's password MFA, verifying the current password first.
-func SelfChangePassword(db *gorm.DB, user *models.User, args []string) error {
+func SelfChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
 	if user.PasswordHash == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Change Password MFA", BlockType: "error",
@@ -27,7 +27,7 @@ func SelfChangePassword(db *gorm.DB, user *models.User, args []string) error {
 	}
 	fmt.Println()
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
-		slog.Default().Warn("password mfa change denied - wrong current password", slog.String("user", user.Username))
+		log.Warn("password mfa change denied - wrong current password", slog.String("user", user.Username))
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Change Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Current password is incorrect."}}},
@@ -67,7 +67,7 @@ func SelfChangePassword(db *gorm.DB, user *models.User, args []string) error {
 		return fmt.Errorf("failed to save password: %v", err)
 	}
 	user.PasswordHash = string(hash)
-	slog.Default().Info("password mfa changed", slog.String("user", user.Username))
+	log.Info("password mfa changed", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title: "Change Password MFA", BlockType: "success",
 		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password updated."}}},

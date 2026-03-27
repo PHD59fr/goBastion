@@ -1,57 +1,49 @@
 package logger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
 	"log/syslog"
 	"os"
+	"strings"
 	"sync"
 )
 
 const logFile = "/goBastion.log"
 
-// syslog numeric levels (RFC 5424).
-const (
-	gelfLevelEmergency = 0
-	gelfLevelAlert     = 1
-	gelfLevelCritical  = 2
-	gelfLevelError     = 3
-	gelfLevelWarning   = 4
-	gelfLevelNotice    = 5
-	gelfLevelInfo      = 6
-	gelfLevelDebug     = 7
-)
-
 // slogLevelToGelf maps a slog level to a GELF syslog severity number.
 func slogLevelToGelf(l slog.Level) int {
 	switch {
 	case l >= slog.LevelError:
-		return gelfLevelError
+		return 3
 	case l >= slog.LevelWarn:
-		return gelfLevelWarning
+		return 4
 	case l >= slog.LevelInfo:
-		return gelfLevelInfo
+		return 6
 	default:
-		return gelfLevelDebug
+		return 7
 	}
 }
 
-// gelfHandler writes GELF 1.1 JSON records to an io.Writer.
-// Each record is a single line of JSON - compatible with Graylog GELF HTTP/TCP inputs
-// and log shippers such as Filebeat or Fluent Bit.
+// jsonHandler writes structured JSON records to an io.Writer.
+// Each record is a single line of JSON.
 //
-// GELF fields produced:
+// Fields produced (GELF 1.1 + human-readable):
 //
-//	version        "1.1"
-//	host           container hostname
-//	short_message  log message
-//	timestamp      Unix float64 (seconds + milliseconds)
-//	level          syslog numeric level (0-7)
-//	_<key>         all additional slog attributes prefixed with _
-type gelfHandler struct {
+//	version       "1.1"
+//	host          container hostname
+//	short_message log message
+//	timestamp     unix float64
+//	level         syslog numeric level (0-7)
+//	msg           log message (duplicate of short_message for readability)
+//	time          ISO 8601 timestamp
+//	_<key>        all additional slog attributes prefixed with _
+type jsonHandler struct {
 	mu       sync.Mutex
 	w        io.Writer
 	host     string
@@ -59,25 +51,33 @@ type gelfHandler struct {
 	preAttrs []slog.Attr // stored via WithAttrs (e.g. log.With("user", ...))
 }
 
-// newGelfHandler creates a new GELF 1.1 log handler writing to w.
-func newGelfHandler(w io.Writer) *gelfHandler {
+// newJSONHandler creates a new structured JSON log handler writing to w.
+func newJSONHandler(w io.Writer) *jsonHandler {
 	host, _ := os.Hostname()
-	return &gelfHandler{w: w, host: host, min: slog.LevelInfo}
+	return &jsonHandler{w: w, host: host, min: slog.LevelInfo}
 }
 
-// Enabled always returns true; all levels are forwarded to the GELF writer.
-func (h *gelfHandler) Enabled(_ context.Context, level slog.Level) bool {
+// Enabled returns true if the level meets the minimum threshold.
+func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.min
 }
 
-// Handle serializes a log record as a GELF 1.1 JSON line.
-func (h *gelfHandler) Handle(_ context.Context, r slog.Record) error {
+// Handle serializes a log record as a JSON line.
+//
+// Output includes both GELF 1.1 standard fields and human-readable fields:
+//
+//	{"version":"1.1","host":"goBastion","short_message":"user_login","timestamp":1743200175.123,"level":6,"time":"2026-03-28T00:06:15.123Z","msg":"user_login","_user":"alice"}
+func (h *jsonHandler) Handle(_ context.Context, r slog.Record) error {
 	m := map[string]any{
+		// GELF 1.1 standard fields
 		"version":       "1.1",
 		"host":          h.host,
 		"short_message": r.Message,
 		"timestamp":     float64(r.Time.UnixMilli()) / 1000.0,
 		"level":         slogLevelToGelf(r.Level),
+		// Human-readable fields
+		"msg":  r.Message,
+		"time": r.Time.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 	}
 	// Emit pre-attrs added via log.With(...).
 	for _, a := range h.preAttrs {
@@ -94,6 +94,8 @@ func (h *gelfHandler) Handle(_ context.Context, r slog.Record) error {
 		return err
 	}
 	data = append(data, '\n')
+	data = bytes.ReplaceAll(data, []byte("\\u003c"), []byte("<"))
+	data = bytes.ReplaceAll(data, []byte("\\u003e"), []byte(">"))
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -102,15 +104,15 @@ func (h *gelfHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 // WithAttrs returns a new handler with the given attributes pre-attached to every record.
-func (h *gelfHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	merged := make([]slog.Attr, len(h.preAttrs)+len(attrs))
 	copy(merged, h.preAttrs)
 	copy(merged[len(h.preAttrs):], attrs)
-	return &gelfHandler{w: h.w, host: h.host, min: h.min, preAttrs: merged}
+	return &jsonHandler{w: h.w, host: h.host, min: h.min, preAttrs: merged}
 }
 
-// WithGroup is a no-op; GELF does not support attribute groups.
-func (h *gelfHandler) WithGroup(_ string) slog.Handler { return h }
+// WithGroup is a no-op; JSON does not support attribute groups.
+func (h *jsonHandler) WithGroup(_ string) slog.Handler { return h }
 
 // multiHandler fans out log records to multiple slog.Handler implementations.
 type multiHandler struct {
@@ -198,16 +200,89 @@ func (w *slogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// NewLogger returns a logger writing GELF 1.1 JSON to /goBastion.log (always)
-// and to syslog (best-effort). The file writer ensures docker logs captures
-// events from SSH subprocess invocations of goBastion.
+// plainTextHandler writes human-readable log records to an io.Writer.
+type plainTextHandler struct {
+	mu       sync.Mutex
+	w        io.Writer
+	min      slog.Level
+	preAttrs []slog.Attr
+}
+
+// newPlainTextHandler creates a handler that writes formatted text lines.
+func newPlainTextHandler(w io.Writer) *plainTextHandler {
+	return &plainTextHandler{w: w, min: slog.LevelInfo}
+}
+
+// Enabled returns true if the level meets the minimum threshold.
+func (h *plainTextHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.min
+}
+
+// Handle writes a human-readable log line:
+//
+//	2006-01-02 15:04:05.000 LEVEL  message  key1=value1 key2=value2
+func (h *plainTextHandler) Handle(_ context.Context, r slog.Record) error {
+	var b strings.Builder
+	b.WriteString(r.Time.Format("2006-01-02 15:04:05.000"))
+	b.WriteByte(' ')
+	b.WriteString(r.Level.String())
+	if len(r.Level.String()) < 5 {
+		b.WriteByte(' ')
+	}
+	b.WriteByte(' ')
+	b.WriteString(r.Message)
+
+	emitAttr := func(a slog.Attr) bool {
+		b.WriteByte(' ')
+		b.WriteString(a.Key)
+		b.WriteByte('=')
+		fmt.Fprintf(&b, "%v", a.Value.Any())
+		return true
+	}
+	for _, a := range h.preAttrs {
+		emitAttr(a)
+	}
+	r.Attrs(emitAttr)
+	b.WriteByte('\n')
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, err := h.w.Write([]byte(b.String()))
+	return err
+}
+
+// WithAttrs returns a new handler with pre-attached attributes.
+func (h *plainTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, len(h.preAttrs)+len(attrs))
+	copy(merged, h.preAttrs)
+	copy(merged[len(h.preAttrs):], attrs)
+	return &plainTextHandler{w: h.w, min: h.min, preAttrs: merged}
+}
+
+// WithGroup is a no-op.
+func (h *plainTextHandler) WithGroup(_ string) slog.Handler { return h }
+
+// NewLogger returns a logger writing to /goBastion.log (always)
+// and to syslog (best-effort).
+//
+// Log format is controlled by the LOG_FORMAT environment variable:
+//   - "json"  (default): structured JSON lines — compatible with log aggregators
+//   - "plain": human-readable timestamped text — useful for local debugging
 func NewLogger() *slog.Logger {
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
 	if err != nil {
 		f = os.Stderr
 	}
 
-	handlers := []slog.Handler{newGelfHandler(f)}
+	format := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_FORMAT")))
+	var fileHandler slog.Handler
+	if format == "plain" {
+		fileHandler = newPlainTextHandler(f)
+	} else {
+		fileHandler = newJSONHandler(f)
+	}
+
+	handlers := []slog.Handler{fileHandler}
 
 	if sysWriter, sysErr := syslog.New(syslog.LOG_INFO|syslog.LOG_USER, "goBastion"); sysErr == nil {
 		handlers = append(handlers, &syslogHandler{writer: sysWriter, level: slog.LevelInfo})

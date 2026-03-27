@@ -143,7 +143,7 @@ func TestAccessFilter_GroupExactBeforeSelfWildcard(t *testing.T) {
 	group := mustCreateGroup(t, db, "ops")
 	mustAddUserToGroup(t, db, user.ID, group.ID, "member")
 
-	mustCreateSelfAccess(t, db, user.ID, "*", "myserver", 22)   // wildcard
+	mustCreateSelfAccess(t, db, user.ID, "*", "myserver", 22)        // wildcard
 	mustCreateGroupAccess(t, db, group.ID, "deploy", "myserver", 22) // exact
 	mustCreateSelfEgressKey(t, db, user.ID)
 	mustCreateGroupEgressKey(t, db, group.ID)
@@ -377,7 +377,7 @@ func TestIPAllowed(t *testing.T) {
 		want        bool
 	}{
 		{"empty allowedFrom means unrestricted", "1.2.3.4", "", true},
-		{"empty client IP means unrestricted", "", "10.0.0.0/8", true},
+		{"empty client IP with restriction is denied", "", "10.0.0.0/8", false},
 		{"IP inside CIDR", "10.1.2.3", "10.0.0.0/8", true},
 		{"IP outside CIDR", "192.168.1.1", "10.0.0.0/8", false},
 		{"multiple CIDRs, first match", "172.16.0.5", "10.0.0.0/8,172.16.0.0/12", true},
