@@ -54,7 +54,10 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔐 `selfDisableTOTP`             | Disable TOTP two-factor authentication.                                      |
 | 🔑 `selfSetPassword`             | Set a password second factor (MFA). Required at every login if set.          |
 | 🔑 `selfChangePassword`          | Change your password second factor.                                          |
+| 🔑 `selfDisablePassword`         | Disable password second factor (MFA).                                        |
 | 🛡️ `selfAddIngressKeyPIV`       | Add a PIV/YubiKey hardware-attested ingress key.                             |
+| 🔐 `selfGenerateBackupCodes`     | Generate TOTP backup codes (single-use recovery codes).                     |
+| 🔐 `selfShowBackupCodeCount`     | Show remaining backup codes count.                                          |
 
 ---
 
@@ -116,6 +119,19 @@ goBastion supports multiple second-factor authentication methods that stack: pas
 | `accountDisableTOTP`  | *(admin)* Disable TOTP for any user account.                           |
 
 Once TOTP is enabled, the bastion will prompt for a 6-digit code at every interactive or passthrough login.
+
+#### Backup Codes
+
+Backup codes are single-use recovery codes that can be used instead of a TOTP code when you lose access to your authenticator app.
+
+| Command                     | Description                                              |
+|-----------------------------|----------------------------------------------------------|
+| `selfGenerateBackupCodes`   | Generate 10 new backup codes. Previous codes are invalidated. |
+| `selfShowBackupCodeCount`   | Show how many backup codes remain unused.                |
+
+- Each code can only be used once and is removed after use.
+- Backup codes are accepted in the same prompt as TOTP codes (`Enter TOTP code (or backup code):`).
+- Generating new codes invalidates all previous codes.
 
 #### Password Second Factor
 
@@ -331,7 +347,9 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 - `selfDelAccess`
 - `selfDelAlias`
 - `selfDelIngressKey`
+- `selfDisablePassword`
 - `selfDisableTOTP`
+- `selfGenerateBackupCodes`
 - `selfGenerateEgressKey`
 - `selfListAccesses`
 - `selfListAliases`
@@ -341,6 +359,7 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 - `selfReplaceKnownHost`
 - `selfSetPassword`
 - `selfSetupTOTP`
+- `selfShowBackupCodeCount`
 - `ttyList` *(own sessions only)*
 - `ttyPlay` *(own sessions only)*
 
@@ -429,10 +448,11 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 
 ## ⚙️ **Environment Variables**
 
-| Variable    | Default | Description |
-|-------------|---------|-------------|
-| `DB_DRIVER` | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
-| `DB_DSN`    | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
+| Variable        | Default | Description |
+|-----------------|---------|-------------|
+| `DB_DRIVER`     | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
+| `DB_DSN`        | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
+| `EGRESS_ENC_KEY`| *(none)* | AES key for encrypting egress private keys at rest. See [Egress Key Encryption](#-egress-key-encryption). |
 
 ### DSN examples
 
@@ -454,6 +474,30 @@ DB_DRIVER=sqlite
 DB_DSN=file:/data/mybastion.db?cache=shared&mode=rwc
 ```
 
+### 🔐 Egress Key Encryption
+
+By default, egress private keys are stored in the database in **plaintext**. To encrypt them at rest, set the `EGRESS_ENC_KEY` environment variable:
+
+```bash
+# Generate a 32-byte AES-256 key
+openssl rand -base64 32 > egress_key.txt
+export EGRESS_ENC_KEY=$(cat egress_key.txt)
+```
+
+`EGRESS_ENC_KEY` accepts:
+- Base64-encoded AES key (16/24/32 bytes)
+- 32-byte raw passphrase
+
+**Migration behavior:**
+- If `EGRESS_ENC_KEY` is set **after** keys were already stored in plaintext, existing keys are automatically re-encrypted on next use (transparent migration).
+- If `EGRESS_ENC_KEY` is **not set**, keys remain in plaintext (backward-compatible).
+
+```sh
+docker run --name gobastion --hostname goBastion -it -p 2222:22 \
+  -e EGRESS_ENC_KEY="$(openssl rand -base64 32)" \
+  gobastion:latest
+```
+
 ---
 
 ## 🛠️ **Admin CLI Flags**
@@ -467,6 +511,7 @@ These flags are only available when running as `root` outside an SSH session:
 | `--sync` | `docker exec goBastion /app/goBastion --sync` | Enforce DB state onto the OS immediately (DB is source of truth); also runs automatically every 5 minutes |
 | `--dbExport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbExport > dump` | Dump the database as encrypted file to stdout                                                            |
 | `--dbImport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbImport < dump` | Restore the database from encrypted file on stdin                                                        |
+| `--disableTOTP` | `docker exec -it goBastion /app/goBastion --disableTOTP <user>` | Disable TOTP, password MFA, and backup codes for a user (recovery)                                       |
 
 ### 🔐 Database Export / Import
 

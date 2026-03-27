@@ -3,6 +3,7 @@ package account
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"strings"
 	"time"
 
@@ -71,7 +72,7 @@ func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.",targetUser)}}},
 		})
 		return err
 	}

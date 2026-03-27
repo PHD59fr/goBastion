@@ -99,7 +99,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.",groupName)}}},
 		})
 		return err
 	}

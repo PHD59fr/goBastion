@@ -3,11 +3,11 @@ package session
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/system"
 
 	"log/slog"
 
@@ -22,7 +22,7 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 		os.Exit(1)
 	}
 
-	ip := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	ip := system.ClientIPFromEnv()
 
 	if currentUser.SystemUser {
 		log.Warn("login rejected", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("reason", "system user"))

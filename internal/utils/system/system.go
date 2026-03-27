@@ -4,10 +4,26 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 )
+
+// ClientIPFromEnv safely extracts the client IP address from the SSH_CLIENT
+// environment variable. Returns "unknown" if the variable is empty, missing,
+// or malformed.
+func ClientIPFromEnv() string {
+	raw := os.Getenv("SSH_CLIENT")
+	if raw == "" {
+		return "unknown"
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 0 || fields[0] == "" {
+		return "unknown"
+	}
+	return fields[0]
+}
 
 // CreateUser adds a new system OS user with disabled password.
 func CreateUser(username string) error {
@@ -50,7 +66,7 @@ func ChownDir(user models.User, dir string) error {
 // UpdateSudoers writes or removes the sudoers entry for a user based on their role.
 func UpdateSudoers(user *models.User) error {
 	sudoersPath := "/etc/sudoers.d/" + user.Username
-	if user.Role == "admin" {
+	if user.Role == models.RoleAdmin {
 		sudoersConfig := fmt.Sprintf(`%s ALL=(ALL) NOPASSWD: /usr/sbin/adduser --disabled-password --gecos *
 %s ALL=(ALL) NOPASSWD: /usr/bin/passwd -d *
 %s ALL=(ALL) NOPASSWD: /usr/sbin/deluser --remove-home *

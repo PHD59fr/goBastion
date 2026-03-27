@@ -13,6 +13,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sshkey"
 
 	"github.com/google/uuid"
@@ -55,7 +56,7 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Group not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.",groupName)}}},
 		})
 		return err
 	}
@@ -89,10 +90,16 @@ func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string
 	keySize = sshkey.GetKeySize(parsedKey)
 	_ = os.RemoveAll(tmpDir)
 
+	privKey := strings.TrimSpace(string(privKeyBytes))
+	encrypted, encErr := cryptokey.ReEncryptIfNeeded(privKey)
+	if encErr != nil {
+		return fmt.Errorf("error encrypting private key: %v", encErr)
+	}
+
 	newKey := models.GroupEgressKey{
 		GroupID:     group.ID,
 		PubKey:      strings.TrimSpace(string(pubKeyBytes)),
-		PrivKey:     strings.TrimSpace(string(privKeyBytes)),
+		PrivKey:     encrypted,
 		Type:        keyType,
 		Size:        keySize,
 		Fingerprint: fingerprint,

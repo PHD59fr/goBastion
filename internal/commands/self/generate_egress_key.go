@@ -13,6 +13,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sshkey"
 
 	"github.com/google/uuid"
@@ -111,10 +112,17 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 	sha256Fingerprint := sha256.Sum256(pubKey.Marshal())
 	fingerprint := base64.StdEncoding.EncodeToString(sha256Fingerprint[:])
 	keySize = sshkey.GetKeySize(pubKey)
+
+	privKey := strings.TrimSpace(string(privKeyStr))
+	encrypted, encErr := cryptokey.ReEncryptIfNeeded(privKey)
+	if encErr != nil {
+		return fmt.Errorf("error encrypting private key: %v", encErr)
+	}
+
 	newKey := models.SelfEgressKey{
 		UserID:      user.ID,
 		PubKey:      strings.TrimSpace(string(pubKeyStr)),
-		PrivKey:     strings.TrimSpace(string(privKeyStr)),
+		PrivKey:     encrypted,
 		Type:        keyType,
 		Size:        keySize,
 		Fingerprint: fingerprint,

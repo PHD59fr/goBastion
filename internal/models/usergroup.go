@@ -13,6 +13,15 @@ const (
 	RoleUser  = "user"
 )
 
+// Group role constants.
+const (
+	GroupRoleOwner      = "owner"
+	GroupRoleGatekeeper = "gatekeeper"
+	GroupRoleACLKeeper  = "aclkeeper"
+	GroupRoleMember     = "member"
+	GroupRoleGuest      = "guest"
+)
+
 type User struct {
 	ID            uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Username      string    `gorm:"not null;index:idx_username_deletedat,unique"`
@@ -24,9 +33,13 @@ type User struct {
 	TOTPSecret    string `gorm:"default:null"`
 	TOTPEnabled   bool   `gorm:"type:boolean;default:false"`
 	PasswordHash  string `gorm:"default:null"` // bcrypt hash for password MFA second factor
+	BackupCodes   string `gorm:"default:null"` // JSON array of bcrypt-hashed single-use backup codes
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	DeletedAt     gorm.DeletedAt `gorm:"index:idx_username_deletedat"`
+
+	// cachedGroups is a session-level cache for getGroups(). Not persisted.
+	cachedGroups *[]UserGroup
 }
 
 // BeforeDelete removes all group memberships for the user before deletion.
@@ -88,25 +101,25 @@ func (ug *UserGroup) BeforeCreate(*gorm.DB) (err error) {
 
 // IsOwner returns true if the user is the group owner.
 func (ug *UserGroup) IsOwner() bool {
-	return ug.Role == "owner"
+	return ug.Role == GroupRoleOwner
 }
 
 // IsGateKeeper returns true if the user is a group gate keeper.
 func (ug *UserGroup) IsGateKeeper() bool {
-	return ug.Role == "gatekeeper"
+	return ug.Role == GroupRoleGatekeeper
 }
 
 // IsACLKeeper returns true if the user is a group ACL keeper.
 func (ug *UserGroup) IsACLKeeper() bool {
-	return ug.Role == "aclkeeper"
+	return ug.Role == GroupRoleACLKeeper
 }
 
 // IsMember returns true if the user is a regular group member.
 func (ug *UserGroup) IsMember() bool {
-	return ug.Role == "member"
+	return ug.Role == GroupRoleMember
 }
 
 // IsGuest returns true if the user is a guest in the group.
 func (ug *UserGroup) IsGuest() bool {
-	return ug.Role == "guest"
+	return ug.Role == GroupRoleGuest
 }

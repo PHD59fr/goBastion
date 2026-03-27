@@ -41,7 +41,7 @@ func (l *LinuxAdapter) DeleteUser(username string) error {
 
 func (l *LinuxAdapter) UpdateSudoers(user *models.User) error {
 	sudoersPath := "/etc/sudoers.d/" + user.Username
-	if user.Role == "admin" {
+	if user.Role == models.RoleAdmin {
 		sudoersConfig := fmt.Sprintf(`%s ALL=(ALL) NOPASSWD: /usr/sbin/adduser --disabled-password --gecos *
 %s ALL=(ALL) NOPASSWD: /usr/bin/passwd -d *
 %s ALL=(ALL) NOPASSWD: /usr/sbin/deluser --remove-home *

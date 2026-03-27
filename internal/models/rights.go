@@ -221,10 +221,20 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 }
 
 // getGroups returns all group memberships for the user.
+// Results are cached for the duration of a session to avoid repeated DB queries.
 func (u *User) getGroups(db *gorm.DB) ([]UserGroup, error) {
+	if u.cachedGroups != nil {
+		return *u.cachedGroups, nil
+	}
 	var userGroups []UserGroup
 	if err := db.Preload("Group").Where("user_id = ?", u.ID).Find(&userGroups).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving user groups: %w", err)
 	}
+	u.cachedGroups = &userGroups
 	return userGroups, nil
+}
+
+// InvalidateGroupsCache clears the cached groups so the next CanDo call re-queries the DB.
+func (u *User) InvalidateGroupsCache() {
+	u.cachedGroups = nil
 }

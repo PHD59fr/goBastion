@@ -14,8 +14,10 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sftpProxy"
 	"goBastion/internal/utils/sshConnector"
+	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/tcpProxy"
 	totpUtil "goBastion/internal/utils/totp"
 
@@ -48,7 +50,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		return fmt.Errorf("invalid SSH command: %v", err)
 	}
 
-	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	sshFrom := system.ClientIPFromEnv()
 	hostname, _ := os.Hostname()
 	protocol := detectProtocol(remoteCmd)
 
@@ -142,7 +144,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 			err = sshConnector.SshConnection(db, user, access)
 			if err != nil {
 				log.Error("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source), slog.String("error", err.Error()))
-				fmt.Printf("Key verification failed: %v\n", err)
+				fmt.Printf("SSH connection to %s failed: %v\n", access.Source, err)
 			} else {
 				log.Info("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source))
 			}
@@ -151,7 +153,9 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 	}
 
 	log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "no valid key found"))
-	fmt.Println("No valid key found for the user or group.")
+	fmt.Printf("No usable SSH egress key found for %s@%s:%s.\n", sshUser, sshHost, sshPort)
+	fmt.Println("Generate one with:")
+	fmt.Println("  selfGenerateEgressKey --type ed25519")
 	return nil
 }
 
@@ -236,7 +240,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		return nil, fmt.Errorf("invalid port value: %v", err)
 	}
 
-	clientIP := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	clientIP := system.ClientIPFromEnv()
 	now := time.Now()
 
 	var candidates []accessCandidate
@@ -325,9 +329,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	}
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("⛔ %s: no access entry found for %s@%s:%s — ask an admin to add one",
-			utils.BgRedB("Access denied for "+user.Username),
-			username, host, port)
+		return nil, fmt.Errorf("⛔ Access denied: no access entry found for %s@%s:%s.\n"+
+			"Run: selfAddAccess --server %s --port %s --username %s",
+			user.Username, username, host, host, port, username)
 	}
 
 	// Sort by score descending; stable so DB insertion order breaks ties.
@@ -345,8 +349,13 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		allowedFrom = best.groupAccess.AllowedFrom
 	}
 	if !ipAllowed(clientIP, allowedFrom) {
-		return nil, fmt.Errorf("access denied to %s@%s:%s: your current IP %s is not allowed by this access rule; contact your admin to update the --from restriction on this access entry",
-			username, host, port, clientIP)
+		src := "personal"
+		if best.groupAccess != nil {
+			src = best.groupAccess.Group.Name
+		}
+		return nil, fmt.Errorf("⛔ Access denied: your IP %s is not in the allowed CIDRs for this access entry (%s)"+
+			" — contact your admin to update the --from restriction",
+			clientIP, src)
 	}
 
 	// Build the AccessRight from the best candidate.
@@ -389,10 +398,11 @@ func buildGroupAccessRight(db *gorm.DB, ga models.GroupAccess, requestedUsername
 		KeyFingerprint: key.Fingerprint,
 		KeyUpdatedAt:   key.UpdatedAt,
 		PublicKey:      key.PubKey,
-		PrivateKey:     key.PrivKey,
+		PrivateKey:     decryptPrivKey(key.PrivKey),
 		MFARequired:    ga.Group.MFARequired,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
+	maybeReEncryptKey(db, "group", key.ID, key.PrivKey)
 	return access, nil
 }
 
@@ -422,10 +432,39 @@ func buildSelfAccessRight(db *gorm.DB, sa models.SelfAccess, requestedUsername, 
 		KeyFingerprint: key.Fingerprint,
 		KeyUpdatedAt:   key.UpdatedAt,
 		PublicKey:      key.PubKey,
-		PrivateKey:     key.PrivKey,
+		PrivateKey:     decryptPrivKey(key.PrivKey),
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
+	maybeReEncryptKey(db, "self", key.ID, key.PrivKey)
 	return access, nil
+}
+
+// decryptPrivKey returns the plaintext private key, handling both encrypted and legacy plaintext values.
+func decryptPrivKey(raw string) string {
+	return cryptokey.DecryptOrPassThrough(raw)
+}
+
+// maybeReEncryptKey re-encrypts a plaintext egress key if EGRESS_ENC_KEY is now set.
+// Runs asynchronously to avoid blocking the SSH connection.
+func maybeReEncryptKey(db *gorm.DB, keyType string, keyID uuid.UUID, currentPrivKey string) {
+	if !cryptokey.Enabled() {
+		return
+	}
+	if cryptokey.IsEncrypted(currentPrivKey) {
+		return // already encrypted
+	}
+	encrypted, err := cryptokey.Encrypt(currentPrivKey)
+	if err != nil {
+		return
+	}
+	go func() {
+		switch keyType {
+		case "self":
+			db.Model(&models.SelfEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted)
+		case "group":
+			db.Model(&models.GroupEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted)
+		}
+	}()
 }
 
 // normalizeWildcardUsername replaces a wildcard username '*' with the requested username.
@@ -609,7 +648,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 		return fmt.Errorf("invalid port: %v", err)
 	}
 
-	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	sshFrom := system.ClientIPFromEnv()
 	log := logger.With(
 		slog.String("user", user.Username),
 		slog.String("from", sshFrom),
@@ -661,7 +700,7 @@ func SftpSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 		return fmt.Errorf("invalid sftp-session command: %v", err)
 	}
 
-	sshFrom := strings.Split(os.Getenv("SSH_CLIENT"), " ")[0]
+	sshFrom := system.ClientIPFromEnv()
 	log := logger.With(
 		slog.String("user", user.Username),
 		slog.String("from", sshFrom),

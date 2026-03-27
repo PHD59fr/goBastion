@@ -8,6 +8,7 @@ mkdir -p /run/gobastion
 {
   [ -n "$DB_DRIVER" ] && printf 'DB_DRIVER=%s\n' "$DB_DRIVER"
   [ -n "$DB_DSN" ]    && printf 'DB_DSN=%s\n'    "$DB_DSN"
+  [ -n "$EGRESS_ENC_KEY" ] && printf 'EGRESS_ENC_KEY=%s\n' "$EGRESS_ENC_KEY"
 } > /run/gobastion/db.conf
 chmod 600 /run/gobastion/db.conf
 

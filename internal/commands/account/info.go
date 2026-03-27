@@ -60,7 +60,7 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 			Title:     "Account Info",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"User not found."}},
+				{SubTitle: "Usage Error", Body: []string{"User \"" + username + "\" not found. Check spelling or run accountList."}},
 			},
 		})
 		return err

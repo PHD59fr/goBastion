@@ -64,7 +64,7 @@ func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User not found."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.",username)}}},
 		})
 		return err
 	}

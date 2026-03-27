@@ -6,9 +6,12 @@ import (
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // GenerateSecret creates a cryptographically random 20-byte secret encoded as Base32.
@@ -71,4 +74,84 @@ func OtpAuthURL(issuer, username, secret string) string {
 		"otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
 		issuer, username, secret, issuer,
 	)
+}
+
+const (
+	NumBackupCodes    = 10
+	BackupCodeLength  = 8
+)
+
+// GenerateBackupCodes creates NumBackupCodes random alphanumeric codes.
+// Returns the plain codes (to show the user once) and a JSON string of bcrypt hashes (to store).
+func GenerateBackupCodes() ([]string, string, error) {
+	codes := make([]string, NumBackupCodes)
+	hashes := make([]string, NumBackupCodes)
+	for i := range codes {
+		code, err := randomCode(BackupCodeLength)
+		if err != nil {
+			return nil, "", fmt.Errorf("generate backup code: %w", err)
+		}
+		codes[i] = code
+		hash, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, "", fmt.Errorf("hash backup code: %w", err)
+		}
+		hashes[i] = string(hash)
+	}
+	jsonBytes, err := json.Marshal(hashes)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal backup codes: %w", err)
+	}
+	return codes, string(jsonBytes), nil
+}
+
+// VerifyAndConsumeBackupCode checks code against the stored hashed backup codes.
+// If matched, removes the used code and returns the updated JSON string.
+// Returns (true, updatedJSON, nil) on match, (false, originalJSON, nil) on mismatch.
+func VerifyAndConsumeBackupCode(code, storedJSON string) (bool, string, error) {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	if storedJSON == "" {
+		return false, storedJSON, nil
+	}
+	var hashes []string
+	if err := json.Unmarshal([]byte(storedJSON), &hashes); err != nil {
+		return false, storedJSON, fmt.Errorf("unmarshal backup codes: %w", err)
+	}
+	for i, h := range hashes {
+		if bcrypt.CompareHashAndPassword([]byte(h), []byte(code)) == nil {
+			// Match: remove this code
+			hashes = append(hashes[:i], hashes[i+1:]...)
+			updated, err := json.Marshal(hashes)
+			if err != nil {
+				return true, storedJSON, fmt.Errorf("marshal updated codes: %w", err)
+			}
+			return true, string(updated), nil
+		}
+	}
+	return false, storedJSON, nil
+}
+
+// CountBackupCodes returns the number of remaining backup codes.
+func CountBackupCodes(storedJSON string) int {
+	if storedJSON == "" {
+		return 0
+	}
+	var hashes []string
+	if err := json.Unmarshal([]byte(storedJSON), &hashes); err != nil {
+		return 0
+	}
+	return len(hashes)
+}
+
+// randomCode generates a random alphanumeric string of the given length.
+func randomCode(length int) (string, error) {
+	const charset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no 0/O/1/I confusion
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	for i := range b {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+	return string(b), nil
 }

@@ -67,10 +67,10 @@ func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Delete Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Failed to delete ingress key. Please contact admin."}},
+				{SubTitle: "Error", Body: []string{"Failed to delete the SSH key. Please try again."}},
 			},
 		})
-		return fmt.Errorf("error deleting ingress key: %v", keyId)
+		return fmt.Errorf("error deleting ingress key %s: %v", keyId, result.Error)
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Delete Ingress Key",
