@@ -46,7 +46,13 @@ type accessCandidate struct {
 
 // SSHConnect resolves the target and establishes an SSH connection through the bastion.
 func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
-	sshUser, sshHost, sshPort, remoteCmd, err := parseSSHCommand(params)
+	// Extract -F forwarding hops before parsing the main target.
+	cleanParams, hops, err := extractForwardHops(params)
+	if err != nil {
+		return fmt.Errorf("invalid -F hop: %w", err)
+	}
+
+	sshUser, sshHost, sshPort, remoteCmd, err := parseSSHCommand(cleanParams)
 	if err != nil {
 		return fmt.Errorf("invalid SSH command: %v", err)
 	}
@@ -63,17 +69,20 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 		slog.String("target_port", sshPort),
 		slog.String("protocol", protocol),
 	)
+	if len(hops) > 0 {
+		log = log.With(slog.String("jump_chain", formatHopChain(hops)))
+	}
 
-	log.Info("ssh_connect", slog.String("event", "ssh_connect"))
+	log.Info("ssh_connect")
 
 	forcedHost, err := resolveForcedHost(db, user, sshHost)
 	if err != nil {
-		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
+		log.Error("alias_resolved", slog.String("error", err.Error()))
 		return validation.WrapDBError(err, "error searching host")
 	}
 
 	if forcedHost.Host != "" {
-		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
+		log.Info("alias_resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
 		sshHost = forcedHost.Host
 	}
 
@@ -103,7 +112,7 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
-		log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "access denied"), slog.String("error", err.Error()))
+		log.Warn("ssh_connect", slog.String("reason", "access_denied"), slog.String("error", err.Error()))
 		return fmt.Errorf("%v", err)
 	}
 
@@ -118,11 +127,11 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 
 			if access.Type == "self" {
 				if err := db.Model(&models.SelfAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now()).Error; err != nil {
-					log.Warn("last_connection_update", slog.String("event", "last_connection_update"), slog.String("error", err.Error()))
+					log.Warn("last_connection_update", slog.String("error", err.Error()))
 				}
 			} else {
 				if err := db.Model(&models.GroupAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now()).Error; err != nil {
-					log.Warn("last_connection_update", slog.String("event", "last_connection_update"), slog.String("error", err.Error()))
+					log.Warn("last_connection_update", slog.String("error", err.Error()))
 				}
 			}
 
@@ -140,20 +149,21 @@ func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string
 				}
 			}
 
-			log.Info("ssh_connect", slog.String("event", "ssh_connect"), slog.String("to", access.Source), slog.String("key_id", access.KeyId.String()))
+			log.Info("ssh_connect", slog.String("to", access.Source), slog.String("key_id", access.KeyId.String()))
 			access.RemoteCmd = remoteCmd
+			access.JumpHosts = formatJumpHosts(hops)
 			err = sshConnector.SshConnection(db, user, access)
 			if err != nil {
-				log.Error("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source), slog.String("error", err.Error()))
+				log.Error("ssh_close", slog.String("to", access.Source), slog.String("error", err.Error()))
 				fmt.Printf("SSH connection to %s failed: %v\n", access.Source, err)
 			} else {
-				log.Info("ssh_close", slog.String("event", "ssh_close"), slog.String("to", access.Source))
+				log.Info("ssh_close", slog.String("to", access.Source))
 			}
 			return nil
 		}
 	}
 
-	log.Warn("ssh_connect", slog.String("event", "ssh_connect"), slog.String("reason", "no valid key found"))
+	log.Warn("ssh_connect", slog.String("reason", "no_valid_key"))
 	fmt.Printf("No usable SSH egress key found for %s@%s:%s.\n", sshUser, sshHost, sshPort)
 	fmt.Println("Generate one with:")
 	fmt.Println("  selfGenerateEgressKey --type ed25519")
@@ -272,8 +282,10 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		return nil, fmt.Errorf("error retrieving user groups: %v", err)
 	}
 	groupIDs := make([]uuid.UUID, 0, len(userGroups))
+	groupRoles := make(map[uuid.UUID]string, len(userGroups))
 	for _, ug := range userGroups {
 		groupIDs = append(groupIDs, ug.GroupID)
+		groupRoles[ug.GroupID] = ug.Role
 	}
 
 	if len(groupIDs) > 0 {
@@ -287,6 +299,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		}
 		for i := range groupAccesses {
 			ga := &groupAccesses[i]
+			if groupRoles[ga.GroupID] == models.GroupRoleGuest && !ga.GuestAllowed {
+				continue
+			}
 			score := scoreGroupWildcard
 			reason := "group-wildcard"
 			if ga.Username != "*" {
@@ -362,9 +377,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	// Build the AccessRight from the best candidate.
 	var access models.AccessRight
 	if best.selfAccess != nil {
-		access, err = buildSelfAccessRight(DB, *best.selfAccess, username, best.reason)
+		access, err = buildSelfAccessRight(DB, slog.Default(), *best.selfAccess, username, best.reason)
 	} else {
-		access, err = buildGroupAccessRight(DB, *best.groupAccess, username, best.reason)
+		access, err = buildGroupAccessRight(DB, slog.Default(), *best.groupAccess, username, best.reason)
 	}
 	if err != nil {
 		return nil, err
@@ -374,7 +389,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 }
 
 // buildGroupAccessRight constructs an AccessRight from a GroupAccess entry and its egress key.
-func buildGroupAccessRight(db *gorm.DB, ga models.GroupAccess, requestedUsername, reason string) (models.AccessRight, error) {
+func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess, requestedUsername, reason string) (models.AccessRight, error) {
 	var key models.GroupEgressKey
 	if err := db.Where("group_id = ?", ga.GroupID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
@@ -403,12 +418,12 @@ func buildGroupAccessRight(db *gorm.DB, ga models.GroupAccess, requestedUsername
 		MFARequired:    ga.Group.MFARequired,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
-	maybeReEncryptKey(db, "group", key.ID, key.PrivKey)
+	maybeReEncryptKey(db, log, "group", key.ID, key.PrivKey)
 	return access, nil
 }
 
 // buildSelfAccessRight constructs an AccessRight from a SelfAccess entry and its egress key.
-func buildSelfAccessRight(db *gorm.DB, sa models.SelfAccess, requestedUsername, reason string) (models.AccessRight, error) {
+func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, requestedUsername, reason string) (models.AccessRight, error) {
 	var key models.SelfEgressKey
 	if err := db.Where("user_id = ?", sa.UserID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
@@ -436,7 +451,7 @@ func buildSelfAccessRight(db *gorm.DB, sa models.SelfAccess, requestedUsername, 
 		PrivateKey:     decryptPrivKey(key.PrivKey),
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
-	maybeReEncryptKey(db, "self", key.ID, key.PrivKey)
+	maybeReEncryptKey(db, log, "self", key.ID, key.PrivKey)
 	return access, nil
 }
 
@@ -447,7 +462,7 @@ func decryptPrivKey(raw string) string {
 
 // maybeReEncryptKey re-encrypts a plaintext egress key if EGRESS_ENC_KEY is now set.
 // Runs synchronously to ensure the re-encryption is persisted before the session ends.
-func maybeReEncryptKey(db *gorm.DB, keyType string, keyID uuid.UUID, currentPrivKey string) {
+func maybeReEncryptKey(db *gorm.DB, log *slog.Logger, keyType string, keyID uuid.UUID, currentPrivKey string) {
 	if !cryptokey.Enabled() {
 		return
 	}
@@ -456,7 +471,7 @@ func maybeReEncryptKey(db *gorm.DB, keyType string, keyID uuid.UUID, currentPriv
 	}
 	encrypted, err := cryptokey.Encrypt(currentPrivKey)
 	if err != nil {
-		slog.Warn("re-encrypt_key", slog.String("event", "re_encrypt_key"), slog.String("error", err.Error()))
+		log.Warn("re_encrypt_key", slog.String("error", err.Error()))
 		return
 	}
 	var updateErr error
@@ -467,7 +482,7 @@ func maybeReEncryptKey(db *gorm.DB, keyType string, keyID uuid.UUID, currentPriv
 		updateErr = db.Model(&models.GroupEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
 	}
 	if updateErr != nil {
-		slog.Warn("re-encrypt_key", slog.String("event", "re_encrypt_key"), slog.String("key_type", keyType), slog.String("error", updateErr.Error()))
+		log.Warn("re_encrypt_key", slog.String("key_type", keyType), slog.String("error", updateErr.Error()))
 	}
 }
 
@@ -543,7 +558,7 @@ func ipAllowed(clientIP, allowedFrom string) bool {
 	}
 	ip := net.ParseIP(clientIP)
 	if ip == nil {
-		slog.Warn("ip_parse_failed", slog.String("event", "ip_allowed"), slog.String("client_ip", clientIP))
+		slog.Warn("ip_parse_failed", slog.String("client_ip", clientIP))
 		return false
 	}
 	for _, cidr := range strings.Split(allowedFrom, ",") {
@@ -613,6 +628,122 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 	return user, host, port, remoteCmd, nil
 }
 
+// splitHostRealmChain is superseded by the -F flag syntax. Kept for reference only.
+// Use extractForwardHops instead.
+
+// SSHHop represents a single intermediate bastion in a -F forwarding chain.
+type SSHHop struct {
+	User string
+	Host string
+	Port string
+}
+
+// extractForwardHops pulls out all -F user@host[:port] flags from params.
+// Returns the cleaned command string (without -F tokens) and the ordered hop slice.
+// Hop order follows the user-specified order (outermost to innermost).
+func extractForwardHops(params string) (string, []SSHHop, error) {
+	tokens := strings.Fields(params)
+	var clean []string
+	var hops []SSHHop
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] == "--via" {
+			if i+1 >= len(tokens) {
+				return "", nil, fmt.Errorf("--via requires an argument (user@host[:port])")
+			}
+			i++
+			hop, err := parseHop(tokens[i])
+			if err != nil {
+				return "", nil, fmt.Errorf("invalid --via hop %q: %w", tokens[i], err)
+			}
+			hops = append(hops, hop)
+		} else {
+			clean = append(clean, tokens[i])
+		}
+	}
+	return strings.Join(clean, " "), hops, nil
+}
+
+// parseHop parses "[user@]host[:port]" into an SSHHop.
+func parseHop(s string) (SSHHop, error) {
+	hop := SSHHop{Port: "22"}
+	s = strings.TrimSpace(s)
+	if idx := strings.Index(s, "@"); idx >= 0 {
+		hop.User = s[:idx]
+		s = s[idx+1:]
+	}
+	if idx := strings.LastIndex(s, ":"); idx >= 0 {
+		hop.Host = s[:idx]
+		hop.Port = s[idx+1:]
+	} else {
+		hop.Host = s
+	}
+	if hop.Host == "" {
+		return SSHHop{}, fmt.Errorf("missing host")
+	}
+	if !validation.IsValidHost(hop.Host) {
+		return SSHHop{}, fmt.Errorf("invalid host %q", hop.Host)
+	}
+	portInt, err := strconv.ParseInt(hop.Port, 10, 64)
+	if err != nil || !validation.IsValidPort(portInt) {
+		return SSHHop{}, fmt.Errorf("invalid port %q", hop.Port)
+	}
+	return hop, nil
+}
+
+// formatJumpHosts converts SSHHop slice to SSH -J strings ("user@host:port").
+func formatJumpHosts(hops []SSHHop) []string {
+	out := make([]string, len(hops))
+	for i, h := range hops {
+		if h.User != "" {
+			out[i] = h.User + "@" + h.Host + ":" + h.Port
+		} else {
+			out[i] = h.Host + ":" + h.Port
+		}
+	}
+	return out
+}
+
+// formatHopChain returns a readable chain string for logging: "user@h1:p->user@h2:p".
+func formatHopChain(hops []SSHHop) string {
+	parts := make([]string, len(hops))
+	for i, h := range hops {
+		if h.User != "" {
+			parts[i] = h.User + "@" + h.Host + ":" + h.Port
+		} else {
+			parts[i] = h.Host + ":" + h.Port
+		}
+	}
+	return strings.Join(parts, "->")
+}
+
+// resolveRealmHop looks up a named realm in the DB and returns its bastion endpoint.
+// Used when a -F hop matches a registered realm name rather than a direct address.
+func resolveRealmHop(db *gorm.DB, realmName string) (string, string, error) {
+	realmName = strings.ToLower(strings.TrimSpace(realmName))
+	var realm models.Realm
+	if err := db.Where("name = ? AND enabled = ?", realmName, true).First(&realm).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", fmt.Errorf("⛔ Realm '%s' is not configured or disabled", realmName)
+		}
+		return "", "", validation.WrapDBError(err, "error resolving realm")
+	}
+	hopHost := strings.TrimSpace(realm.BastionHost)
+	if hopHost == "" {
+		hopHost = realm.Name
+	}
+	if !validation.IsValidHost(hopHost) {
+		return "", "", fmt.Errorf("⛔ Realm '%s' has invalid bastion host '%s'", realm.Name, hopHost)
+	}
+	hopPort := realm.BastionPort
+	if hopPort == 0 {
+		hopPort = 22
+	}
+	if !validation.IsValidPort(hopPort) {
+		return "", "", fmt.Errorf("⛔ Realm '%s' has invalid bastion port %d", realm.Name, hopPort)
+	}
+	return hopHost, strconv.FormatInt(hopPort, 10), nil
+}
+
 // resolveForcedHost resolves an alias hostname to its underlying access target.
 func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (models.Aliases, error) {
 	host := models.Aliases{}
@@ -674,25 +805,37 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 	// Resolve alias (e.g. "test" → actual hostname/IP), mirroring SSHConnect behaviour.
 	forcedHost, err := resolveForcedHost(db, user, host)
 	if err != nil {
-		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
+		log.Error("alias_resolved", slog.String("error", err.Error()))
 		return fmt.Errorf("error searching host: %v", err)
 	}
 	if forcedHost.Host != "" {
-		log.Info("alias resolved", slog.String("alias", host), slog.String("to", forcedHost.Host))
+		log.Info("alias_resolved", slog.String("alias", host), slog.String("to", forcedHost.Host))
 		host = forcedHost.Host
 	}
 
-	if !hasAnyAccessToHost(db, user, host, portInt) {
-		log.Warn("tcp_proxy", slog.String("event", "tcp_proxy"), slog.String("reason", "access denied"))
-		return fmt.Errorf("⛔ Access denied for %s to %s:%s", user.Username, host, port)
-	}
-
-	log.Info("tcp_proxy", slog.String("event", "tcp_proxy"))
-	if err := tcpProxy.Proxy(host, port); err != nil {
-		log.Error("tcp_proxy", slog.String("event", "tcp_proxy"), slog.String("error", err.Error()))
+	access, err := tcpProxyAccessFilter(db, log, user, host, portInt)
+	if err != nil {
+		log.Warn("tcp_proxy", slog.String("reason", "access_denied"), slog.String("error", err.Error()))
 		return err
 	}
-	log.Info("tcp_proxy", slog.String("event", "tcp_proxy"), slog.String("reason", "closed"))
+
+	// JIT MFA enforcement for passthrough flows when the selected group policy requires it.
+	if access.MFARequired && !user.TOTPEnabled {
+		if user.TOTPSecret == "" {
+			log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
+			return fmt.Errorf("⛔ This access requires MFA but no TOTP secret is configured. Run selfSetupTOTP first")
+		}
+		if !promptTOTP(user, log) {
+			return fmt.Errorf("⛔ Access denied: MFA validation failed")
+		}
+	}
+
+	log.Info("tcp_proxy")
+	if err := tcpProxy.Proxy(host, port); err != nil {
+		log.Error("tcp_proxy", slog.String("error", err.Error()))
+		return err
+	}
+	log.Info("tcp_proxy_closed")
 	return nil
 }
 
@@ -727,64 +870,125 @@ func SftpSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 	// Resolve alias (e.g. "master2" → actual hostname/IP).
 	forcedHost, err := resolveForcedHost(db, user, sshHost)
 	if err != nil {
-		log.Error("alias_resolved", slog.String("event", "alias_resolved"), slog.String("error", err.Error()))
+		log.Error("alias_resolved", slog.String("error", err.Error()))
 		return fmt.Errorf("error searching host: %v", err)
 	}
 	if forcedHost.Host != "" {
-		log.Info("alias resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
+		log.Info("alias_resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
 		sshHost = forcedHost.Host
 	}
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, "sftp")
 	if err != nil {
-		log.Warn("sftp_session", slog.String("event", "sftp_session"), slog.String("reason", "access denied"), slog.String("error", err.Error()))
+		log.Warn("sftp_session", slog.String("reason", "access_denied"), slog.String("error", err.Error()))
 		return err
 	}
 	if len(accesses) == 0 {
-		log.Warn("sftp_session", slog.String("event", "sftp_session"), slog.String("reason", "no matching access"))
+		log.Warn("sftp_session", slog.String("reason", "no_matching_access"))
 		return fmt.Errorf("⛔ Access denied for %s to %s@%s:%s", user.Username, sshUser, sshHost, sshPort)
 	}
 
 	access := accesses[0]
-	log.Info("sftp_session", slog.String("event", "sftp_session"), slog.String("to", access.Source))
-	if err = sftpProxy.Proxy(access); err != nil {
-		log.Error("sftp_session", slog.String("event", "sftp_session"), slog.String("error", err.Error()))
+	if access.MFARequired && !user.TOTPEnabled {
+		if user.TOTPSecret == "" {
+			log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
+			return fmt.Errorf("⛔ This access requires MFA but no TOTP secret is configured. Run selfSetupTOTP first")
+		}
+		if !promptTOTP(user, log) {
+			return fmt.Errorf("⛔ Access denied: MFA validation failed")
+		}
+	}
+
+	if err := sshConnector.CheckAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {
+		log.Warn("sftp_session", slog.String("reason", "host_key_verification_failed"), slog.String("error", err.Error()))
 		return err
 	}
-	log.Info("sftp_session", slog.String("event", "sftp_session"), slog.String("reason", "closed"))
+
+	log.Info("sftp_session", slog.String("to", access.Source))
+	if err = sftpProxy.Proxy(access); err != nil {
+		log.Error("sftp_session", slog.String("error", err.Error()))
+		return err
+	}
+	log.Info("sftp_session_closed")
 	return nil
 }
 
-// host and port (regardless of the remote username). Used by the TCP proxy access check.
-func hasAnyAccessToHost(db *gorm.DB, user models.User, host string, port int64) bool {
-	var count int64
+// tcpProxyAccessFilter resolves a policy-compliant access entry for raw TCP proxying (-W).
+// Because SSH payload is opaque in raw tunnel mode, the proxy only accepts accesses declared
+// for protocol=ssh and still enforces TTL, IP CIDR and group JIT MFA policy.
+func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host string, port int64) (models.AccessRight, error) {
+	now := time.Now()
+	clientIP := system.ClientIPFromEnv()
 
-	if user.Role == models.RoleAdmin {
-		// Admin can use any access entry (self or group) from any user for this host.
-		// Mirrors the behaviour of accessFilter which queries without user_id filter.
-		db.Model(&models.SelfAccess{}).Where("server = ? AND port = ?", host, port).Count(&count)
-		if count > 0 {
-			return true
-		}
-		db.Model(&models.GroupAccess{}).Where("server = ? AND port = ?", host, port).Count(&count)
-		return count > 0
+	var selfAccesses []models.SelfAccess
+	if err := db.Where(
+		"user_id = ? AND server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+		user.ID, host, port, now,
+	).Find(&selfAccesses).Error; err != nil {
+		return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve personal access: %w", err)
 	}
 
-	db.Model(&models.SelfAccess{}).
-		Where("user_id = ? AND server = ? AND port = ?", user.ID, host, port).
-		Count(&count)
-	if count > 0 {
-		return true
-	}
-
+	var groupAccesses []models.GroupAccess
 	var groupIDs []uuid.UUID
-	db.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).Pluck("group_id", &groupIDs)
-	if len(groupIDs) == 0 {
-		return false
+	var userGroups []models.UserGroup
+	if err := db.Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
+		return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve user groups: %w", err)
+	}
+	groupRoles := make(map[uuid.UUID]string, len(userGroups))
+	for _, ug := range userGroups {
+		groupIDs = append(groupIDs, ug.GroupID)
+		groupRoles[ug.GroupID] = ug.Role
+	}
+	if len(groupIDs) > 0 {
+		if err := db.Where(
+			"group_id IN ? AND server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			groupIDs, host, port, now,
+		).Preload("Group").Find(&groupAccesses).Error; err != nil {
+			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve group access: %w", err)
+		}
 	}
 
-	db.Model(&models.GroupAccess{}).
-		Where("group_id IN ? AND server = ? AND port = ?", groupIDs, host, port).
-		Count(&count)
-	return count > 0
+	if len(selfAccesses) == 0 && len(groupAccesses) == 0 && user.Role == models.RoleAdmin {
+		// Admin override, but still constrained by protocol, TTL and source CIDR.
+		if err := db.Where(
+			"server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			host, port, now,
+		).Find(&selfAccesses).Error; err != nil {
+			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve admin self access: %w", err)
+		}
+		if err := db.Where(
+			"server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			host, port, now,
+		).Preload("Group").Find(&groupAccesses).Error; err != nil {
+			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve admin group access: %w", err)
+		}
+	}
+
+	for _, sa := range selfAccesses {
+		if !ipAllowed(clientIP, sa.AllowedFrom) {
+			continue
+		}
+		access, err := buildSelfAccessRight(db, log, sa, "", "tcp-proxy-self")
+		if err == nil {
+			return access, nil
+		}
+	}
+	for _, ga := range groupAccesses {
+		if groupRoles[ga.GroupID] == models.GroupRoleGuest && !ga.GuestAllowed {
+			continue
+		}
+		if !ipAllowed(clientIP, ga.AllowedFrom) {
+			continue
+		}
+		reason := "tcp-proxy-group"
+		if user.Role == models.RoleAdmin && len(groupIDs) == 0 {
+			reason = "admin-override-group"
+		}
+		access, err := buildGroupAccessRight(db, log, ga, "", reason)
+		if err == nil {
+			return access, nil
+		}
+	}
+
+	return models.AccessRight{}, fmt.Errorf("⛔ Access denied: no eligible SSH access entry for %s to %s:%d", user.Username, host, port)
 }

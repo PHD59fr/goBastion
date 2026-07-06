@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"goBastion/internal/models"
@@ -22,6 +23,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	var port int64
 	var ttlDays int
 	var force bool
+	var guest bool
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&server, "server", "", "Server to add access for")
 	fs.Int64Var(&port, "port", 22, "Port number")
@@ -30,6 +32,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
 	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never, must be positive if set)")
 	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
+	fs.BoolVar(&guest, "guest", false, "Allow guest role members to use this access")
 	fs.BoolVar(&force, "force", false, "Skip TCP connectivity check")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
@@ -38,7 +41,7 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync] [--force]"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync] [--guest] [--force]"}}},
 		})
 		return nil
 	}
@@ -69,27 +72,42 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	}
 
 	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
-	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
 	// A failed connectivity check is a warning only — it must not block access creation.
 	// Network reachability can change after the access entry is saved.
+	// Restrict active checks to private/reserved targets to avoid scanner-like behavior.
 	if !force {
 		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
+		shouldCheck := isPrivateOrReservedTarget(server)
+		if shouldCheck {
+			conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+			if err != nil {
+				console.DisplayBlock(console.ContentBlock{
+					Title:     "Add Group Access",
+					BlockType: "warning",
+					Sections: []console.SectionContent{{
+						SubTitle: "Connectivity Warning",
+						Body: []string{
+							fmt.Sprintf("Could not reach %s over TCP: %v", addr, err),
+							"The access entry was saved anyway. Verify the target is reachable before connecting.",
+							"Use --force to suppress this check.",
+						},
+					}},
+				})
+			} else {
+				_ = conn.Close()
+			}
+		} else {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "Add Group Access",
-				BlockType: "warning",
+				BlockType: "info",
 				Sections: []console.SectionContent{{
-					SubTitle: "Connectivity Warning",
+					SubTitle: "Connectivity Check Skipped",
 					Body: []string{
-						fmt.Sprintf("Could not reach %s over TCP: %v", addr, err),
-						"The access entry was saved anyway. Verify the target is reachable before connecting.",
-						"Use --force to suppress this check.",
+						fmt.Sprintf("Active connectivity check skipped for non-private target: %s", addr),
+						"Only private/reserved targets are probed by default.",
 					},
 				}},
 			})
-		} else {
-			_ = conn.Close()
 		}
 	}
 
@@ -141,13 +159,14 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	}
 
 	access := models.GroupAccess{
-		GroupID:     group.ID,
-		Server:      server,
-		Port:        port,
-		Username:    username,
-		Comment:     comment,
-		AllowedFrom: allowedFrom,
-		Protocol:    protocol,
+		GroupID:      group.ID,
+		Server:       server,
+		Port:         port,
+		Username:     username,
+		GuestAllowed: guest,
+		Comment:      comment,
+		AllowedFrom:  allowedFrom,
+		Protocol:     protocol,
 	}
 	if ttlDays > 0 {
 		t := time.Now().AddDate(0, 0, ttlDays)
@@ -168,4 +187,15 @@ func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("Group access added for group '%s'.", groupName)}}},
 	})
 	return nil
+}
+
+func isPrivateOrReservedTarget(server string) bool {
+	host := strings.TrimSpace(server)
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
 }

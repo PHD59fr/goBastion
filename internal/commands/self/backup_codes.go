@@ -25,7 +25,7 @@ func SelfGenerateBackupCodes(db *gorm.DB, user *models.User, log *slog.Logger) e
 	}
 	user.BackupCodes = jsonHashes
 
-	log.Info("backup codes generated", slog.String("user", user.Username))
+	log.Info("backup_codes_generated", slog.String("user", user.Username))
 
 	// Display codes grouped in 2 columns
 	var lines []string

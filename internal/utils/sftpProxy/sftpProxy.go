@@ -7,11 +7,15 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/user"
+	"path/filepath"
 	"time"
 
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // stdinoutConn wraps os.Stdin/Stdout as net.Conn for use with ssh.NewServerConn.
@@ -54,19 +58,29 @@ func Proxy(access models.AccessRight) error {
 	}
 	defer func() { _ = netConn.Close() }()
 
+	currentUser, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("resolve current user: %v", err)
+	}
+	knownHostsFile := filepath.Join("/home", utils.NormalizeUsername(currentUser.Username), ".ssh", "known_hosts")
+	hostKeyCallback, err := knownhosts.New(knownHostsFile)
+	if err != nil {
+		return fmt.Errorf("load known_hosts callback: %v", err)
+	}
+
+	sshServerAddr := targetAddr
+	if access.Port == 22 {
+		sshServerAddr = access.Server
+	}
+
 	clientConfig := &ssh.ClientConfig{
-		User: access.Username,
-		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		// WARNING: Host key verification is intentionally disabled here.
-		// This function is ONLY called after checkAndUpdateHostKey() has already
-		// verified the target's host key via TOFU and stored it in known_hosts.
-		// Do NOT call Proxy() directly without first calling checkAndUpdateHostKey().
-		// TODO: Load known_hosts and pass ssh.FixedHostKey() for defense-in-depth.
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		User:            access.Username,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         15 * time.Second,
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, targetAddr, clientConfig)
+	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, sshServerAddr, clientConfig)
 	if err != nil {
 		return fmt.Errorf("ssh connect to %s: %v", targetAddr, err)
 	}

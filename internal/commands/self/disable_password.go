@@ -30,7 +30,7 @@ func SelfDisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args 
 	fmt.Println()
 
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
-		log.Warn("password mfa disable denied - wrong current password", slog.String("user", user.Username))
+		log.Warn("password_mfa_disable_denied", slog.String("user", user.Username), slog.String("reason", "wrong_current_password"))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable Password MFA",
 			BlockType: "error",
@@ -43,7 +43,7 @@ func SelfDisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args 
 		return fmt.Errorf("failed to clear password: %v", err)
 	}
 	user.PasswordHash = ""
-	log.Info("password mfa disabled", slog.String("user", user.Username))
+	log.Info("password_mfa_disabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Disable Password MFA",
 		BlockType: "success",

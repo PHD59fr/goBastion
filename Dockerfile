@@ -35,9 +35,14 @@ COPY --from=builder /app/goBastion /app/goBastion
 COPY --from=builder /usr/local/bin/ttyrec /usr/local/bin/ttyrec
 COPY --from=builder /usr/local/bin/ttyplay /usr/local/bin/ttyplay
 COPY banner.txt /etc/ssh/banner
+COPY scripts/sudo/gobastion-adduser.sh /usr/local/sbin/gobastion-adduser
+COPY scripts/sudo/gobastion-passwd-delete.sh /usr/local/sbin/gobastion-passwd-delete
+COPY scripts/sudo/gobastion-deluser.sh /usr/local/sbin/gobastion-deluser
+COPY scripts/sudo/gobastion-chown-ssh.sh /usr/local/sbin/gobastion-chown-ssh
 
 RUN chown root:root /app/goBastion
 RUN chmod u+s /app/goBastion
+RUN chmod 755 /usr/local/sbin/gobastion-adduser /usr/local/sbin/gobastion-passwd-delete /usr/local/sbin/gobastion-deluser /usr/local/sbin/gobastion-chown-ssh
 RUN touch /goBastion.log && chmod 640 /goBastion.log
 
 COPY entrypoint.sh /entrypoint.sh

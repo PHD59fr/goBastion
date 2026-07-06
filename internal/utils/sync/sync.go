@@ -63,7 +63,7 @@ func (s *Syncer) CreateUsersFromDB() error {
 		return fmt.Errorf("error retrieving users: %w", err)
 	}
 	for _, u := range users {
-		s.log.Info("Syncing user " + u.Username)
+		s.log.Info("sync_user", slog.String("user", u.Username))
 		if err = s.os.CreateUser(u.Username); err != nil {
 			return fmt.Errorf("error creating system user for %s: %w", u.Username, err)
 		}
@@ -309,10 +309,10 @@ func (s *Syncer) RestoreBastionSSHHostKeys() error {
 
 // EnforceFromDB is the authoritative DB → OS sync.
 func (s *Syncer) EnforceFromDB() error {
-	s.log.Info("[sync] Starting DB → OS enforcement")
+	s.log.Info("sync_start")
 
 	if err := s.RestoreBastionSSHHostKeys(); err != nil {
-		s.log.Error("[sync] Error syncing SSH host keys", slog.Any("error", err))
+		s.log.Error("sync_ssh_host_keys_failed", slog.Any("error", err))
 	}
 
 	var dbUsers []models.User
@@ -327,20 +327,20 @@ func (s *Syncer) EnforceFromDB() error {
 
 	for _, u := range dbUsers {
 		if !s.os.UserHomeExists(u.Username) {
-			s.log.Warn("[sync] User missing from OS, creating", slog.String("user", u.Username))
+			s.log.Warn("sync_os_user_missing", slog.String("user", u.Username))
 			if err := s.os.CreateUser(u.Username); err != nil {
-				s.log.Error("[sync] Failed to create OS user", slog.String("user", u.Username), slog.Any("error", err))
+				s.log.Error("sync_os_user_create_failed", slog.String("user", u.Username), slog.Any("error", err))
 				continue
 			}
 		}
 		if err := s.IngressKeyFromDB(u); err != nil {
-			s.log.Error("[sync] Failed to sync authorized_keys", slog.String("user", u.Username), slog.Any("error", err))
+			s.log.Error("sync_authorized_keys_failed", slog.String("user", u.Username), slog.Any("error", err))
 		}
 		if err := s.KnownHostsFromDB(&u); err != nil {
-			s.log.Error("[sync] Failed to sync known_hosts", slog.String("user", u.Username), slog.Any("error", err))
+			s.log.Error("sync_known_hosts_failed", slog.String("user", u.Username), slog.Any("error", err))
 		}
 		if err := s.os.UpdateSudoers(&u); err != nil {
-			s.log.Error("[sync] Failed to update sudoers", slog.String("user", u.Username), slog.Any("error", err))
+			s.log.Error("sync_sudoers_failed", slog.String("user", u.Username), slog.Any("error", err))
 		}
 	}
 
@@ -359,15 +359,15 @@ func (s *Syncer) EnforceFromDB() error {
 		// Use "--" to prevent osUser from being interpreted as a flag.
 		out, pErr := exec.Command("pgrep", "-u", "--", osUser).Output()
 		if pErr == nil && len(strings.TrimSpace(string(out))) > 0 {
-			s.log.Warn("[sync] Rogue OS user has active session, skipping", slog.String("user", osUser))
+			s.log.Warn("sync_rogue_user_session_active", slog.String("user", osUser))
 			continue
 		}
-		s.log.Warn("[sync] OS user not in DB, removing", slog.String("user", osUser))
+		s.log.Warn("sync_rogue_user_removing", slog.String("user", osUser))
 		if err := s.os.DeleteUser(osUser); err != nil {
-			s.log.Error("[sync] Failed to remove rogue OS user", slog.String("user", osUser), slog.Any("error", err))
+			s.log.Error("sync_rogue_user_remove_failed", slog.String("user", osUser), slog.Any("error", err))
 		}
 	}
 
-	s.log.Info("[sync] DB → OS enforcement complete")
+	s.log.Info("sync_complete")
 	return nil
 }

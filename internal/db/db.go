@@ -122,7 +122,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	}
 
 	if log != nil {
-		log.Info("db_connect", slog.String("event", "db_connect"), slog.String("driver", driver))
+		log.Info("db_connect", slog.String("driver", driver))
 	}
 
 	if err = migrate(db, driver); err != nil {
@@ -130,7 +130,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	}
 
 	if log != nil {
-		log.Info("db_migrate", slog.String("event", "db_migrate"), slog.String("driver", driver))
+		log.Info("db_migrate", slog.String("driver", driver))
 	}
 
 	if driver == "postgres" {
@@ -153,6 +153,8 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 	fixes := []colFix{
 		{"users", "system_user"},
 		{"users", "enabled"},
+		{"users", "osh_only"},
+		{"users", "super_owner"},
 		{"users", "totp_enabled"},
 		{"groups", "mfa_required"},
 		{"ingress_keys", "piv_attested"},
@@ -170,7 +172,7 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 				slog.String("event", "db_bool_migrate"),
 				slog.String("table", f.table),
 				slog.String("column", f.column),
-				slog.String("error_text", err.Error()),
+				slog.String("error", err.Error()),
 			)
 		}
 	}
@@ -191,6 +193,8 @@ func migrate(db *gorm.DB, driver string) error {
 		&models.SshHostKey{},
 		&models.KnownHostsEntry{},
 		&models.PIVTrustAnchor{},
+		&models.Realm{},
+		&models.RestrictedCommandGrant{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate models: %w", err)
@@ -302,6 +306,8 @@ func configure(db *gorm.DB, driver string) error {
 var allowedBoolColumns = map[string]bool{
 	"system_user":  true,
 	"enabled":      true,
+	"osh_only":     true,
+	"super_owner":  true,
 	"totp_enabled": true,
 	"mfa_required": true,
 	"piv_attested": true,
@@ -359,5 +365,7 @@ func ManagedModelsInDependencyOrder() []any {
 		&models.Aliases{},
 		&models.KnownHostsEntry{},
 		&models.PIVTrustAnchor{},
+		&models.Realm{},
+		&models.RestrictedCommandGrant{},
 	}
 }

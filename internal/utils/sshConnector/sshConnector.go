@@ -36,7 +36,7 @@ func isNonInteractiveCmd(cmd string) bool {
 // For non-interactive binary protocols (sftp, scp, rsync) ttyrec is bypassed to avoid
 // PTY corruption of binary data. It performs TOFU host key verification before connecting.
 func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) error {
-	if err := checkAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {
+	if err := CheckAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {
 		return err
 	}
 
@@ -62,8 +62,14 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		"-i", tmpFilePath,
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + knownHostsFile,
-		access.Username + "@" + access.Server, "-p", strconv.FormatInt(access.Port, 10),
 	}
+	// SSH ProxyJump chain: -J hop1,hop2,... (bastion-to-bastion forwarding)
+	if len(access.JumpHosts) > 0 {
+		sshArgs = append(sshArgs, "-J", strings.Join(access.JumpHosts, ","))
+	}
+	sshArgs = append(sshArgs,
+		access.Username+"@"+access.Server, "-p", strconv.FormatInt(access.Port, 10),
+	)
 	if access.RemoteCmd != "" {
 		sshArgs = append(sshArgs, "--", access.RemoteCmd)
 	}
@@ -85,6 +91,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	sessionID := os.Getenv("GOB_SESSION_ID")
 	// Sanitize path components to prevent directory traversal.
 	safeUser := strings.ReplaceAll(user.Username, "/", "_")
 	safeUser = strings.ReplaceAll(safeUser, "..", "_")
@@ -99,6 +106,9 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	filenameSuffix := ""
 	if access.RemoteCmd != "" {
 		filenameSuffix = "_cmd"
+	}
+	if sessionID != "" {
+		filenameSuffix += "_sid-" + sessionID
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, access.Username, access.Server, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
@@ -215,13 +225,13 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 // hostKeyTTL is how long a stored host key is considered fresh before re-scanning.
 const hostKeyTTL = 24 * time.Hour
 
-// checkAndUpdateHostKey implements TOFU (Trust On First Use) for the target server.
+// CheckAndUpdateHostKey implements TOFU (Trust On First Use) for the target server.
 //   - First connection: the scanned key is stored in DB and trusted.
 //   - Key unchanged and fresh (< hostKeyTTL): skips the keyscan entirely.
 //   - Key changed: returns an error telling the user to run selfReplaceKnownHost.
 //
 // ssh-keyscan is only invoked when the host is unknown OR the stored entries are stale.
-func checkAndUpdateHostKey(db *gorm.DB, user models.User, server string, port int64) error {
+func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port int64) error {
 	portStr := strconv.FormatInt(port, 10)
 
 	// Determine host token as stored in known_hosts.
