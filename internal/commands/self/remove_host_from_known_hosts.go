@@ -16,13 +16,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfRemoveHostFromKnownHosts removes all known_hosts entries for a host from the DB and syncs to disk.
-func SelfRemoveHostFromKnownHosts(db *gorm.DB, u *models.User, args []string) error {
+// RemoveHostFromKnownHosts removes all known_hosts entries for a host from the DB and syncs to disk.
+func RemoveHostFromKnownHosts(db *gorm.DB, u *models.User, args []string) error {
 	return removeHostFromKnownHosts(db, u, args, false)
 }
 
-// SelfReplaceKnownHost removes the stored key for a host so the new key is trusted on next connection.
-func SelfReplaceKnownHost(db *gorm.DB, u *models.User, args []string) error {
+// ReplaceKnownHost removes the stored key for a host so the new key is trusted on next connection.
+func ReplaceKnownHost(db *gorm.DB, u *models.User, args []string) error {
 	return removeHostFromKnownHosts(db, u, args, true)
 }
 

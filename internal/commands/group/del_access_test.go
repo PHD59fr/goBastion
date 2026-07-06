@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestGroupDelAccess_Success(t *testing.T) {
+func TestDelAccess_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
@@ -16,7 +16,7 @@ func TestGroupDelAccess_Success(t *testing.T) {
 	}
 
 	access := models.GroupAccess{
-		GroupID:  g.ID,
+		GroupID: g.ID,
 		Server:   "10.0.0.1",
 		Port:     22,
 		Username: "deploy",
@@ -26,7 +26,7 @@ func TestGroupDelAccess_Success(t *testing.T) {
 		t.Fatalf("create group access: %v", err)
 	}
 
-	err := GroupDelAccess(db, admin, []string{
+	err := DelAccess(db, admin, []string{
 		"--group", "mygroup",
 		"--access", access.ID.String(),
 	})

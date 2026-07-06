@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestAccountDelAccess_Success(t *testing.T) {
+func TestDelAccess_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 	alice := newRegularUser(t, db, "alice")
@@ -23,7 +23,7 @@ func TestAccountDelAccess_Success(t *testing.T) {
 		t.Fatalf("create access: %v", err)
 	}
 
-	err := AccountDelAccess(db, admin, []string{"--access", access.ID.String()})
+	err := DelAccess(db, admin, []string{"--access", access.ID.String()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,10 +35,10 @@ func TestAccountDelAccess_Success(t *testing.T) {
 	}
 }
 
-func TestAccountDelAccess_NotFound(t *testing.T) {
+func TestDelAccess_NotFound(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
 	// Non-existent UUID — function should not return error (it silently deletes 0 rows)
-	_ = AccountDelAccess(db, admin, []string{"--access", "00000000-0000-0000-0000-000000000000"})
+	_ = DelAccess(db, admin, []string{"--access", "00000000-0000-0000-0000-000000000000"})
 }

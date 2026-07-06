@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupListEgressKeys lists all egress SSH keys for a group.
-func GroupListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
+// ListEgressKeys lists all egress SSH keys for a group.
+func ListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupListEgressKeys", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")

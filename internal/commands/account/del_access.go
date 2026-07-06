@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountDelAccess removes a personal SSH access entry by ID.
-func AccountDelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+// DelAccess removes a personal SSH access entry by ID.
+func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountDelAccess", flag.ContinueOnError)
 	var accessID string
 	fs.StringVar(&accessID, "access", "", "Access ID to remove")

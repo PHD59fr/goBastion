@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountListAccess lists all personal SSH accesses for a user.
-func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+// ListAccess lists all personal SSH accesses for a user.
+func ListAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountListAccess", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username to list accesses")
@@ -85,17 +85,17 @@ func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) err
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		expiresStr := "Never"
+		expires := "Never"
 		if access.ExpiresAt != nil {
 			if access.ExpiresAt.Before(time.Now()) {
-				expiresStr = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
+				expires = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
 			} else {
-				expiresStr = access.ExpiresAt.Format("2006-01-02")
+				expires = access.ExpiresAt.Format("2006-01-02")
 			}
 		}
-		fromStr := access.AllowedFrom
-		if fromStr == "" {
-			fromStr = "*"
+		allowedFrom := access.AllowedFrom
+		if allowedFrom == "" {
+			allowedFrom = "*"
 		}
 		proto := access.Protocol
 		if proto == "" {
@@ -108,8 +108,8 @@ func AccountListAccess(db *gorm.DB, currentUser *models.User, args []string) err
 			access.Port,
 			proto,
 			access.Comment,
-			fromStr,
-			expiresStr,
+			allowedFrom,
+			expires,
 			lastUsed,
 			access.CreatedAt.Format("2006-01-02 15:04:05"),
 		)

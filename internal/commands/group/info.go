@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupInfo displays detailed information about a group.
-func GroupInfo(db *gorm.DB, currentUser *models.User, args []string) error {
+// Info displays detailed information about a group.
+func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupInfo", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")

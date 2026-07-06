@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfChangePassword changes the user's password MFA, verifying the current password first.
-func SelfChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
+// ChangePassword changes the user's password MFA, verifying the current password first.
+func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
 	if user.PasswordHash == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Change Password MFA", BlockType: "error",

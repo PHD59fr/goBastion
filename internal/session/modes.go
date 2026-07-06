@@ -129,14 +129,14 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		}
 	} else if strings.HasPrefix(command, "sftp-session") {
 		target := strings.TrimPrefix(strings.TrimPrefix(command, "sftp-session "), "sftp-session")
-		if err := cmdssh.SftpSession(db, *currentUser, *log, target); err != nil {
+		if err := cmdssh.SFTPSession(db, *currentUser, *log, target); err != nil {
 			log.Warn("sftp_session_failed", slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, "SFTP session failed. Check the target host and your access rights.")
 		}
 	} else if isMoshServerRequest(command, args) {
 		runMoshServer(command, args, log)
 	} else {
-		if err := cmdssh.SSHConnect(db, *currentUser, *log, command); err != nil {
+		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
 		}
 	}
@@ -409,7 +409,7 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		os.Exit(0)
 		return nil
 	case "ttyPlay":
-		err := cmdtty.TtyPlay(db, currentUser, args)
+		err := cmdtty.Play(db, currentUser, args)
 		resetStdIn()
 		if err != nil {
 			log.Error("command_failed", slog.String("cmd", cmd),

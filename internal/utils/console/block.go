@@ -92,3 +92,39 @@ func DisplayBlock(block ContentBlock) {
 	}
 	fmt.Println(frameColor("╰──────────────────────────────────────────────────────────"))
 }
+
+const (
+	BlockTypeError   = "error"
+	BlockTypeSuccess = "success"
+	BlockTypeWarning = "warning"
+	BlockTypeInfo    = "info"
+	BlockTypeHelp    = "help"
+)
+
+func ErrorBlock(title, subtitle, message string) {
+	DisplayBlock(ContentBlock{
+		Title: title, BlockType: BlockTypeError,
+		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
+	})
+}
+
+func SuccessBlock(title, subtitle, message string) {
+	DisplayBlock(ContentBlock{
+		Title: title, BlockType: BlockTypeSuccess,
+		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
+	})
+}
+
+func WarningBlock(title, subtitle, message string) {
+	DisplayBlock(ContentBlock{
+		Title: title, BlockType: BlockTypeWarning,
+		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
+	})
+}
+
+func InfoBlock(title, subtitle, message string) {
+	DisplayBlock(ContentBlock{
+		Title: title, BlockType: BlockTypeInfo,
+		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
+	})
+}

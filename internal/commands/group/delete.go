@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupDelete removes a group and its associated data.
-func GroupDelete(db *gorm.DB, currentUser *models.User, args []string) error {
+// Delete removes a group and its associated data.
+func Delete(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelete", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")

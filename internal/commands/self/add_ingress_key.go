@@ -18,8 +18,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfAddIngressKey adds a new ingress SSH key for the current user.
-func SelfAddIngressKey(db *gorm.DB, user *models.User, args []string) error {
+// AddIngressKey adds a new ingress SSH key for the current user.
+func AddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddIngressKey", flag.ContinueOnError)
 	var pubKey string
 	var expiresDays int

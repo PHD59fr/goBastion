@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestGroupAddAccess_Success(t *testing.T) {
+func TestAddAccess_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
@@ -15,7 +15,7 @@ func TestGroupAddAccess_Success(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 
-	err := GroupAddAccess(db, admin, []string{
+	err := AddAccess(db, admin, []string{
 		"--group", "mygroup",
 		"--server", "10.0.0.1",
 		"--username", "deploy",

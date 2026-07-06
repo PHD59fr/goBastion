@@ -14,9 +14,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfDisableTOTP verifies the current TOTP code before disabling it, preventing a stolen
+// DisableTOTP verifies the current TOTP code before disabling it, preventing a stolen
 // session from silently removing MFA.
-func SelfDisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
+func DisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	if !user.TOTPEnabled {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable TOTP",

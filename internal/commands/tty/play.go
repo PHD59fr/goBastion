@@ -18,8 +18,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// TtyPlay replays a recorded TTY session.
-func TtyPlay(db *gorm.DB, u *models.User, args []string) error {
+// Play replays a recorded TTY session.
+func Play(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyPlay", flag.ContinueOnError)
 	var username string
 	var file string

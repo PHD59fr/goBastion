@@ -11,9 +11,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfSetPassword sets a password-based MFA second factor for the current user.
+// SetPassword sets a password-based MFA second factor for the current user.
 // The password is stored as a bcrypt hash. It will be required at every login in addition to key auth.
-func SelfSetPassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
+func SetPassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
 	fmt.Print("Enter new password: ")
 	pass1, err := readPassword()
 	if err != nil {

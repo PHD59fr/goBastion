@@ -17,16 +17,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// TtyList lists recorded TTY sessions for a user.
-func TtyList(db *gorm.DB, u *models.User, args []string) error {
+// List lists recorded TTY sessions for a user.
+func List(db *gorm.DB, u *models.User, args []string) error {
 	fs := flag.NewFlagSet("ttyList", flag.ContinueOnError)
-	var startDateStr, endDateStr, hostFilter string
+	var startDate, endDate, hostFilter string
 	var username string
 	if u.IsAdmin() {
 		fs.StringVar(&username, "user", "", "Username (admin only)")
 	}
-	fs.StringVar(&startDateStr, "startDate", "", "From date (YYYY-MM-DD)")
-	fs.StringVar(&endDateStr, "endDate", "", "To date (YYYY-MM-DD)")
+	fs.StringVar(&startDate, "startDate", "", "From date (YYYY-MM-DD)")
+	fs.StringVar(&endDate, "endDate", "", "To date (YYYY-MM-DD)")
 	fs.StringVar(&hostFilter, "host", "", "Filter by server hostname")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
@@ -107,29 +107,29 @@ func TtyList(db *gorm.DB, u *models.User, args []string) error {
 						continue
 					}
 				}
-				dateStr, valid := extractDate(name)
+				date, valid := extractDate(name)
 				if !valid {
 					continue
 				}
-				if startDateStr != "" {
-					start, err := time.Parse("2006-01-02", startDateStr)
+				if startDate != "" {
+					start, err := time.Parse("2006-01-02", startDate)
 					if err == nil {
-						d, _ := time.Parse("2006-01-02", dateStr)
+						d, _ := time.Parse("2006-01-02", date)
 						if d.Before(start) {
 							continue
 						}
 					}
 				}
-				if endDateStr != "" {
-					end, err := time.Parse("2006-01-02", endDateStr)
+				if endDate != "" {
+					end, err := time.Parse("2006-01-02", endDate)
 					if err == nil {
-						d, _ := time.Parse("2006-01-02", dateStr)
+						d, _ := time.Parse("2006-01-02", date)
 						if d.After(end) {
 							continue
 						}
 					}
 				}
-				filesByDate[dateStr] = append(filesByDate[dateStr], name)
+				filesByDate[date] = append(filesByDate[date], name)
 			}
 			if len(filesByDate) == 0 {
 				return nil

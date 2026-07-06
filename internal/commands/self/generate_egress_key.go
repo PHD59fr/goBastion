@@ -21,8 +21,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfGenerateEgressKey generates a new SSH egress key pair for the current user.
-func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
+// GenerateEgressKey generates a new SSH egress key pair for the current user.
+func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfGenerateEgressKey", flag.ContinueOnError)
 	var keyType string
 	var keySize int
@@ -98,7 +98,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 		})
 		return fmt.Errorf("error reading private key: %v", err)
 	}
-	pubKeyStr, err := os.ReadFile(tmpFile + ".pub")
+	pubKeyData, err := os.ReadFile(tmpFile + ".pub")
 	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
@@ -109,7 +109,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 		})
 		return fmt.Errorf("error reading public key: %v", err)
 	}
-	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyStr)
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyData)
 	if err != nil || pubKey == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
@@ -132,7 +132,7 @@ func SelfGenerateEgressKey(db *gorm.DB, user *models.User, args []string) error 
 
 	newKey := models.SelfEgressKey{
 		UserID:      user.ID,
-		PubKey:      strings.TrimSpace(string(pubKeyStr)),
+		PubKey:      strings.TrimSpace(string(pubKeyData)),
 		PrivKey:     encrypted,
 		Type:        keyType,
 		Size:        keySize,

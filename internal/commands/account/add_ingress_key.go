@@ -16,20 +16,20 @@ import (
 )
 
 // CreateDBIngressKey validates and persists an SSH ingress public key for a user.
-func CreateDBIngressKey(db *gorm.DB, user *models.User, pubKeyStr string) error {
-	pubKeyStr = strings.TrimSpace(pubKeyStr)
-	if pubKeyStr == "" {
+func CreateDBIngressKey(db *gorm.DB, user *models.User, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
 		return fmt.Errorf("public SSH key cannot be empty")
 	}
 
-	pubKey, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
-	if err != nil || pubKey == nil {
+	pub, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(key))
+	if err != nil || pub == nil {
 		return fmt.Errorf("invalid SSH key: %s", err)
 	}
 
-	sha256Fingerprint := sha256.Sum256(pubKey.Marshal())
+	sha256Fingerprint := sha256.Sum256(pub.Marshal())
 	fingerprint := base64.StdEncoding.EncodeToString(sha256Fingerprint[:])
-	keySize := sshkey.GetKeySize(pubKey)
+	keySize := sshkey.GetKeySize(pub)
 
 	var existingKey models.IngressKey
 	if err = db.Where("user_id = ? AND fingerprint = ?", user.ID, fingerprint).First(&existingKey).Error; err != nil {
@@ -42,8 +42,8 @@ func CreateDBIngressKey(db *gorm.DB, user *models.User, pubKeyStr string) error 
 
 	ingressKey := models.IngressKey{
 		UserID:      user.ID,
-		Type:        pubKey.Type(),
-		Key:         pubKeyStr,
+		Type:        pub.Type(),
+		Key:         key,
 		Fingerprint: fingerprint,
 		Size:        keySize,
 		Comment:     comment,

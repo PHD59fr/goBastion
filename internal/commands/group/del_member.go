@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupDelMember removes a user from a group.
-func GroupDelMember(db *gorm.DB, currentUser *models.User, args []string) error {
+// DelMember removes a user from a group.
+func DelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelMember", flag.ContinueOnError)
 	var groupName, username string
 	fs.StringVar(&groupName, "group", "", "Group name")

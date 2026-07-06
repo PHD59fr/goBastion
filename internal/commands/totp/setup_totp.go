@@ -15,9 +15,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfSetupTOTP generates a TOTP secret, shows the enrollment URL, and asks the user to
+// SetupTOTP generates a TOTP secret, shows the enrollment URL, and asks the user to
 // confirm a code before persisting. This ensures the authenticator app is correctly set up.
-func SelfSetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
+func SetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	if user.TOTPEnabled {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Setup TOTP",

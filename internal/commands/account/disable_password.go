@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountDisablePassword clears a user's password-based MFA (admin only).
-func AccountDisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
+// DisablePassword clears a user's password-based MFA (admin only).
+func DisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("accountDisablePassword", flag.ContinueOnError)
 	var targetUser string
 	var buf bytes.Buffer

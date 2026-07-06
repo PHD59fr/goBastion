@@ -6,12 +6,12 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestAccountAddAccess_Success(t *testing.T) {
+func TestAddAccess_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 	newRegularUser(t, db, "alice")
 
-	err := AccountAddAccess(db, admin, []string{
+	err := AddAccess(db, admin, []string{
 		"--user", "alice",
 		"--server", "1.2.3.4",
 		"--username", "root",
@@ -28,13 +28,13 @@ func TestAccountAddAccess_Success(t *testing.T) {
 	}
 }
 
-func TestAccountAddAccess_MissingServer(t *testing.T) {
+func TestAddAccess_MissingServer(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 	newRegularUser(t, db, "alice")
 
 	// Missing --server; should not panic, should not create DB entry
-	_ = AccountAddAccess(db, admin, []string{
+	_ = AddAccess(db, admin, []string{
 		"--user", "alice",
 		"--username", "root",
 		"--port", "22",
@@ -47,11 +47,11 @@ func TestAccountAddAccess_MissingServer(t *testing.T) {
 	}
 }
 
-func TestAccountAddAccess_UserNotFound(t *testing.T) {
+func TestAddAccess_UserNotFound(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
-	err := AccountAddAccess(db, admin, []string{
+	err := AddAccess(db, admin, []string{
 		"--user", "unknown",
 		"--server", "1.2.3.4",
 		"--username", "root",

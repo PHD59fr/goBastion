@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// PivListTrustAnchors lists all registered PIV trust anchors (admin only).
-func PivListTrustAnchors(db *gorm.DB, currentUser *models.User, args []string) error {
+// ListTrustAnchors lists all registered PIV trust anchors (admin only).
+func ListTrustAnchors(db *gorm.DB, currentUser *models.User, args []string) error {
 	var anchors []models.PIVTrustAnchor
 	if err := db.Preload("AddedBy").Find(&anchors).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

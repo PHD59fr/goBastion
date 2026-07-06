@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountListEgressKeys lists all egress SSH keys for a user.
-func AccountListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
+// ListEgressKeys lists all egress SSH keys for a user.
+func ListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountListEgressKeys", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username to list egress keys")

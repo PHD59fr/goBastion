@@ -12,9 +12,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupSetMFA enables or disables JIT MFA requirement for a group.
+// SetMFA enables or disables JIT MFA requirement for a group.
 // When enabled, users connecting via this group must pass a TOTP challenge even if TOTP is not globally enabled.
-func GroupSetMFA(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
+func SetMFA(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("groupSetMFA", flag.ContinueOnError)
 	var groupName string
 	var required, optional bool

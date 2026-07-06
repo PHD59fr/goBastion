@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountInfo displays detailed information for a specific user account.
-func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
+// Info displays detailed information for a specific user account.
+func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountInfo", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username to display information")

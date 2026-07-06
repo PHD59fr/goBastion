@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfListAccesses lists all personal SSH accesses for the current user.
-func SelfListAccesses(db *gorm.DB, user *models.User) error {
+// ListAccesses lists all personal SSH accesses for the current user.
+func ListAccesses(db *gorm.DB, user *models.User) error {
 	var accesses []models.SelfAccess
 	result := db.Where("user_id = ?", user.ID).Find(&accesses)
 	if result.Error != nil {
@@ -45,17 +45,17 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 		if !access.LastConnection.IsZero() {
 			lastUsed = access.LastConnection.Format("2006-01-02 15:04:05")
 		}
-		expiresStr := "Never"
+		expires := "Never"
 		if access.ExpiresAt != nil {
 			if access.ExpiresAt.Before(time.Now()) {
-				expiresStr = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
+				expires = "EXPIRED(" + access.ExpiresAt.Format("2006-01-02") + ")"
 			} else {
-				expiresStr = access.ExpiresAt.Format("2006-01-02")
+				expires = access.ExpiresAt.Format("2006-01-02")
 			}
 		}
-		fromStr := access.AllowedFrom
-		if fromStr == "" {
-			fromStr = "*"
+		allowedFrom := access.AllowedFrom
+		if allowedFrom == "" {
+			allowedFrom = "*"
 		}
 		proto := access.Protocol
 		if proto == "" {
@@ -68,8 +68,8 @@ func SelfListAccesses(db *gorm.DB, user *models.User) error {
 			access.Port,
 			proto,
 			access.Comment,
-			fromStr,
-			expiresStr,
+			allowedFrom,
+			expires,
 			lastUsed,
 			access.CreatedAt.Format("2006-01-02 15:04:05"),
 		)

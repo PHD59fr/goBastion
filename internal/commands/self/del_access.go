@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfDelAccess removes a personal SSH access entry for the current user.
-func SelfDelAccess(db *gorm.DB, user *models.User, args []string) error {
+// DelAccess removes a personal SSH access entry for the current user.
+func DelAccess(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfDelAccess", flag.ContinueOnError)
 	var accessID uuid.UUID
 	fs.Func("id", "Access ID", func(s string) error {

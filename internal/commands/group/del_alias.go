@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupDelAlias removes an alias from a group.
-func GroupDelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
+// DelAlias removes an alias from a group.
+func DelAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelAlias", flag.ContinueOnError)
 	var groupName, hostID string
 	fs.StringVar(&groupName, "group", "", "Group name")

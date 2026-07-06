@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// RealmDelete removes a realm configuration.
-func RealmDelete(db *gorm.DB, currentUser *models.User, args []string) error {
+// Delete removes a realm configuration.
+func Delete(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("realmDelete", flag.ContinueOnError)
 	var realmName string
 	fs.StringVar(&realmName, "realm", "", "Realm name")

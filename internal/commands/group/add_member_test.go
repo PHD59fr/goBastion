@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestGroupAddMember_Success(t *testing.T) {
+func TestAddMember_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 	newRegularUser(t, db, "alice")
@@ -16,7 +16,7 @@ func TestGroupAddMember_Success(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 
-	err := GroupAddMember(db, admin, []string{
+	err := AddMember(db, admin, []string{
 		"--group", "mygroup",
 		"--user", "alice",
 		"--role", "member",
@@ -34,7 +34,7 @@ func TestGroupAddMember_Success(t *testing.T) {
 	}
 }
 
-func TestGroupAddMember_InvalidRole(t *testing.T) {
+func TestAddMember_InvalidRole(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 	newRegularUser(t, db, "alice")
@@ -46,7 +46,7 @@ func TestGroupAddMember_InvalidRole(t *testing.T) {
 
 	// The function accepts any non-empty role string; "invalidrole" creates the row
 	// but we verify it does not panic.
-	_ = GroupAddMember(db, admin, []string{
+	_ = AddMember(db, admin, []string{
 		"--group", "mygroup",
 		"--user", "alice",
 		"--role", "invalidrole",
