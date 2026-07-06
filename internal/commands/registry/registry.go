@@ -11,6 +11,8 @@ import (
 	cmdaccount "goBastion/internal/commands/account"
 	cmdgroup "goBastion/internal/commands/group"
 	cmdpiv "goBastion/internal/commands/piv"
+	cmdrealm "goBastion/internal/commands/realm"
+	cmdrestricted "goBastion/internal/commands/restricted"
 	cmdself "goBastion/internal/commands/self"
 	cmdtotp "goBastion/internal/commands/totp"
 	cmdtty "goBastion/internal/commands/tty"
@@ -187,13 +189,18 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 		{
 			Name: "accountCreate", Description: "Create a new account", Permission: "accountCreate",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts",
-			Args:    []ArgSpec{{"--user", "Username to create"}},
+			Args:    []ArgSpec{{"--user", "Username to create"}, {"--osh-only", "Restrict to -osh commands"}, {"--superowner", "Grant superowner privileges"}},
 			Handler: func() error { return cmdaccount.AccountCreate(db, adapter, user, args) },
 		},
 		{
 			Name: "accountModify", Description: "Modify an account", Permission: "accountModify",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts",
-			Args:    []ArgSpec{{"--user", "Username to modify"}, {"--sysrole", "New system role (admin or user)"}},
+			Args: []ArgSpec{
+				{"--user", "Username to modify"},
+				{"--sysrole", "New system role (admin or user)"},
+				{"--oshOnly", "Set osh-only mode (true/false)"},
+				{"--superOwner", "Set superowner mode (true/false)"},
+			},
 			Handler: func() error { return cmdaccount.AccountModify(db, user, args) },
 		},
 		{
@@ -282,6 +289,57 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Handler: func() error { return cmdpiv.PivRemoveTrustAnchor(db, user, args) },
 		},
 
+		// --- Realms ---
+		{
+			Name: "realmCreate", Description: "Create a trusted realm configuration", Permission: "realmCreate",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
+			Args: []ArgSpec{
+				{"--realm", "Realm name"},
+				{"--bastion", "Remote bastion host"},
+				{"--port", "Remote bastion port (default: 22)"},
+				{"--from", "Trusted source CIDRs"},
+				{"--public-key", "Trusted realm SSH public key"},
+			},
+			Handler: func() error { return cmdrealm.RealmCreate(db, user, args) },
+		},
+		{
+			Name: "realmList", Description: "List configured realms", Permission: "realmList",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
+			Handler: func() error { return cmdrealm.RealmList(db, user, args) },
+		},
+		{
+			Name: "realmInfo", Description: "Show details for one realm", Permission: "realmInfo",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
+			Args:    []ArgSpec{{"--realm", "Realm name"}},
+			Handler: func() error { return cmdrealm.RealmInfo(db, user, args) },
+		},
+		{
+			Name: "realmDelete", Description: "Delete a realm configuration", Permission: "realmDelete",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
+			Args:    []ArgSpec{{"--realm", "Realm name"}},
+			Handler: func() error { return cmdrealm.RealmDelete(db, user, args) },
+		},
+
+		// --- Restricted grants ---
+		{
+			Name: "restrictedGrantAdd", Description: "Grant a restricted command to a user", Permission: "restrictedGrantAdd",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Command grants",
+			Args:    []ArgSpec{{"--user", "Target username"}, {"--command", "Restricted command name"}},
+			Handler: func() error { return cmdrestricted.RestrictedGrantAdd(db, user, args) },
+		},
+		{
+			Name: "restrictedGrantDel", Description: "Remove a restricted command grant", Permission: "restrictedGrantDel",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Command grants",
+			Args:    []ArgSpec{{"--user", "Target username"}, {"--command", "Restricted command name"}},
+			Handler: func() error { return cmdrestricted.RestrictedGrantDel(db, user, args) },
+		},
+		{
+			Name: "restrictedGrantList", Description: "List restricted command grants", Permission: "restrictedGrantList",
+			Category: "RESTRICTED OPERATIONS", SubCategory: "Command grants",
+			Args:    []ArgSpec{{"--user", "Optional username filter"}},
+			Handler: func() error { return cmdrestricted.RestrictedGrantList(db, user, args) },
+		},
+
 		// --- Groups: Overview ---
 		{
 			Name: "groupInfo", Description: "Show group info", Permission: "groupInfo",
@@ -358,6 +416,7 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--from", "Allowed source CIDRs (comma-separated)"},
 				{"--ttl", "Access expiry in days"},
 				{"--protocol", "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
+				{"--guest", "Allow guest role members to use this access"},
 				{"--force", "Skip connectivity check"},
 			},
 			Handler: func() error { return cmdgroup.GroupAddAccess(db, user, args) },

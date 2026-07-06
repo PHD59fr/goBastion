@@ -66,7 +66,7 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	code = strings.TrimSpace(code)
 
 	if !totp.Verify(secret, code) {
-		log.Warn("totp setup failed - bad confirmation code", slog.String("user", user.Username))
+		log.Warn("totp_setup_denied", slog.String("user", user.Username), slog.String("reason", "bad_confirmation_code"))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Setup TOTP",
 			BlockType: "error",
@@ -83,7 +83,7 @@ func SelfSetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}
 
-	log.Info("totp enabled", slog.String("user", user.Username))
+	log.Info("totp_enabled", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Setup TOTP",
 		BlockType: "success",

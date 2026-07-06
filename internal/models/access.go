@@ -38,6 +38,7 @@ type GroupAccess struct {
 	Server         string     `gorm:"not null"`
 	Port           int64      `gorm:"not null"`
 	Protocol       string     `gorm:"default:ssh"` // ssh, scpupload, scpdownload, sftp, rsync
+	GuestAllowed   bool       `gorm:"type:boolean;default:false"`
 	Comment        string     `gorm:"default:null"`
 	AllowedFrom    string     `gorm:"default:null"`
 	ExpiresAt      *time.Time `gorm:"default:null"`
@@ -67,6 +68,7 @@ type AccessRight struct {
 	KeyUpdatedAt   time.Time
 	PublicKey      string
 	PrivateKey     string
-	RemoteCmd      string // non-empty for non-interactive sessions (e.g. SCP commands)
-	MFARequired    bool   // JIT MFA required for this access (from group policy)
+	RemoteCmd      string   // non-empty for non-interactive sessions (e.g. SCP commands)
+	MFARequired    bool     // JIT MFA required for this access (from group policy)
+	JumpHosts      []string // SSH -J ProxyJump chain: ["user@hop1:port", "user@hop2:port", ...]
 }

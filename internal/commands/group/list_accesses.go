@@ -71,7 +71,7 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tProtocol\tComment\tFrom\tExpires\tLast Used\tCreated At")
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tServer\tPort\tProtocol\tGuest\tComment\tFrom\tExpires\tLast Used\tCreated At")
 	for _, access := range accesses {
 		lastUsed := "Never"
 		if !access.LastConnection.IsZero() {
@@ -93,12 +93,17 @@ func GroupListAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 		if proto == "" {
 			proto = "ssh"
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		guestScope := "no"
+		if access.GuestAllowed {
+			guestScope = "yes"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			access.ID.String(),
 			access.Username,
 			access.Server,
 			access.Port,
 			proto,
+			guestScope,
 			access.Comment,
 			fromStr,
 			expiresStr,

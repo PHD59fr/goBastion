@@ -66,7 +66,7 @@ func GroupSetMFA(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 	if mfaRequired {
 		status = "enabled"
 	}
-	log.Info("group mfa policy updated",
+	log.Info("group_mfa_policy_updated",
 		slog.String("admin", currentUser.Username),
 		slog.String("group", groupName),
 		slog.Bool("mfa_required", mfaRequired),

@@ -52,8 +52,8 @@ func AccountDisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Log
 		return fmt.Errorf("failed to clear password: %v", err)
 	}
 
-	log.Info("password mfa cleared by admin",
-		slog.String("admin", currentUser.Username),
+	log.Info("password_mfa_cleared",
+		slog.String("by", currentUser.Username),
 		slog.String("user", targetUser),
 	)
 

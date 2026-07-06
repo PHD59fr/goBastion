@@ -2,7 +2,11 @@ package session
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -12,6 +16,7 @@ import (
 	"time"
 
 	"github.com/c-bata/go-prompt"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 	"gorm.io/gorm"
@@ -31,16 +36,20 @@ import (
 // Run is the main entry point after DB init: it looks up the current user,
 // runs the pre-connection checks, then dispatches to interactive or non-interactive mode.
 func Run(db *gorm.DB, log *slog.Logger) {
+	sessionID := uuid.NewString()
+	log = log.With(slog.String("session_id", sessionID))
+	_ = os.Setenv("GOB_SESSION_ID", sessionID)
+
 	sysUser, err := currentSystemUser()
 	if err != nil {
-		log.Error("system user lookup failed", slog.String("error", err.Error()))
+		log.Error("system_user_lookup_failed", slog.String("error", err.Error()))
 		return
 	}
 
 	var currentUser models.User
 	if err = db.Where("username = ?", sysUser).First(&currentUser).Error; err != nil {
 		ip := system.ClientIPFromEnv()
-		log.Warn("login rejected", slog.String("user", sysUser), slog.String("from", ip), slog.String("reason", "user not in database"))
+		log.Warn("login_rejected", slog.String("user", sysUser), slog.String("from", ip), slog.String("reason", "user not in database"))
 		fmt.Printf("User '%s' is not registered in the bastion. Contact your admin to create your account.\n", sysUser)
 		return
 	}
@@ -50,19 +59,27 @@ func Run(db *gorm.DB, log *slog.Logger) {
 	}
 
 	if len(os.Args) == 1 {
+		if currentUser.OSHOnly {
+			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
+			return
+		}
 		if !checkTOTP(db, &currentUser, log) {
 			return
 		}
-		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("event", "session_start"), slog.String("cmd", "interactive"))
+		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 		runInteractiveMode(db, &currentUser, log)
 	} else {
 		cmd := os.Args[1]
 		args := os.Args[2:]
+		if currentUser.OSHOnly && !strings.HasPrefix(strings.TrimSpace(cmd), "-osh") {
+			fmt.Println("⛔ This account is limited to -osh commands only.")
+			return
+		}
 		if strings.TrimSpace(cmd) == "" {
 			if !checkTOTP(db, &currentUser, log) {
 				return
 			}
-			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("event", "session_start"), slog.String("cmd", "interactive"))
+			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 			runInteractiveMode(db, &currentUser, log)
 		} else {
 			// Skip TOTP for raw TCP proxy (-W) and sftp-session: no TTY, raw pipe only.
@@ -73,15 +90,20 @@ func Run(db *gorm.DB, log *slog.Logger) {
 					return
 				}
 			}
-			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("event", "session_start"), slog.String("cmd", cmd))
+			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", cmd))
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
-			log.Info("session_end", slog.String("user", currentUser.Username), slog.String("event", "session_end"))
+			log.Info("session_end", slog.String("user", currentUser.Username))
 		}
 	}
 }
 
 // runNonInteractiveMode executes a single bastion command passed via -osh flag.
 func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, command string, args []string) {
+	if currentUser.OSHOnly && !strings.HasPrefix(strings.TrimSpace(command), "-osh") {
+		fmt.Println("⛔ This account is limited to -osh commands only.")
+		return
+	}
+
 	if command == "-osh" {
 		if len(args) < 1 {
 			fmt.Println("Usage: -osh <command> <args>")
@@ -99,7 +121,7 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			command = commandParts[1]
 			args = commandParts[2:]
 		}
-		executeCommand(db, currentUser, log, command, args)
+		executeCommandJSONAware(db, currentUser, log, command, args)
 	} else if host, port, ok := parseTCPProxyRequest(command, args); ok {
 		if err := cmdssh.TCPProxy(db, *currentUser, *log, host, port); err != nil {
 			log.Warn("tcp_proxy_failed", slog.String("error", err.Error()))
@@ -117,6 +139,160 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		if err := cmdssh.SSHConnect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
 		}
+	}
+}
+
+type oshJSONMode string
+
+const (
+	oshJSONDisabled  oshJSONMode = ""
+	oshJSONCompact   oshJSONMode = "json"
+	oshJSONPretty    oshJSONMode = "json-pretty"
+	oshJSONGreppable oshJSONMode = "json-greppable"
+)
+
+func parseOshJSONMode(args []string) (oshJSONMode, []string) {
+	filtered := make([]string, 0, len(args))
+	mode := oshJSONDisabled
+	for _, a := range args {
+		switch a {
+		case "--json":
+			mode = oshJSONCompact
+		case "--json-pretty":
+			mode = oshJSONPretty
+		case "--json-greppable":
+			mode = oshJSONGreppable
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	return mode, filtered
+}
+
+func executeCommandJSONAware(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) {
+	mode, filteredArgs := parseOshJSONMode(args)
+	if mode == oshJSONDisabled {
+		_ = executeCommand(db, currentUser, log, cmd, filteredArgs)
+		return
+	}
+
+	stdout, stderr, runErr, err := captureOutput(func() error {
+		return executeCommand(db, currentUser, log, cmd, filteredArgs)
+	})
+	if err != nil {
+		log.Error("json_api_capture_failed", slog.String("cmd", cmd), slog.String("error", err.Error()))
+		_ = executeCommand(db, currentUser, log, cmd, filteredArgs)
+		return
+	}
+
+	errorCode := "OK"
+	errorMessage := "OK"
+	if runErr != nil {
+		switch {
+		case errors.Is(runErr, ErrUnknownCommand):
+			errorCode = "KO_UNKNOWN_COMMAND"
+		case errors.Is(runErr, ErrPermissionDenied):
+			errorCode = "KO_PERMISSION_DENIED"
+		default:
+			errorCode = "ERR_COMMAND"
+		}
+		errorMessage = runErr.Error()
+	}
+
+	payload := map[string]any{
+		"command":       cmd,
+		"error_code":    errorCode,
+		"error_message": errorMessage,
+		"value": map[string]any{
+			"stdout": strings.TrimSpace(stdout),
+			"stderr": strings.TrimSpace(stderr),
+		},
+	}
+	emitJSONPayload(mode, payload)
+}
+
+func captureOutput(run func() error) (stdout string, stderr string, runErr error, captureErr error) {
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", "", nil, err
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		_ = r.Close()
+		_ = w.Close()
+		return "", "", nil, err
+	}
+
+	os.Stdout = w
+	os.Stderr = wErr
+	doneOut := make(chan string, 1)
+	doneErr := make(chan string, 1)
+	readErr := make(chan error, 2)
+	go func() {
+		var buf bytes.Buffer
+		_, cErr := io.Copy(&buf, r)
+		if cErr != nil {
+			readErr <- cErr
+			return
+		}
+		doneOut <- buf.String()
+	}()
+	go func() {
+		var buf bytes.Buffer
+		_, cErr := io.Copy(&buf, rErr)
+		if cErr != nil {
+			readErr <- cErr
+			return
+		}
+		doneErr <- buf.String()
+	}()
+
+	runErr = run()
+
+	_ = w.Close()
+	_ = wErr.Close()
+	os.Stdout = origStdout
+	os.Stderr = origStderr
+	_ = r.Close()
+	_ = rErr.Close()
+
+	var out, errOut string
+	for i := 0; i < 2; i++ {
+		select {
+		case out = <-doneOut:
+		case errOut = <-doneErr:
+		case err = <-readErr:
+			return "", "", runErr, err
+		}
+	}
+	return out, errOut, runErr, nil
+}
+
+func emitJSONPayload(mode oshJSONMode, payload map[string]any) {
+	var (
+		data []byte
+		err  error
+	)
+	if mode == oshJSONPretty {
+		data, err = json.MarshalIndent(payload, "", "  ")
+	} else {
+		data, err = json.Marshal(payload)
+	}
+	if err != nil {
+		fmt.Println("JSON_OUTPUT={\"error_code\":\"ERR_JSON\",\"error_message\":\"failed to encode json\",\"value\":null}")
+		return
+	}
+
+	switch mode {
+	case oshJSONGreppable:
+		fmt.Printf("JSON_OUTPUT=%s\n", string(data))
+	default:
+		fmt.Println("JSON_START")
+		fmt.Println(string(data))
+		fmt.Println("JSON_END")
 	}
 }
 
@@ -166,7 +342,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 			if len(tokens) == 0 {
 				return
 			}
-			executeCommand(db, currentUser, log, tokens[0], tokens[1:])
+			_ = executeCommand(db, currentUser, log, tokens[0], tokens[1:])
 		},
 		wrappedCompleter,
 		prompt.OptionPrefix(currentUser.Username+"@"+bastionName+":"+promptSymbol),
@@ -175,11 +351,16 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 		prompt.OptionAddKeyBind(escKeyBinding),
 	)
 	p.Run()
-	log.Info("session_end", slog.String("user", currentUser.Username), slog.String("event", "session_end"), slog.String("reason", "disconnect"))
+	log.Info("session_end", slog.String("user", currentUser.Username), slog.String("reason", "disconnect"))
 }
 
+var (
+	ErrUnknownCommand   = errors.New("unknown command")
+	ErrPermissionDenied = errors.New("permission denied")
+)
+
 // executeCommand looks up and runs a command from the central registry, enforcing permission checks.
-func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) {
+func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) error {
 	resetStdIn() // Mandatory: prevents the terminal from being left in a broken state.
 
 	log = log.With(slog.String("user", currentUser.Username))
@@ -189,7 +370,7 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 
 	adapter := osadapter.NewLinuxAdapter()
 	cmds := registry.BuildRegistry(db, currentUser, log, adapter, args, func() {
-		log.Info("session end", slog.String("reason", "exit"))
+		log.Info("session_end", slog.String("reason", "exit"))
 		os.Exit(0)
 	})
 
@@ -202,56 +383,58 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 	}
 
 	if found == nil {
-		log.Warn("command", slog.String("cmd", cmd), slog.String("event", "command"),
+		log.Warn("command", slog.String("cmd", cmd),
 			slog.Any("args", args), slog.String("result", "unknown_command"))
 		fmt.Printf("Unknown command: %s\n", cmd)
-		return
+		return fmt.Errorf("%w: %s", ErrUnknownCommand, cmd)
 	}
 
 	if found.Permission != "" && !hasPerm(found.Permission) {
-		log.Warn("command", slog.String("cmd", cmd), slog.String("event", "command"),
+		log.Warn("command", slog.String("cmd", cmd),
 			slog.Any("args", args), slog.String("result", "permission_denied"))
 		fmt.Printf("Permission denied for '%s'. Contact your admin or type 'help' to see available commands.\n", cmd)
-		return
+		return fmt.Errorf("%w: %s", ErrPermissionDenied, cmd)
 	}
 
 	// Special commands with custom inline logic
 	switch cmd {
 	case "help":
 		help.DisplayHelpFromRegistry(cmds, db, *currentUser, hasPerm)
-		return
+		return nil
 	case "info":
 		help.DisplayInfo()
-		return
+		return nil
 	case "exit":
-		log.Info("session end", slog.String("reason", "exit"))
+		log.Info("session_end", slog.String("reason", "exit"))
 		os.Exit(0)
-		return
+		return nil
 	case "ttyPlay":
 		err := cmdtty.TtyPlay(db, currentUser, args)
 		resetStdIn()
 		if err != nil {
-			log.Error("command", slog.String("cmd", cmd), slog.String("event", "command"),
+			log.Error("command_failed", slog.String("cmd", cmd),
 				slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
 		} else {
-			log.Info("command", slog.String("cmd", cmd), slog.String("event", "command"),
+			log.Info("command", slog.String("cmd", cmd),
 				slog.Any("args", args), slog.String("result", "ok"))
 		}
-		return
+		return err
 	}
 
 	if found.Handler == nil {
-		return
+		return nil
 	}
 
 	err := found.Handler()
 	if err != nil {
-		log.Error("command", slog.String("cmd", cmd), slog.String("event", "command"),
+		log.Error("command_failed", slog.String("cmd", cmd),
 			slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
+		return err
 	} else {
-		log.Info("command", slog.String("cmd", cmd), slog.String("event", "command"),
+		log.Info("command", slog.String("cmd", cmd),
 			slog.Any("args", args), slog.String("result", "ok"))
 	}
+	return nil
 }
 
 // resetStdIn restores the terminal to canonical (cooked) mode.
@@ -398,13 +581,13 @@ func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 	// parts[0] is "mosh-server", parts[1:] are inline args from the command string.
 	cmdArgs := append(parts[1:], extraArgs...)
 
-	log.Info("mosh_server", slog.String("event", "mosh_server"))
+	log.Info("mosh_server")
 
 	cmd := exec.Command("mosh-server", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Error("mosh_server", slog.String("event", "mosh_server"), slog.String("error", err.Error()))
+		log.Error("mosh_server", slog.String("error", err.Error()))
 	}
 }

@@ -47,7 +47,7 @@ func SelfSetPassword(db *gorm.DB, user *models.User, log *slog.Logger, args []st
 		return fmt.Errorf("failed to save password: %v", err)
 	}
 	user.PasswordHash = string(hash)
-	log.Info("password mfa set", slog.String("user", user.Username))
+	log.Info("password_mfa_set", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title: "Set Password MFA", BlockType: "success",
 		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password MFA configured. It will be required at every login."}}},

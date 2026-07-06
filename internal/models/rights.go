@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -71,16 +72,25 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	case "accountDisableTOTP":
 		return u.IsAdmin()
 	case "pivAddTrustAnchor", "pivListTrustAnchors", "pivRemoveTrustAnchor":
-		return u.IsAdmin()
+		return u.canDoRestricted(db, right)
 	case "whoHasAccessTo":
 		return u.IsAdmin()
 
 	case "accountSetPassword":
 		return u.IsAdmin()
 
+	case "realmCreate", "realmDelete", "realmList", "realmInfo":
+		return u.canDoRestricted(db, right)
+
+	case "restrictedGrantAdd", "restrictedGrantDel", "restrictedGrantList":
+		return u.IsAdmin() || u.IsSuperOwner()
+
 	// Group
 	case "groupAddAccess", "groupDelAccess":
 		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
 			return true
 		}
 		userGroups, err := u.getGroups(db)
@@ -93,6 +103,9 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if u.IsAdmin() {
 			return true
 		}
+		if u.IsSuperOwner() {
+			return true
+		}
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
@@ -101,6 +114,9 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 
 	case "groupAddAlias", "groupDelAlias":
 		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
 			return true
 		}
 		userGroups, err := u.getGroups(db)
@@ -113,6 +129,9 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if u.IsAdmin() {
 			return true
 		}
+		if u.IsSuperOwner() {
+			return true
+		}
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
@@ -123,6 +142,9 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if u.IsAdmin() {
 			return true
 		}
+		if u.IsSuperOwner() {
+			return true
+		}
 		userGroups, err := u.getGroups(db)
 		if err != nil {
 			return false
@@ -131,6 +153,9 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 
 	case "groupAddMember", "groupDelMember":
 		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
 			return true
 		}
 		userGroups, err := u.getGroups(db)
@@ -144,6 +169,9 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 
 	case "groupGenerateEgressKey":
 		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
 			return true
 		}
 		userGroups, err := u.getGroups(db)
@@ -218,6 +246,20 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	default:
 		return false
 	}
+}
+
+func (u *User) canDoRestricted(db *gorm.DB, right string) bool {
+	if u.IsAdmin() || u.IsSuperOwner() {
+		return true
+	}
+	var count int64
+	err := db.Model(&RestrictedCommandGrant{}).
+		Where("user_id = ? AND command = ?", u.ID, strings.TrimSpace(right)).
+		Count(&count).Error
+	if err != nil {
+		return false
+	}
+	return count > 0
 }
 
 // getGroups returns all group memberships for the user.

@@ -27,7 +27,7 @@ func SelfChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args [
 	}
 	fmt.Println()
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
-		log.Warn("password mfa change denied - wrong current password", slog.String("user", user.Username))
+		log.Warn("password_mfa_change_denied", slog.String("user", user.Username), slog.String("reason", "wrong_current_password"))
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Change Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Current password is incorrect."}}},
@@ -67,7 +67,7 @@ func SelfChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args [
 		return fmt.Errorf("failed to save password: %v", err)
 	}
 	user.PasswordHash = string(hash)
-	log.Info("password mfa changed", slog.String("user", user.Username))
+	log.Info("password_mfa_changed", slog.String("user", user.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title: "Change Password MFA", BlockType: "success",
 		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{"Password updated."}}},

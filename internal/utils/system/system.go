@@ -32,12 +32,12 @@ func CreateUser(username string) error {
 	if !validation.IsValidUsername(username) {
 		return fmt.Errorf("invalid username: %s", username)
 	}
-	output, err := ExecCommand("/usr/bin/sudo", "adduser", "--disabled-password", "--gecos", "", username)
+	output, err := ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-adduser", username)
 	if err != nil {
 		return fmt.Errorf("error adding system user '%s': %s, output: %s", username, err, output)
 	}
 
-	output, err = ExecCommand("/usr/bin/sudo", "/usr/bin/passwd", "-d", username)
+	output, err = ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-passwd-delete", username)
 	if err != nil {
 		return fmt.Errorf("error deleting password for user '%s': %s, output: %s", username, err, output)
 	}
@@ -50,7 +50,7 @@ func DeleteUser(username string) error {
 	if !validation.IsValidUsername(username) {
 		return fmt.Errorf("invalid username: %s", username)
 	}
-	if _, err := ExecCommand("/usr/bin/sudo", "deluser", "--remove-home", username); err != nil {
+	if _, err := ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-deluser", username); err != nil {
 		return fmt.Errorf("error deleting system user: %w", err)
 	}
 	return nil
@@ -64,8 +64,12 @@ func ChownDir(user models.User, dir string) error {
 	// Without sudo
 	_, err := ExecCommand("chown", "-R", user.Username+":"+user.Username, dir)
 	if err != nil {
-		// if failed, with sudo
-		_, err = ExecCommand("/usr/bin/sudo", "chown", "-R", user.Username+":"+user.Username, dir)
+		expectedSSHDir := "/home/" + user.Username + "/.ssh"
+		if dir != expectedSSHDir {
+			return fmt.Errorf("sudo chown denied for non-SSH directory '%s'", dir)
+		}
+		// if failed, with constrained wrapper
+		_, err = ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-chown-ssh", user.Username)
 		if err != nil {
 			return fmt.Errorf("failed to set ownership on '%s': %w", dir, err)
 		}
@@ -77,10 +81,10 @@ func ChownDir(user models.User, dir string) error {
 func UpdateSudoers(user *models.User) error {
 	sudoersPath := "/etc/sudoers.d/" + user.Username
 	if user.Role == models.RoleAdmin {
-		sudoersConfig := fmt.Sprintf(`%s ALL=(ALL) NOPASSWD: /usr/sbin/adduser --disabled-password --gecos *
-%s ALL=(ALL) NOPASSWD: /usr/bin/passwd -d *
-%s ALL=(ALL) NOPASSWD: /usr/sbin/deluser --remove-home *
-%s ALL=(ALL) NOPASSWD: /bin/chown -R *
+		sudoersConfig := fmt.Sprintf(`%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-adduser *
+%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-passwd-delete *
+%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-deluser *
+%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-chown-ssh *
 `, user.Username, user.Username, user.Username, user.Username)
 
 		if err := os.WriteFile(sudoersPath, []byte(sudoersConfig), 0440); err != nil {

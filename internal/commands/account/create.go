@@ -23,7 +23,11 @@ import (
 func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountCreate", flag.ContinueOnError)
 	var username string
+	var oshOnly bool
+	var superOwner bool
 	fs.StringVar(&username, "user", "", "Username to create")
+	fs.BoolVar(&oshOnly, "osh-only", false, "Restrict this account to -osh command execution only")
+	fs.BoolVar(&superOwner, "superowner", false, "Grant implicit owner rights on all groups")
 	var flagOut strings.Builder
 	fs.SetOutput(&flagOut)
 
@@ -31,7 +35,7 @@ func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Create",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountCreate --user <username>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountCreate --user <username> [--osh-only] [--superowner]"}}},
 		})
 		return err
 	}
@@ -78,10 +82,26 @@ func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 		return err
 	}
 
+	if oshOnly || superOwner {
+		if err = db.Model(&models.User{}).Where("username = ?", strings.ToLower(strings.TrimSpace(username))).
+			Updates(map[string]any{"osh_only": oshOnly, "super_owner": superOwner}).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Account Create",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("User created but failed to set flags: %v", err)}}},
+			})
+			return err
+		}
+	}
+
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Create",
 		BlockType: "success",
-		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("User '%s' created successfully.", username)}}},
+		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{
+			fmt.Sprintf("User '%s' created successfully.", username),
+			fmt.Sprintf("osh-only: %t", oshOnly),
+			fmt.Sprintf("superowner: %t", superOwner),
+		}}},
 	})
 	return nil
 }
@@ -89,6 +109,9 @@ func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 // CreateUser creates the DB record, registers the ingress key and creates the OS user.
 func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, pubKey string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
+	if !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
 
 	var count int64
 	if err := db.Model(&models.User{}).Where("username = ? AND deleted_at IS NULL", username).Count(&count).Error; err != nil {
@@ -98,16 +121,31 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 		return fmt.Errorf("user '%s' already exists", username)
 	}
 
-	newUser, err := createDBUser(db, username)
-	if err != nil {
-		return err
-	}
-	if err = CreateDBIngressKey(db, newUser, pubKey); err != nil {
+	var (
+		newUser *models.User
+		err     error
+	)
+	if err = db.Transaction(func(tx *gorm.DB) error {
+		newUser, err = createDBUser(tx, username)
+		if err != nil {
+			return err
+		}
+		if err = CreateDBIngressKey(tx, newUser, pubKey); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 
 	syncer := gosync.New(db, adapter, *slog.Default())
-	return syncer.CreateUserFromDB(*newUser)
+	if err = syncer.CreateUserFromDB(*newUser); err != nil {
+		// Compensate DB changes when OS sync fails to avoid DB/OS drift.
+		_ = db.Unscoped().Where("user_id = ?", newUser.ID).Delete(&models.IngressKey{}).Error
+		_ = db.Unscoped().Delete(&models.User{}, "id = ?", newUser.ID).Error
+		return err
+	}
+	return nil
 }
 
 // createDBUser inserts a new user record into the database.

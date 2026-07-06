@@ -25,13 +25,13 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 	ip := system.ClientIPFromEnv()
 
 	if currentUser.SystemUser {
-		log.Warn("login rejected", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("reason", "system user"))
+		log.Warn("login_rejected", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("reason", "system user"))
 		fmt.Printf("User %s is a system user. System users are not allowed to use goBastion.\n", currentUser.Username)
 		return false
 	}
 
 	if !currentUser.IsEnabled() {
-		log.Warn("login rejected", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("reason", "account disabled"))
+		log.Warn("login_rejected", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("reason", "account disabled"))
 		fmt.Println(utils.FgRedB("Your account is disabled, please contact your administrator."))
 		return false
 	}

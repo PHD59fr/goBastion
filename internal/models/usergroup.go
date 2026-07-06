@@ -27,6 +27,8 @@ type User struct {
 	Username      string    `gorm:"not null;index:idx_username_deletedat,unique"`
 	Role          string    `gorm:"not null"` // "admin" or "user"
 	Enabled       bool      `gorm:"type:boolean;default:true"`
+	OSHOnly       bool      `gorm:"type:boolean;default:false"` // when true, account may execute only -osh commands
+	SuperOwner    bool      `gorm:"type:boolean;default:false"` // implicit owner privileges on all groups
 	SystemUser    bool      `gorm:"type:boolean;default:false"`
 	LastLoginFrom string    `gorm:"default:null"`
 	LastLoginAt   time.Time
@@ -58,6 +60,16 @@ func (u *User) IsAdmin() bool {
 // IsEnabled returns true if the user account is active.
 func (u *User) IsEnabled() bool {
 	return u.Enabled
+}
+
+// IsOSHOnly returns true if the account is restricted to -osh command execution.
+func (u *User) IsOSHOnly() bool {
+	return u.OSHOnly
+}
+
+// IsSuperOwner returns true if the account has implicit owner-like permissions on all groups.
+func (u *User) IsSuperOwner() bool {
+	return u.SuperOwner
 }
 
 // BeforeCreate generates a UUID for User before insertion.

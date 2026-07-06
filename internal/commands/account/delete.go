@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"gorm.io/gorm"
@@ -11,6 +12,7 @@ import (
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils/console"
+	gosync "goBastion/internal/utils/sync"
 )
 
 // AccountDelete removes a user account from the system.
@@ -57,13 +59,26 @@ func AccountDelete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 }
 
 // DeleteUser removes the user from the OS first, then soft-deletes the DB record.
-// This order prevents orphaned OS users on partial failure.
+// If DB deletion fails after OS deletion, it attempts to restore the OS user from DB.
 func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
+
+	var user models.User
+	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
+		return fmt.Errorf("user not found: %w", err)
+	}
+
 	if err := adapter.DeleteUser(username); err != nil {
 		return err
 	}
-	return deleteDBUser(db, username)
+	if err := deleteDBUser(db, username); err != nil {
+		syncer := gosync.New(db, adapter, *slog.Default())
+		if restoreErr := syncer.CreateUserFromDB(user); restoreErr != nil {
+			return fmt.Errorf("delete failed after OS removal: %v; restore also failed: %v", err, restoreErr)
+		}
+		return fmt.Errorf("delete failed and OS user was restored: %w", err)
+	}
+	return nil
 }
 
 // deleteDBUser soft-deletes the user record from the database.

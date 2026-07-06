@@ -28,6 +28,17 @@ func AccountDisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 		return nil
 	}
 
+	if !currentUser.CanDo(db, "accountDisableTOTP", username) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Account Disable TOTP",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Access Denied", Body: []string{"You do not have permission to disable TOTP for this account."}},
+			},
+		})
+		return nil
+	}
+
 	var target models.User
 	if err := db.Where("username = ?", username).First(&target).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -47,7 +58,7 @@ func AccountDisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 		return fmt.Errorf("failed to save: %w", err)
 	}
 
-	log.Info("totp admin-disabled", slog.String("target", username), slog.String("by", currentUser.Username))
+	log.Info("totp_admin_disabled", slog.String("target", username), slog.String("by", currentUser.Username))
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Disable TOTP",
 		BlockType: "success",

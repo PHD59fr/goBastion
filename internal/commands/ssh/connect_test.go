@@ -26,7 +26,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 		&models.User{}, &models.Group{}, &models.UserGroup{},
 		&models.SelfAccess{}, &models.GroupAccess{},
 		&models.SelfEgressKey{}, &models.GroupEgressKey{},
-		&models.Aliases{}, &models.KnownHostsEntry{},
+		&models.Aliases{}, &models.KnownHostsEntry{}, &models.Realm{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -364,6 +364,111 @@ func TestParseSSHCommand(t *testing.T) {
 				t.Errorf("cmd: got %q, want %q", cmd, tc.wantCmd)
 			}
 		})
+	}
+}
+
+func TestExtractForwardHops(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantClean string
+		wantHops  []SSHHop
+		wantErr   string
+	}{
+		{
+			name:      "no hops",
+			input:     "deploy@192.1.1.2",
+			wantClean: "deploy@192.1.1.2",
+		},
+		{
+			name:      "single hop default port",
+			input:     "deploy@192.1.1.2 --via phd@10.0.0.1",
+			wantClean: "deploy@192.1.1.2",
+			wantHops:  []SSHHop{{User: "phd", Host: "10.0.0.1", Port: "22"}},
+		},
+		{
+			name:      "two hops custom ports",
+			input:     "phd@192.1.1.2 --via phd@10.0.0.1:2222 --via phd@1.3.2.1",
+			wantClean: "phd@192.1.1.2",
+			wantHops: []SSHHop{
+				{User: "phd", Host: "10.0.0.1", Port: "2222"},
+				{User: "phd", Host: "1.3.2.1", Port: "22"},
+			},
+		},
+		{
+			name:    "missing --via argument",
+			input:   "deploy@host --via",
+			wantErr: "requires an argument",
+		},
+		{
+			name:    "invalid hop host",
+			input:   "deploy@host --via bad/host",
+			wantErr: "invalid host",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clean, hops, err := extractForwardHops(tc.input)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if clean != tc.wantClean {
+				t.Fatalf("clean mismatch: got %q want %q", clean, tc.wantClean)
+			}
+			if len(hops) != len(tc.wantHops) {
+				t.Fatalf("hop count mismatch: got %d want %d", len(hops), len(tc.wantHops))
+			}
+			for i, h := range hops {
+				w := tc.wantHops[i]
+				if h.User != w.User || h.Host != w.Host || h.Port != w.Port {
+					t.Errorf("hop[%d]: got %+v want %+v", i, h, w)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatJumpHosts(t *testing.T) {
+	hops := []SSHHop{
+		{User: "phd", Host: "10.0.0.1", Port: "22"},
+		{User: "phd", Host: "1.3.2.1", Port: "2222"},
+	}
+	got := formatJumpHosts(hops)
+	if len(got) != 2 || got[0] != "phd@10.0.0.1:22" || got[1] != "phd@1.3.2.1:2222" {
+		t.Fatalf("formatJumpHosts unexpected: %v", got)
+	}
+}
+
+func TestResolveRealmHop(t *testing.T) {
+	db := newTestDB(t)
+	admin := mustCreateUser(t, db, "admin", models.RoleAdmin)
+
+	realm := models.Realm{
+		Name:        "eu",
+		BastionHost: "bastion-eu.internal",
+		BastionPort: 2200,
+		AllowedFrom: "10.0.0.0/8",
+		PublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBastionRealmKey",
+		Enabled:     true,
+		CreatedByID: admin.ID,
+	}
+	if err := db.Create(&realm).Error; err != nil {
+		t.Fatalf("create realm: %v", err)
+	}
+
+	host, port, err := resolveRealmHop(db, "eu")
+	if err != nil {
+		t.Fatalf("resolveRealmHop failed: %v", err)
+	}
+	if host != "bastion-eu.internal" || port != "2200" {
+		t.Fatalf("unexpected realm hop: %s:%s", host, port)
 	}
 }
 

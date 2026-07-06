@@ -54,8 +54,8 @@ func AccountSetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 		if err := db.Model(&user).Update("password_hash", "").Error; err != nil {
 			return fmt.Errorf("failed to clear password: %v", err)
 		}
-		log.Info("password mfa cleared by admin",
-			slog.String("admin", currentUser.Username),
+		log.Info("password_mfa_cleared",
+			slog.String("by", currentUser.Username),
 			slog.String("user", targetUser),
 		)
 		console.DisplayBlock(console.ContentBlock{
@@ -86,8 +86,8 @@ func AccountSetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 	if err := db.Model(&user).Update("password_hash", string(hash)).Error; err != nil {
 		return fmt.Errorf("failed to save password: %v", err)
 	}
-	log.Info("password mfa set by admin",
-		slog.String("admin", currentUser.Username),
+	log.Info("password_mfa_set",
+		slog.String("by", currentUser.Username),
 		slog.String("user", targetUser),
 	)
 	console.DisplayBlock(console.ContentBlock{

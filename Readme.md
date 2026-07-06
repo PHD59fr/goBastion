@@ -67,9 +67,9 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 |-----------------------------|-------------------------------------------------------|
 | 📋 `accountList`            | List all user accounts.                               |
 | ℹ️ `accountInfo`            | Show detailed information about a user account.       |
-| ➕ `accountCreate`           | Create a new user account.                            |
+| ➕ `accountCreate`           | Create a new user account (supports `--osh-only` and `--superowner`). |
 | ❌ `accountDelete`           | Delete a user account.                                |
-| ✏️ `accountModify`          | Modify a user account (promote/demote to admin/user). Cannot demote the last remaining admin. |
+| ✏️ `accountModify`          | Modify a user account (role, `--oshOnly`, `--superOwner`). Cannot demote the last remaining admin. |
 | 🔑 `accountListIngressKeys` | List the ingress SSH keys of a user.                  |
 | 🔑 `accountListEgressKeys`  | List the egress SSH keys of a user.                   |
 | 📋 `accountListAccess`      | List all server accesses of a user.                                          |
@@ -81,6 +81,20 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🛡️ `pivAddTrustAnchor`     | Register a Yubico PIV CA certificate as a trust anchor.                      |
 | 📋 `pivListTrustAnchors`    | List all registered PIV trust anchor CAs.                                    |
 | ❌ `pivRemoveTrustAnchor`   | Remove a PIV trust anchor CA.                                                |
+
+---
+
+### 🚧 **Restricted Operations**
+
+| Command                     | Description                                           |
+|----------------------------|-------------------------------------------------------|
+| ➕ `realmCreate`            | Create a trusted realm (`--realm`, `--bastion`, `--port`, `--from`, `--public-key`). |
+| 📋 `realmList`              | List configured trusted realms.                       |
+| ℹ️ `realmInfo`              | Show details for a trusted realm.                     |
+| ❌ `realmDelete`            | Delete a trusted realm.                               |
+| ➕ `restrictedGrantAdd`     | Grant a restricted command to a specific user.        |
+| ❌ `restrictedGrantDel`     | Remove a restricted command grant from a user.        |
+| 📋 `restrictedGrantList`    | List restricted command grants (all or per user).     |
 
 ---
 
@@ -97,7 +111,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group.      |
 | 🔑 `groupListEgressKeys`    | List all egress SSH keys associated with a group. |
 | 📋 `groupListAccesses`      | List all accesses assigned to a group.            |
-| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
+| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction and optional `--guest` scope). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
 | ❌ `groupDelAccess`          | Remove access from a group.                       |
 | 🔐 `groupSetMFA`            | Enable or disable JIT MFA requirement for a group (owner/admin only).       |
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
@@ -227,6 +241,9 @@ Every access entry (`selfAddAccess`, `accountAddAccess`, `groupAddAccess`) suppo
 | `--ttl <days>` | Access expires automatically after N days. Omit for permanent access. |
 | `--from <CIDRs>` | Restrict access to specific source IP ranges (comma-separated, e.g. `10.0.0.0/8,192.168.1.0/24`). Omit to allow all IPs. |
 
+For `groupAddAccess`, you can also add `--guest` to explicitly allow users with the `guest` role
+to use that specific access entry. Without `--guest`, guest members are denied for that entry.
+
 Both constraints are enforced at connection time - expired or out-of-range connections are denied.
 The `Expires` and `From` columns appear in all `listAccesses` outputs.
 
@@ -288,6 +305,240 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 
 ---
 
+### 🔗 **Bastion-to-Bastion Chaining (Multi-Hop SSH)**
+
+goBastion supports transparent multi-hop SSH through one or more intermediate bastions using the `--via` flag.
+
+#### Syntax
+
+```
+user@final-target --via user@hop1[:port] [--via user@hop2[:port] ...]
+```
+
+- The **first argument** (without a flag) is always the **final target machine**.
+- Each `--via` specifies an **intermediate bastion**, in order from outermost to innermost.
+- Ports default to `22` if not specified.
+- The `--via` flag is intentionally distinct from all SSH flags (no conflict).
+
+#### How it works
+
+goBastion translates the chain to SSH native ProxyJump:
+
+```
+phd@192.1.1.2 --via phd@10.0.0.1 --via phd@1.3.2.1
+  → ssh -J phd@10.0.0.1:22,phd@1.3.2.1:22 phd@192.1.1.2
+```
+
+**Connection topology (two hops):**
+
+```mermaid
+flowchart LR
+    U(["👤 User\nworkstation"])
+    B(["🏰 goBastion\n:2222"])
+    H1(["🔀 Hop 1\n10.0.0.1:22"])
+    H2(["🔀 Hop 2\n1.3.2.1:22"])
+    T(["🖥️ Target\n192.1.1.2:22"])
+
+    U -- "ssh -tp 2222 user@bastion --\nphd@192.1.1.2\n--via phd@10.0.0.1\n--via phd@1.3.2.1" --> B
+    B -- "SSH ProxyJump -J" --> H1
+    H1 -. "tunnelled" .-> H2
+    H2 -. "tunnelled" .-> T
+
+    style U fill:#4a90d9,color:#fff,stroke:#2c5f8a
+    style B fill:#e8a838,color:#fff,stroke:#b07820
+    style H1 fill:#6abf6a,color:#fff,stroke:#3d8f3d
+    style H2 fill:#6abf6a,color:#fff,stroke:#3d8f3d
+    style T fill:#9b59b6,color:#fff,stroke:#6c3483
+```
+
+**Sequence — what happens step by step:**
+
+```mermaid
+sequenceDiagram
+    actor U as 👤 User
+    participant B as 🏰 goBastion :2222
+    participant H1 as 🔀 Hop 1 (10.0.0.1)
+    participant H2 as 🔀 Hop 2 (1.3.2.1)
+    participant T as 🖥️ Target (192.1.1.2)
+
+    U->>B: ssh -tp 2222 user@bastion -- phd@192.1.1.2 --via phd@10.0.0.1 --via phd@1.3.2.1
+    Note over B: Parses --via flags<br/>Checks access entry for 192.1.1.2<br/>Builds: ssh -J 10.0.0.1:22,1.3.2.1:22 phd@192.1.1.2
+    B->>H1: TCP connect (ProxyJump — bastion egress key)
+    H1->>H2: TCP tunnel (ProxyJump hop 2)
+    H2->>T: SSH connect with bastion egress key
+    T-->>U: ✅ Interactive session (fully audited)
+    Note over B: Audit log records: user, hops chain,<br/>target, session ID, timestamp
+```
+
+#### Prerequisites
+
+1. The bastion must have a valid **access entry** for the final target (`selfAddAccess` or `groupAddAccess`).
+2. The bastion's **egress key** must be authorized on each intermediate hop.
+3. Each intermediate hop must have the bastion's egress public key in its `authorized_keys`.
+
+#### Examples
+
+**Single intermediate bastion:**
+```sh
+ssh -tp 2222 user@bastion -- phd@192.168.1.50 --via phd@10.0.0.1
+```
+
+**Two intermediate bastions with custom ports:**
+```sh
+ssh -tp 2222 user@bastion -- phd@192.1.1.2 --via phd@10.0.0.1:2222 --via phd@1.3.2.1
+```
+
+**With alias shorthand:**
+```sh
+alias gobastion='ssh -tp 2222 user@bastion --'
+gobastion phd@192.1.1.2 --via phd@10.0.0.1 --via phd@1.3.2.1
+```
+
+**Combined with non-interactive command:**
+```sh
+# Run a command on the final target via two hops
+ssh -tp 2222 user@bastion -- phd@192.1.1.2 --via phd@10.0.0.1 ls -la /etc
+```
+
+> **Audit**: the full hop chain (`jump_chain`) is recorded in the structured audit log for every multi-hop connection.
+
+---
+
+### 🌐 **Trusted Realms**
+
+Realms are **named, registered intermediate bastions** — a convenient alternative to typing raw IPs in `--via` chains. They also store the trusted public key and allowed source CIDRs for auditing purposes.
+
+> Realms require the `realmCreate` permission (admin, superowner, or restricted grant).
+
+#### Commands
+
+| Command                | Description |
+|------------------------|-------------|
+| `realmCreate`          | Register a new trusted bastion endpoint. |
+| `realmList`            | List all configured realms. |
+| `realmInfo`            | Show full details for one realm. |
+| `realmDelete`          | Remove a realm entry. |
+
+#### Full Usage
+
+**Register a realm:**
+```sh
+# Interactive
+ssh -tp 2222 user@bastion -- -osh realmCreate \
+  --realm eu-bastion \
+  --bastion 10.0.0.1 \
+  --port 2222 \
+  --from 10.0.0.0/8,192.168.0.0/16 \
+  --public-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB3..."
+
+# JSON output
+ssh -tp 2222 user@bastion -- -osh realmList --json-pretty
+```
+
+**List realms:**
+```sh
+ssh -tp 2222 user@bastion -- -osh realmList
+```
+
+**Inspect one realm:**
+```sh
+ssh -tp 2222 user@bastion -- -osh realmInfo --realm eu-bastion
+```
+
+**Delete a realm:**
+```sh
+ssh -tp 2222 user@bastion -- -osh realmDelete --realm eu-bastion
+```
+
+#### Using a Realm in a hop chain
+
+Once registered, you can use the realm's `BastionHost` directly with `--via`:
+```sh
+# The realm "eu-bastion" has BastionHost=10.0.0.1, BastionPort=2222
+gobastion deploy@target-server --via deploy@10.0.0.1:2222
+```
+
+---
+
+### 👤 **Special Account Roles**
+
+Beyond the standard `user` / `admin` roles, goBastion supports two optional account modifiers settable at creation or modification time.
+
+#### OSH-Only accounts (`--osh-only`)
+
+An OSH-only account can **only run `-osh` commands** — it cannot open interactive SSH sessions or connect to target servers. Ideal for automation accounts, CI pipelines, and API callers.
+
+```sh
+# Create an automation account
+ssh -tp 2222 admin@bastion -- -osh accountCreate --account ci-bot --osh-only
+
+# Modify an existing account
+ssh -tp 2222 admin@bastion -- -osh accountModify --account ci-bot --oshOnly true
+```
+
+Behavior:
+- Interactive login → denied immediately.
+- SSH commands to target servers → denied.
+- `-osh selfListAccesses`, `-osh groupList`, etc. → allowed.
+
+#### SuperOwner accounts (`--superowner`)
+
+A SuperOwner account has **implicit owner privileges on every group** without being explicitly added to them. Useful for on-call engineers or senior SREs who need broad visibility.
+
+```sh
+# Create a superowner account
+ssh -tp 2222 admin@bastion -- -osh accountCreate --account sre-lead --superowner
+
+# Grant superowner to an existing account
+ssh -tp 2222 admin@bastion -- -osh accountModify --account sre-lead --superOwner true
+```
+
+Behavior:
+- Can manage any group (add/remove members, accesses, aliases).
+- Can execute all restricted commands (`realmCreate`, `pivAddTrustAnchor`, etc.).
+- Does **not** grant admin-level account management (create/delete users) unless the account is also admin.
+
+---
+
+### 🔒 **Restricted Command Grants**
+
+Restricted commands (such as `realmCreate`, `pivAddTrustAnchor`) normally require admin or superowner privileges. Admins can delegate individual restricted commands to specific non-admin users using grants.
+
+> Only admins and superowners can manage grants.
+
+#### Commands
+
+| Command                  | Description |
+|--------------------------|-------------|
+| `restrictedGrantAdd`     | Grant a restricted command to a user. |
+| `restrictedGrantDel`     | Remove a restricted command grant. |
+| `restrictedGrantList`    | List all grants (optionally filtered by user). |
+
+#### Examples
+
+```sh
+# Allow user "alice" to manage realms without making her an admin
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantAdd --user alice --command realmCreate
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantAdd --user alice --command realmDelete
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantAdd --user alice --command realmList
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantAdd --user alice --command realmInfo
+
+# Allow user "bob" to manage PIV trust anchors
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantAdd --user bob --command pivAddTrustAnchor
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantAdd --user bob --command pivListTrustAnchors
+
+# List all grants
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantList
+
+# List grants for a specific user
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantList --user alice
+
+# Revoke a grant
+ssh -tp 2222 admin@bastion -- -osh restrictedGrantDel --user alice --command realmCreate
+```
+
+---
+
 ### 📜 **Misc Commands**
 
 | Command   | Description                                    |
@@ -295,6 +546,23 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 | ❓ `help`  | Display the help menu with available commands. |
 | ℹ️ `info` | Show application version and details.          |
 | 🚪 `exit` | Exit the application.                          |
+
+---
+
+### 🧩 **JSON API over SSH (`-osh`)**
+
+Non-interactive `-osh` commands support machine-readable output formats:
+
+| Flag | Output format |
+|------|---------------|
+| `--json` | Compact JSON payload between `JSON_START` / `JSON_END` |
+| `--json-pretty` | Pretty-printed JSON payload between `JSON_START` / `JSON_END` |
+| `--json-greppable` | One-line payload prefixed by `JSON_OUTPUT=` |
+
+Example:
+```sh
+ssh -p 2222 user@bastion -- -osh groupList --json-pretty
+```
 
 ---
 
@@ -320,8 +588,32 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 - `pivRemoveTrustAnchor`
 - `groupCreate`
 - `groupDelete`
+- `realmCreate`
+- `realmList`
+- `realmInfo`
+- `realmDelete`
+- `restrictedGrantAdd`
+- `restrictedGrantDel`
+- `restrictedGrantList`
 
-> **Note**: `ttyList` and `ttyPlay` are available to all users (for their own sessions) and to admins (for all sessions).
+> **Notes**:
+> - `ttyList` and `ttyPlay` are available to all users (for their own sessions) and to admins (for all sessions).
+> - Realm and PIV commands can be delegated to non-admin users via `restrictedGrantAdd`.
+> - **SuperOwner** accounts have admin-equivalent access to all of the above realm/restricted commands.
+
+### 🛡️ **Restricted Commands (delegatable)**
+
+The following commands require admin or superowner by default, but can be granted to individual users via `restrictedGrantAdd`:
+
+| Command                | Default             | Grantable to regular users |
+|------------------------|---------------------|:--------------------------:|
+| `realmCreate`          | Admin / SuperOwner  | ✅                         |
+| `realmList`            | Admin / SuperOwner  | ✅                         |
+| `realmInfo`            | Admin / SuperOwner  | ✅                         |
+| `realmDelete`          | Admin / SuperOwner  | ✅                         |
+| `pivAddTrustAnchor`    | Admin / SuperOwner  | ✅                         |
+| `pivListTrustAnchors`  | Admin / SuperOwner  | ✅                         |
+| `pivRemoveTrustAnchor` | Admin / SuperOwner  | ✅                         |
 
 ### 👥 **Group Permissions**
 
@@ -445,6 +737,15 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
    ```sh
    ssh -tp 2222 user@localhost -- user@targethost (ssh options supported) (or alias gobastion user@targethost)
    ```
+
+   (optional) 5b-bis. Connect through multiple bastions (bastion-to-bastion chaining):
+
+   ```sh
+   # Two intermediate hops: 10.0.0.1 → 1.3.2.1 → 192.1.1.2
+   ssh -tp 2222 user@bastion -- phd@192.1.1.2 --via phd@10.0.0.1 --via phd@1.3.2.1
+   ```
+
+   → See the **[Bastion-to-Bastion Chaining](#-bastion-to-bastion-chaining-multi-hop-ssh)** section for full documentation, realm integration, and advanced examples.
 
    (optional) 5c. Use SFTP / SCP / rsync through the bastion — see [SCP / SFTP / rsync Passthrough](#-scp--sftp--rsync-passthrough) for full configuration details.
 

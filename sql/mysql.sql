@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     role            longtext NOT NULL,
     enabled         tinyint(1) NOT NULL DEFAULT 1,
     system_user     tinyint(1) NOT NULL DEFAULT 0,
+    osh_only        tinyint(1) NOT NULL DEFAULT 0,
+    super_owner     tinyint(1) NOT NULL DEFAULT 0,
     last_login_from longtext,
     last_login_at   datetime,
     totp_secret     longtext,
@@ -136,6 +138,7 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     server          longtext NOT NULL,
     port            bigint NOT NULL,
     protocol        longtext NOT NULL DEFAULT 'ssh',
+    guest_allowed   tinyint(1) NOT NULL DEFAULT 0,
     comment         longtext,
     allowed_from    longtext,
     expires_at      datetime,
@@ -198,6 +201,39 @@ CREATE TABLE IF NOT EXISTS piv_trust_anchors (
     UNIQUE KEY idx_piv_trust_anchors_name (name(255)),
     KEY idx_piv_trust_anchors_deleted_at (deleted_at),
     CONSTRAINT fk_piv_trust_anchors_user FOREIGN KEY (added_by_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── realms ───────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS realms (
+    id              varchar(36) NOT NULL PRIMARY KEY,
+    name            longtext NOT NULL,
+    bastion_host    longtext NOT NULL,
+    bastion_port    bigint NOT NULL DEFAULT 22,
+    allowed_from    longtext NOT NULL,
+    public_key      longtext NOT NULL,
+    enabled         tinyint(1) NOT NULL DEFAULT 1,
+    created_by_id   varchar(36) NOT NULL,
+    created_at      datetime,
+    updated_at      datetime,
+    deleted_at      datetime,
+    UNIQUE KEY idx_realms_name (name(255)),
+    KEY idx_realms_deleted_at (deleted_at),
+    CONSTRAINT fk_realms_created_by FOREIGN KEY (created_by_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── restricted_command_grants ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS restricted_command_grants (
+    id            varchar(36) NOT NULL PRIMARY KEY,
+    user_id       varchar(36) NOT NULL,
+    command       longtext NOT NULL,
+    granted_by_id varchar(36) NOT NULL,
+    created_at    datetime,
+    updated_at    datetime,
+    deleted_at    datetime,
+    UNIQUE KEY idx_user_command_grant (user_id, command(255), deleted_at),
+    KEY idx_restricted_command_grants_deleted_at (deleted_at),
+    CONSTRAINT fk_restricted_command_grants_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_restricted_command_grants_granted_by FOREIGN KEY (granted_by_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ── Done ─────────────────────────────────────────────────────────────────────

@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
     role            text NOT NULL,
     enabled         boolean NOT NULL DEFAULT true,
     system_user     boolean NOT NULL DEFAULT false,
+    osh_only        boolean NOT NULL DEFAULT false,
+    super_owner     boolean NOT NULL DEFAULT false,
     last_login_from text,
     last_login_at   timestamptz,
     totp_secret     text,
@@ -133,6 +135,7 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     server          text NOT NULL,
     port            bigint NOT NULL,
     protocol        text NOT NULL DEFAULT 'ssh',
+    guest_allowed   boolean NOT NULL DEFAULT false,
     comment         text,
     allowed_from    text,
     expires_at      timestamptz,
@@ -192,6 +195,36 @@ CREATE TABLE IF NOT EXISTS piv_trust_anchors (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_piv_trust_anchors_name ON piv_trust_anchors (name);
 CREATE INDEX IF NOT EXISTS idx_piv_trust_anchors_deleted_at ON piv_trust_anchors (deleted_at);
+
+-- ── realms ───────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS realms (
+    id            uuid PRIMARY KEY,
+    name          text NOT NULL,
+    bastion_host  text NOT NULL,
+    bastion_port  bigint NOT NULL DEFAULT 22,
+    allowed_from  text NOT NULL,
+    public_key    text NOT NULL,
+    enabled       boolean NOT NULL DEFAULT true,
+    created_by_id uuid NOT NULL REFERENCES users(id),
+    created_at    timestamptz,
+    updated_at    timestamptz,
+    deleted_at    timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_realms_name ON realms (name);
+CREATE INDEX IF NOT EXISTS idx_realms_deleted_at ON realms (deleted_at);
+
+-- ── restricted_command_grants ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS restricted_command_grants (
+    id            uuid PRIMARY KEY,
+    user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    command       text NOT NULL,
+    granted_by_id uuid NOT NULL REFERENCES users(id),
+    created_at    timestamptz,
+    updated_at    timestamptz,
+    deleted_at    timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_command_grant ON restricted_command_grants (user_id, command, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_restricted_command_grants_deleted_at ON restricted_command_grants (deleted_at);
 
 -- ── PRAGMA equivalents (PostgreSQL) ──────────────────────────────────────────
 -- WAL is the default for PostgreSQL, no equivalent needed.

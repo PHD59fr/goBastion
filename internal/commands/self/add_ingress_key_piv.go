@@ -27,14 +27,14 @@ func addIngressKey(db *gorm.DB, user *models.User, pubKeyText, comment string, p
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("Failed to add key: %v", err)}}},
 		})
-		return nil
+		return fmt.Errorf("failed to add ingress key: %w", err)
 	}
 
 	if pivAttested {
 		if err := db.Model(&models.IngressKey{}).
 			Where("user_id = ? AND key = ?", user.ID, strings.TrimSpace(pubKeyText)).
 			Update("piv_attested", true).Error; err != nil {
-			fmt.Printf("Warning: key added but PIV attestation flag could not be set: %v\n", err)
+			return fmt.Errorf("key added but PIV attestation flag could not be set: %w", err)
 		}
 	}
 
@@ -45,7 +45,7 @@ func addIngressKey(db *gorm.DB, user *models.User, pubKeyText, comment string, p
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to sync authorized_keys."}}},
 		})
-		return nil
+		return fmt.Errorf("failed to sync authorized_keys: %w", err)
 	}
 
 	console.DisplayBlock(console.ContentBlock{

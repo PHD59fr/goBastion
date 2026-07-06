@@ -89,6 +89,8 @@ func AccountInfo(db *gorm.DB, currentUser *models.User, args []string) error {
 		fmt.Sprintf("ID: %s", user.ID.String()),
 		fmt.Sprintf("Username: %s", user.Username),
 		fmt.Sprintf("System Role: %s", user.Role),
+		fmt.Sprintf("SuperOwner: %t", user.SuperOwner),
+		fmt.Sprintf("OSH-Only: %t", user.OSHOnly),
 		fmt.Sprintf("MFA / TOTP: %s", totpStatus),
 		fmt.Sprintf("MFA / Password: %s", passwordMFAStatus),
 		fmt.Sprintf("Created At: %s", user.CreatedAt.Format("2006-01-02 15:04:05")),
