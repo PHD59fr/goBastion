@@ -26,14 +26,14 @@ func newTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestTtyList_NoArgs(t *testing.T) {
+func TestList_NoArgs(t *testing.T) {
 	db := newTestDB(t)
 	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
-	// No recordings dir exists; TtyList should not panic.
+	// No recordings dir exists; List should not panic.
 	// It returns an error (os.Stat fails) but must not panic.
-	_ = TtyList(db, &user, []string{})
+	_ = List(db, &user, []string{})
 }

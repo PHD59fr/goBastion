@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupAddAlias creates an alias for a group access target.
-func GroupAddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
+// AddAlias creates an alias for a group access target.
+func AddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddAlias", flag.ContinueOnError)
 	var groupName, alias, hostname string
 	fs.StringVar(&groupName, "group", "", "Group name")

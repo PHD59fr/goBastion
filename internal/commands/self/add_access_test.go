@@ -6,11 +6,11 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestSelfAddAccess_Success(t *testing.T) {
+func TestAddAccess_Success(t *testing.T) {
 	db := newTestDB(t)
 	user := newRegularUser(t, db, "alice")
 
-	err := SelfAddAccess(db, user, []string{
+	err := AddAccess(db, user, []string{
 		"--server", "1.2.3.4",
 		"--username", "root",
 		"--port", "22",
@@ -27,12 +27,12 @@ func TestSelfAddAccess_Success(t *testing.T) {
 	}
 }
 
-func TestSelfAddAccess_MissingServer(t *testing.T) {
+func TestAddAccess_MissingServer(t *testing.T) {
 	db := newTestDB(t)
 	user := newRegularUser(t, db, "alice")
 
 	// Missing --server; should not panic, no DB entry
-	_ = SelfAddAccess(db, user, []string{
+	_ = AddAccess(db, user, []string{
 		"--username", "root",
 		"--port", "22",
 	})

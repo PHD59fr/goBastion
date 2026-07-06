@@ -12,9 +12,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// PivAddTrustAnchor adds a PIV CA trust anchor (admin only).
+// AddTrustAnchor adds a PIV CA trust anchor (admin only).
 // Usage: pivAddTrustAnchor --name <name> --cert <path>
-func PivAddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error {
+func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("pivAddTrustAnchor", flag.ContinueOnError)
 	var name, certFile string
 	fs.StringVar(&name, "name", "", "Friendly name for this trust anchor")

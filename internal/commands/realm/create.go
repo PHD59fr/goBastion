@@ -16,8 +16,8 @@ import (
 
 var realmNameRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
-// RealmCreate registers a trusted external bastion realm.
-func RealmCreate(db *gorm.DB, currentUser *models.User, args []string) error {
+// Create registers a trusted external bastion realm.
+func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("realmCreate", flag.ContinueOnError)
 	var realmName, bastionHost, allowedFrom, publicKey string
 	var bastionPort int64

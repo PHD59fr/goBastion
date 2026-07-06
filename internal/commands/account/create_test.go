@@ -75,10 +75,10 @@ func TestCreateUser_AdapterError(t *testing.T) {
 	}
 }
 
-func TestAccountCreate_MissingArgs(t *testing.T) {
+func TestCreate_MissingArgs(t *testing.T) {
 	db := newTestDB(t)
 	mock := osadapter.NewMockAdapter()
 	admin := newAdminUser(t, db, "admin")
 	// Should not panic; missing --user arg
-	_ = AccountCreate(db, mock, admin, []string{})
+	_ = Create(db, mock, admin, []string{})
 }

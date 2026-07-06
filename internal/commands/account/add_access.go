@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountAddAccess adds a personal SSH access entry for a user.
-func AccountAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+// AddAccess adds a personal SSH access entry for a user.
+func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountAddAccess", flag.ContinueOnError)
 	var targetUser, server, username, comment, allowedFrom, protocol string
 	var port int64

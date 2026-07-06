@@ -17,8 +17,8 @@ func normalizeCommandName(cmd string) string {
 	return strings.TrimSpace(cmd)
 }
 
-// RestrictedGrantAdd grants a restricted command to a target user.
-func RestrictedGrantAdd(db *gorm.DB, currentUser *models.User, args []string) error {
+// GrantAdd grants a restricted command to a target user.
+func GrantAdd(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("restrictedGrantAdd", flag.ContinueOnError)
 	var username, command string
 	fs.StringVar(&username, "user", "", "Target username")
@@ -66,8 +66,8 @@ func RestrictedGrantAdd(db *gorm.DB, currentUser *models.User, args []string) er
 	return nil
 }
 
-// RestrictedGrantDel removes a restricted command grant from a target user.
-func RestrictedGrantDel(db *gorm.DB, currentUser *models.User, args []string) error {
+// GrantDel removes a restricted command grant from a target user.
+func GrantDel(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("restrictedGrantDel", flag.ContinueOnError)
 	var username, command string
 	fs.StringVar(&username, "user", "", "Target username")
@@ -114,8 +114,8 @@ func RestrictedGrantDel(db *gorm.DB, currentUser *models.User, args []string) er
 	return nil
 }
 
-// RestrictedGrantList lists restricted command grants, optionally filtered by user.
-func RestrictedGrantList(db *gorm.DB, currentUser *models.User, args []string) error {
+// GrantList lists restricted command grants, optionally filtered by user.
+func GrantList(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("restrictedGrantList", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Optional username filter")

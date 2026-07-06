@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// RealmList lists configured realms.
-func RealmList(db *gorm.DB, currentUser *models.User, args []string) error {
+// List lists configured realms.
+func List(db *gorm.DB, currentUser *models.User, args []string) error {
 	var realms []models.Realm
 	if err := db.Preload("CreatedBy").Order("name asc").Find(&realms).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

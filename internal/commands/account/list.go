@@ -10,8 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountList displays all non-system user accounts.
-func AccountList(db *gorm.DB, currentUser *models.User) error {
+// List displays all non-system user accounts.
+func List(db *gorm.DB, currentUser *models.User) error {
 	if !currentUser.CanDo(db, "accountList", "") {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account List",

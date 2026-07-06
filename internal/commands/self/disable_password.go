@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfDisablePassword lets a user disable their password-based MFA after verifying the current password.
-func SelfDisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
+// DisablePassword lets a user disable their password-based MFA after verifying the current password.
+func DisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
 	if user.PasswordHash == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable Password MFA",

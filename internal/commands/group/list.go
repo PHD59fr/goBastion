@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupList displays all groups, optionally filtered by membership.
-func GroupList(db *gorm.DB, user *models.User, args []string) error {
+// List displays all groups, optionally filtered by membership.
+func List(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupList", flag.ContinueOnError)
 	all := fs.Bool("all", false, "List all groups")
 	var flagOutput bytes.Buffer

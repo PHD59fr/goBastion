@@ -44,8 +44,8 @@ type accessCandidate struct {
 	reason      string
 }
 
-// SSHConnect resolves the target and establishes an SSH connection through the bastion.
-func SSHConnect(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
+// Connect resolves the target and establishes an SSH connection through the bastion.
+func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
 	// Extract -F forwarding hops before parsing the main target.
 	cleanParams, hops, err := extractForwardHops(params)
 	if err != nil {
@@ -839,7 +839,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 	return nil
 }
 
-// SftpSession handles sftp passthrough by acting as a minimal SSH server on
+// SFTPSession handles sftp passthrough by acting as a minimal SSH server on
 // stdin/stdout, connecting to the target with the bastion's egress key and
 // proxying the sftp subsystem — no client key on the target needed.
 //
@@ -852,7 +852,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 //	ProxyCommand ssh -p 2222 -- user@bastion "sftp-session root@%h:%p"
 //	StrictHostKeyChecking no
 //	UserKnownHostsFile /dev/null
-func SftpSession(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
+func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
 	sshUser, sshHost, sshPort, _, err := parseSSHCommand(params)
 	if err != nil {
 		return fmt.Errorf("invalid sftp-session command: %v", err)

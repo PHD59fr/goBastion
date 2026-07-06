@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountListIngressKeys lists all ingress SSH keys for a user.
-func AccountListIngressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
+// ListIngressKeys lists all ingress SSH keys for a user.
+func ListIngressKeys(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountListIngressKeys", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username to list ingress keys")

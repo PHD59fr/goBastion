@@ -22,8 +22,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupGenerateEgressKey generates a new SSH egress key pair for a group.
-func GroupGenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) error {
+// GenerateEgressKey generates a new SSH egress key pair for a group.
+func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupGenerateEgressKey", flag.ContinueOnError)
 	var groupName, keyType string
 	var keySize int

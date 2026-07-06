@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfDelAlias removes a personal alias.
-func SelfDelAlias(db *gorm.DB, user *models.User, args []string) error {
+// DelAlias removes a personal alias.
+func DelAlias(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfDelAlias", flag.ContinueOnError)
 	var hostID string
 	fs.StringVar(&hostID, "id", "", "Alias ID")

@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+var (
+	AliasRegexp     = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	GroupNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	RealmNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+)
+
 // ValidProtocols is the set of accepted protocol values for access entries.
 var ValidProtocols = map[string]bool{
 	"ssh":         true,

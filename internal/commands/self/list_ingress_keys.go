@@ -10,8 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfListIngressKeys lists all ingress SSH keys for the current user.
-func SelfListIngressKeys(db *gorm.DB, user *models.User) error {
+// ListIngressKeys lists all ingress SSH keys for the current user.
+func ListIngressKeys(db *gorm.DB, user *models.User) error {
 	var keys []models.IngressKey
 	if err := db.Where("user_id = ?", user.ID).Find(&keys).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -35,25 +35,25 @@ func SelfListIngressKeys(db *gorm.DB, user *models.User) error {
 	}
 	var sections []console.SectionContent
 	for _, key := range keys {
-		expiresStr := "Never"
+		expires := "Never"
 		if key.ExpiresAt != nil {
 			if key.ExpiresAt.Before(time.Now()) {
-				expiresStr = "⚠️ EXPIRED (" + key.ExpiresAt.Format("2006-01-02") + ")"
+				expires = "⚠️ EXPIRED (" + key.ExpiresAt.Format("2006-01-02") + ")"
 			} else {
-				expiresStr = key.ExpiresAt.Format("2006-01-02")
+				expires = key.ExpiresAt.Format("2006-01-02")
 			}
 		}
-		pivStr := ""
+		pivLabel := ""
 		if key.PIVAttested {
-			pivStr = " 🔐 PIV-attested"
+			pivLabel = " 🔐 PIV-attested"
 		}
 		section := console.SectionContent{
 			SubTitle: fmt.Sprintf("Key ID: %s", key.ID.String()),
 			Body: []string{
-				fmt.Sprintf("Type: %s%s", key.Type, pivStr),
+				fmt.Sprintf("Type: %s%s", key.Type, pivLabel),
 				fmt.Sprintf("Fingerprint: %s", key.Fingerprint),
 				fmt.Sprintf("Size: %d", key.Size),
-				fmt.Sprintf("Expires: %s", expiresStr),
+				fmt.Sprintf("Expires: %s", expires),
 				fmt.Sprintf("Last Update: %s", key.UpdatedAt.Format("2006-01-02 15:04:05")),
 				fmt.Sprintf("Public Key: %s", key.Key),
 			},

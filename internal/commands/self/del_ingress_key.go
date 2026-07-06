@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfDelIngressKey removes an ingress SSH key for the current user.
-func SelfDelIngressKey(db *gorm.DB, user *models.User, args []string) error {
+// DelIngressKey removes an ingress SSH key for the current user.
+func DelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfDelIngressKey", flag.ContinueOnError)
 	var keyId string
 	fs.StringVar(&keyId, "id", "", "SSH public key ID")

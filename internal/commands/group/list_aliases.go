@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupListAliases lists all aliases for a group.
-func GroupListAliases(db *gorm.DB, currentUser *models.User, args []string) error {
+// ListAliases lists all aliases for a group.
+func ListAliases(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupListAliases", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")

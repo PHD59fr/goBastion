@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestGroupDelete_Success(t *testing.T) {
+func TestDelete_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
@@ -16,7 +16,7 @@ func TestGroupDelete_Success(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 
-	err := GroupDelete(db, admin, []string{"--group", "todelete"})
+	err := Delete(db, admin, []string{"--group", "todelete"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -28,10 +28,10 @@ func TestGroupDelete_Success(t *testing.T) {
 	}
 }
 
-func TestGroupDelete_NotFound(t *testing.T) {
+func TestDelete_NotFound(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
 	// Deleting non-existent group should not return error (GORM soft-delete on 0 rows)
-	_ = GroupDelete(db, admin, []string{"--group", "nonexistent"})
+	_ = Delete(db, admin, []string{"--group", "nonexistent"})
 }

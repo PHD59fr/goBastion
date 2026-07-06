@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountModify updates the system role of a user account.
-func AccountModify(db *gorm.DB, currentUser *models.User, args []string) error {
+// Modify updates the system role of a user account.
+func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountModify", flag.ContinueOnError)
 	var username, newRole, oshOnlyRaw, superOwnerRaw string
 	fs.StringVar(&username, "user", "", "Username to modify")

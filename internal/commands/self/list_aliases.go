@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfListAliases lists all personal aliases for the current user.
-func SelfListAliases(db *gorm.DB, user *models.User) error {
+// ListAliases lists all personal aliases for the current user.
+func ListAliases(db *gorm.DB, user *models.User) error {
 	var hosts []models.Aliases
 	result := db.Where("user_id = ?", user.ID).Find(&hosts)
 	if result.Error != nil {

@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupDelAccess removes an SSH access entry from a group.
-func GroupDelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+// DelAccess removes an SSH access entry from a group.
+func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupDelAccess", flag.ContinueOnError)
 	var groupName, accessIDStr string
 	fs.StringVar(&groupName, "group", "", "Group name")

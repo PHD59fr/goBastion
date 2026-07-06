@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// RealmInfo prints details for one realm.
-func RealmInfo(db *gorm.DB, currentUser *models.User, args []string) error {
+// Info prints details for one realm.
+func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("realmInfo", flag.ContinueOnError)
 	var realmName string
 	fs.StringVar(&realmName, "realm", "", "Realm name")

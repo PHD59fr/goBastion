@@ -19,8 +19,8 @@ import (
 	"goBastion/internal/utils/validation"
 )
 
-// AccountCreate creates a new user account with an SSH ingress key.
-func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.User, args []string) error {
+// Create creates a new user account with an SSH ingress key.
+func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountCreate", flag.ContinueOnError)
 	var username string
 	var oshOnly bool
@@ -51,8 +51,8 @@ func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Enter the complete public SSH key: ")
-	pubKeyStr, err := reader.ReadString('\n')
-	if err != nil || strings.TrimSpace(pubKeyStr) == "" {
+	pubKey, err := reader.ReadString('\n')
+	if err != nil || strings.TrimSpace(pubKey) == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Create",
 			BlockType: "error",
@@ -60,7 +60,7 @@ func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 		})
 		return fmt.Errorf("invalid or missing SSH key")
 	}
-	if _, _, _, _, err = ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(pubKeyStr))); err != nil {
+	if _, _, _, _, err = ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(pubKey))); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Create",
 			BlockType: "error",
@@ -69,7 +69,7 @@ func AccountCreate(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *mo
 		return fmt.Errorf("invalid SSH key: %v", err)
 	}
 
-	if err = CreateUser(db, adapter, username, pubKeyStr); err != nil {
+	if err = CreateUser(db, adapter, username, pubKey); err != nil {
 		title := "Error"
 		if strings.Contains(err.Error(), "exists") {
 			title = "User Exists"

@@ -329,7 +329,7 @@ func TestParseSSHCommand(t *testing.T) {
 		wantHost   string
 		wantPort   string
 		wantCmd    string
-		wantErrStr string
+		wantErr string
 	}{
 		{"user@host", "deploy@myserver", "deploy", "myserver", "22", "", ""},
 		{"user@host:port", "deploy@myserver:2222", "deploy", "myserver", "2222", "", ""},
@@ -342,9 +342,9 @@ func TestParseSSHCommand(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			u, h, p, cmd, err := parseSSHCommand(tc.input)
-			if tc.wantErrStr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErrStr) {
-					t.Errorf("expected error containing %q, got %v", tc.wantErrStr, err)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("expected error containing %q, got %v", tc.wantErr, err)
 				}
 				return
 			}

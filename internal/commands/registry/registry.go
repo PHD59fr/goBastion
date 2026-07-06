@@ -45,51 +45,51 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 		{
 			Name: "selfListIngressKeys", Description: "List your ingress keys", Permission: "selfListIngressKeys",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Ingress (you → bastion)",
-			Handler: func() error { return cmdself.SelfListIngressKeys(db, user) },
+			Handler: func() error { return cmdself.ListIngressKeys(db, user) },
 		},
 		{
 			Name: "selfAddIngressKey", Description: "Add a new ingress key", Permission: "selfAddIngressKey",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Ingress (you → bastion)",
 			Args:    []ArgSpec{{"--key", "SSH public key"}, {"--expires", "Key expiry in days"}},
-			Handler: func() error { return cmdself.SelfAddIngressKey(db, user, args) },
+			Handler: func() error { return cmdself.AddIngressKey(db, user, args) },
 		},
 		{
 			Name: "selfDelIngressKey", Description: "Delete an ingress key", Permission: "selfDelIngressKey",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Ingress (you → bastion)",
 			Args:    []ArgSpec{{"--id", "SSH public key ID"}},
-			Handler: func() error { return cmdself.SelfDelIngressKey(db, user, args) },
+			Handler: func() error { return cmdself.DelIngressKey(db, user, args) },
 		},
 
 		// --- Self: Egress ---
 		{
 			Name: "selfListEgressKeys", Description: "List your egress keys", Permission: "selfListEgressKeys",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Egress (bastion → server)",
-			Handler: func() error { return cmdself.SelfListEgressKeys(db, user) },
+			Handler: func() error { return cmdself.ListEgressKeys(db, user) },
 		},
 		{
 			Name: "selfGenerateEgressKey", Description: "Generate a new egress key", Permission: "selfGenerateEgressKey",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Egress (bastion → server)",
 			Args:    []ArgSpec{{"--type", "Key type (e.g., rsa, ed25519)"}, {"--size", "Key size"}},
-			Handler: func() error { return cmdself.SelfGenerateEgressKey(db, user, args) },
+			Handler: func() error { return cmdself.GenerateEgressKey(db, user, args) },
 		},
 		{
 			Name: "selfRemoveHostFromKnownHosts", Description: "Remove a host from known hosts", Permission: "selfRemoveHostFromKnownHosts",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Egress (bastion → server)",
 			Args:    []ArgSpec{{"--host", "Host to remove from known_hosts"}},
-			Handler: func() error { return cmdself.SelfRemoveHostFromKnownHosts(db, user, args) },
+			Handler: func() error { return cmdself.RemoveHostFromKnownHosts(db, user, args) },
 		},
 		{
 			Name: "selfReplaceKnownHost", Description: "Trust new host key (after key change)", Permission: "selfReplaceKnownHost",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Egress (bastion → server)",
 			Args:    []ArgSpec{{"--host", "Host whose key changed"}},
-			Handler: func() error { return cmdself.SelfReplaceKnownHost(db, user, args) },
+			Handler: func() error { return cmdself.ReplaceKnownHost(db, user, args) },
 		},
 
 		// --- Self: Accesses ---
 		{
 			Name: "selfListAccesses", Description: "List your personal accesses", Permission: "selfListAccesses",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Server accesses (personal)",
-			Handler: func() error { return cmdself.SelfListAccesses(db, user) },
+			Handler: func() error { return cmdself.ListAccesses(db, user) },
 		},
 		{
 			Name: "selfAddAccess", Description: "Add a personal access", Permission: "selfAddAccess",
@@ -99,59 +99,59 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--comment", "Comment"}, {"--from", "Allowed source CIDRs (comma-separated)"},
 				{"--ttl", "Access expiry in days"}, {"--protocol", "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
 			},
-			Handler: func() error { return cmdself.SelfAddAccess(db, user, args) },
+			Handler: func() error { return cmdself.AddAccess(db, user, args) },
 		},
 		{
 			Name: "selfDelAccess", Description: "Delete a personal access", Permission: "selfDelAccess",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Server accesses (personal)",
 			Args:    []ArgSpec{{"--id", "Access ID"}},
-			Handler: func() error { return cmdself.SelfDelAccess(db, user, args) },
+			Handler: func() error { return cmdself.DelAccess(db, user, args) },
 		},
 
 		// --- Self: Aliases ---
 		{
 			Name: "selfListAliases", Description: "List your personal aliases", Permission: "selfListAliases",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Server alias (personal)",
-			Handler: func() error { return cmdself.SelfListAliases(db, user) },
+			Handler: func() error { return cmdself.ListAliases(db, user) },
 		},
 		{
 			Name: "selfAddAlias", Description: "Add a personal alias", Permission: "selfAddAlias",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Server alias (personal)",
 			Args:    []ArgSpec{{"--alias", "Alias"}, {"--hostname", "Host name"}},
-			Handler: func() error { return cmdself.SelfAddAlias(db, user, args) },
+			Handler: func() error { return cmdself.AddAlias(db, user, args) },
 		},
 		{
 			Name: "selfDelAlias", Description: "Delete a personal alias", Permission: "selfDelAlias",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "Server alias (personal)",
 			Args:    []ArgSpec{{"--id", "Alias ID"}},
-			Handler: func() error { return cmdself.SelfDelAlias(db, user, args) },
+			Handler: func() error { return cmdself.DelAlias(db, user, args) },
 		},
 
 		// --- Self: MFA / TOTP / PIV ---
 		{
 			Name: "selfSetupTOTP", Description: "Enable TOTP two-factor authentication", Permission: "selfSetupTOTP",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdtotp.SelfSetupTOTP(db, user, log) },
+			Handler: func() error { return cmdtotp.SetupTOTP(db, user, log) },
 		},
 		{
 			Name: "selfDisableTOTP", Description: "Disable TOTP two-factor authentication", Permission: "selfDisableTOTP",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdtotp.SelfDisableTOTP(db, user, log) },
+			Handler: func() error { return cmdtotp.DisableTOTP(db, user, log) },
 		},
 		{
 			Name: "selfSetPassword", Description: "Set a password second factor (MFA)", Permission: "selfSetPassword",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdself.SelfSetPassword(db, user, log, args) },
+			Handler: func() error { return cmdself.SetPassword(db, user, log, args) },
 		},
 		{
 			Name: "selfChangePassword", Description: "Change your password second factor", Permission: "selfChangePassword",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdself.SelfChangePassword(db, user, log, args) },
+			Handler: func() error { return cmdself.ChangePassword(db, user, log, args) },
 		},
 		{
 			Name: "selfDisablePassword", Description: "Disable password second factor (MFA)", Permission: "selfDisablePassword",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdself.SelfDisablePassword(db, user, log, args) },
+			Handler: func() error { return cmdself.DisablePassword(db, user, log, args) },
 		},
 		{
 			Name: "selfAddIngressKeyPIV", Description: "Add a PIV/hardware-attested SSH key (YubiKey)", Permission: "selfAddIngressKeyPIV",
@@ -161,36 +161,36 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--intermediate", "Path to intermediate certificate (PEM)"},
 				{"--comment", "Comment for this key"},
 			},
-			Handler: func() error { return cmdself.SelfAddIngressKeyPIV(db, user, args) },
+			Handler: func() error { return cmdself.AddIngressKeyPIV(db, user, args) },
 		},
 		{
 			Name: "selfGenerateBackupCodes", Description: "Generate TOTP backup codes", Permission: "selfSetupTOTP",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdself.SelfGenerateBackupCodes(db, user, log) },
+			Handler: func() error { return cmdself.GenerateBackupCodes(db, user, log) },
 		},
 		{
 			Name: "selfShowBackupCodeCount", Description: "Show remaining backup codes count", Permission: "selfSetupTOTP",
 			Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV",
-			Handler: func() error { return cmdself.SelfShowBackupCodeCount(db, user) },
+			Handler: func() error { return cmdself.ShowBackupCodeCount(db, user) },
 		},
 
 		// --- Account ---
 		{
 			Name: "accountList", Description: "List all accounts", Permission: "accountList",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts",
-			Handler: func() error { return cmdaccount.AccountList(db, user) },
+			Handler: func() error { return cmdaccount.List(db, user) },
 		},
 		{
 			Name: "accountInfo", Description: "Show account info", Permission: "accountInfo",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts",
 			Args:    []ArgSpec{{"--user", "Username"}},
-			Handler: func() error { return cmdaccount.AccountInfo(db, user, args) },
+			Handler: func() error { return cmdaccount.Info(db, user, args) },
 		},
 		{
 			Name: "accountCreate", Description: "Create a new account", Permission: "accountCreate",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts",
 			Args:    []ArgSpec{{"--user", "Username to create"}, {"--osh-only", "Restrict to -osh commands"}, {"--superowner", "Grant superowner privileges"}},
-			Handler: func() error { return cmdaccount.AccountCreate(db, adapter, user, args) },
+			Handler: func() error { return cmdaccount.Create(db, adapter, user, args) },
 		},
 		{
 			Name: "accountModify", Description: "Modify an account", Permission: "accountModify",
@@ -201,31 +201,31 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--oshOnly", "Set osh-only mode (true/false)"},
 				{"--superOwner", "Set superowner mode (true/false)"},
 			},
-			Handler: func() error { return cmdaccount.AccountModify(db, user, args) },
+			Handler: func() error { return cmdaccount.Modify(db, user, args) },
 		},
 		{
 			Name: "accountDelete", Description: "Delete an account", Permission: "accountDelete",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts",
 			Args:    []ArgSpec{{"--user", "Username to delete"}},
-			Handler: func() error { return cmdaccount.AccountDelete(db, adapter, user, args) },
+			Handler: func() error { return cmdaccount.Delete(db, adapter, user, args) },
 		},
 		{
 			Name: "accountListIngressKeys", Description: "List account ingress keys", Permission: "accountListIngressKeys",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account keys",
 			Args:    []ArgSpec{{"--user", "Username"}},
-			Handler: func() error { return cmdaccount.AccountListIngressKeys(db, user, args) },
+			Handler: func() error { return cmdaccount.ListIngressKeys(db, user, args) },
 		},
 		{
 			Name: "accountListEgressKeys", Description: "List account egress keys", Permission: "accountListEgressKeys",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account keys",
 			Args:    []ArgSpec{{"--user", "Username"}},
-			Handler: func() error { return cmdaccount.AccountListEgressKeys(db, user, args) },
+			Handler: func() error { return cmdaccount.ListEgressKeys(db, user, args) },
 		},
 		{
 			Name: "accountListAccess", Description: "List account accesses", Permission: "accountListAccess",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--user", "Username"}},
-			Handler: func() error { return cmdaccount.AccountListAccess(db, user, args) },
+			Handler: func() error { return cmdaccount.ListAccess(db, user, args) },
 		},
 		{
 			Name: "accountAddAccess", Description: "Add access to an account", Permission: "accountAddAccess",
@@ -237,13 +237,13 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--ttl", "Access expiry in days"},
 				{"--protocol", "Protocol restriction: ssh, scpupload, scpdownload, sftp, rsync"},
 			},
-			Handler: func() error { return cmdaccount.AccountAddAccess(db, user, args) },
+			Handler: func() error { return cmdaccount.AddAccess(db, user, args) },
 		},
 		{
 			Name: "accountDelAccess", Description: "Remove access from an account", Permission: "accountDelAccess",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--access", "Access ID"}},
-			Handler: func() error { return cmdaccount.AccountDelAccess(db, user, args) },
+			Handler: func() error { return cmdaccount.DelAccess(db, user, args) },
 		},
 		{
 			Name: "whoHasAccessTo", Description: "List accounts with access to a server", Permission: "whoHasAccessTo",
@@ -255,19 +255,19 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "accountDisableTOTP", Description: "Disable TOTP for an account (admin)", Permission: "accountDisableTOTP",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--user", "Username"}},
-			Handler: func() error { return cmdaccount.AccountDisableTOTP(db, user, log, args) },
+			Handler: func() error { return cmdaccount.DisableTOTP(db, user, log, args) },
 		},
 		{
 			Name: "accountSetPassword", Description: "Set/clear password MFA for an account (admin)", Permission: "accountSetPassword",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--user", "Target username"}, {"--clear", "Clear/remove password MFA"}},
-			Handler: func() error { return cmdaccount.AccountSetPassword(db, user, log, args) },
+			Handler: func() error { return cmdaccount.SetPassword(db, user, log, args) },
 		},
 		{
 			Name: "accountDisablePassword", Description: "Disable password MFA for an account (admin)", Permission: "accountSetPassword",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--user", "Target username"}},
-			Handler: func() error { return cmdaccount.AccountDisablePassword(db, user, log, args) },
+			Handler: func() error { return cmdaccount.DisablePassword(db, user, log, args) },
 		},
 
 		// --- PIV ---
@@ -275,18 +275,18 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "pivAddTrustAnchor", Description: "Add a PIV/YubiKey CA trust anchor", Permission: "pivAddTrustAnchor",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--name", "Friendly name for this trust anchor"}, {"--cert", "Path to PEM certificate file"}},
-			Handler: func() error { return cmdpiv.PivAddTrustAnchor(db, user, args) },
+			Handler: func() error { return cmdpiv.AddTrustAnchor(db, user, args) },
 		},
 		{
 			Name: "pivListTrustAnchors", Description: "List PIV trust anchor CAs", Permission: "pivListTrustAnchors",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
-			Handler: func() error { return cmdpiv.PivListTrustAnchors(db, user, args) },
+			Handler: func() error { return cmdpiv.ListTrustAnchors(db, user, args) },
 		},
 		{
 			Name: "pivRemoveTrustAnchor", Description: "Remove a PIV trust anchor CA", Permission: "pivRemoveTrustAnchor",
 			Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Account accesses",
 			Args:    []ArgSpec{{"--name", "Name of the trust anchor to remove"}},
-			Handler: func() error { return cmdpiv.PivRemoveTrustAnchor(db, user, args) },
+			Handler: func() error { return cmdpiv.RemoveTrustAnchor(db, user, args) },
 		},
 
 		// --- Realms ---
@@ -300,24 +300,24 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--from", "Trusted source CIDRs"},
 				{"--public-key", "Trusted realm SSH public key"},
 			},
-			Handler: func() error { return cmdrealm.RealmCreate(db, user, args) },
+			Handler: func() error { return cmdrealm.Create(db, user, args) },
 		},
 		{
 			Name: "realmList", Description: "List configured realms", Permission: "realmList",
 			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
-			Handler: func() error { return cmdrealm.RealmList(db, user, args) },
+			Handler: func() error { return cmdrealm.List(db, user, args) },
 		},
 		{
 			Name: "realmInfo", Description: "Show details for one realm", Permission: "realmInfo",
 			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
 			Args:    []ArgSpec{{"--realm", "Realm name"}},
-			Handler: func() error { return cmdrealm.RealmInfo(db, user, args) },
+			Handler: func() error { return cmdrealm.Info(db, user, args) },
 		},
 		{
 			Name: "realmDelete", Description: "Delete a realm configuration", Permission: "realmDelete",
 			Category: "RESTRICTED OPERATIONS", SubCategory: "Realms",
 			Args:    []ArgSpec{{"--realm", "Realm name"}},
-			Handler: func() error { return cmdrealm.RealmDelete(db, user, args) },
+			Handler: func() error { return cmdrealm.Delete(db, user, args) },
 		},
 
 		// --- Restricted grants ---
@@ -325,19 +325,19 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "restrictedGrantAdd", Description: "Grant a restricted command to a user", Permission: "restrictedGrantAdd",
 			Category: "RESTRICTED OPERATIONS", SubCategory: "Command grants",
 			Args:    []ArgSpec{{"--user", "Target username"}, {"--command", "Restricted command name"}},
-			Handler: func() error { return cmdrestricted.RestrictedGrantAdd(db, user, args) },
+			Handler: func() error { return cmdrestricted.GrantAdd(db, user, args) },
 		},
 		{
 			Name: "restrictedGrantDel", Description: "Remove a restricted command grant", Permission: "restrictedGrantDel",
 			Category: "RESTRICTED OPERATIONS", SubCategory: "Command grants",
 			Args:    []ArgSpec{{"--user", "Target username"}, {"--command", "Restricted command name"}},
-			Handler: func() error { return cmdrestricted.RestrictedGrantDel(db, user, args) },
+			Handler: func() error { return cmdrestricted.GrantDel(db, user, args) },
 		},
 		{
 			Name: "restrictedGrantList", Description: "List restricted command grants", Permission: "restrictedGrantList",
 			Category: "RESTRICTED OPERATIONS", SubCategory: "Command grants",
 			Args:    []ArgSpec{{"--user", "Optional username filter"}},
-			Handler: func() error { return cmdrestricted.RestrictedGrantList(db, user, args) },
+			Handler: func() error { return cmdrestricted.GrantList(db, user, args) },
 		},
 
 		// --- Groups: Overview ---
@@ -345,25 +345,25 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "groupInfo", Description: "Show group info", Permission: "groupInfo",
 			Category: "MANAGE GROUPS", SubCategory: "Groups",
 			Args:    []ArgSpec{{"--group", "Group name"}},
-			Handler: func() error { return cmdgroup.GroupInfo(db, user, args) },
+			Handler: func() error { return cmdgroup.Info(db, user, args) },
 		},
 		{
 			Name: "groupList", Description: "List groups", Permission: "groupList",
 			Category: "MANAGE GROUPS", SubCategory: "Groups",
 			Args:    []ArgSpec{{"--all", "Show all groups"}},
-			Handler: func() error { return cmdgroup.GroupList(db, user, args) },
+			Handler: func() error { return cmdgroup.List(db, user, args) },
 		},
 		{
 			Name: "groupCreate", Description: "Create a new group", Permission: "groupCreate",
 			Category: "MANAGE GROUPS", SubCategory: "Groups",
 			Args:    []ArgSpec{{"--group", "Group name"}},
-			Handler: func() error { return cmdgroup.GroupCreate(db, user, args) },
+			Handler: func() error { return cmdgroup.Create(db, user, args) },
 		},
 		{
 			Name: "groupDelete", Description: "Delete a group", Permission: "groupDelete",
 			Category: "MANAGE GROUPS", SubCategory: "Groups",
 			Args:    []ArgSpec{{"--group", "Group name"}},
-			Handler: func() error { return cmdgroup.GroupDelete(db, user, args) },
+			Handler: func() error { return cmdgroup.Delete(db, user, args) },
 		},
 
 		// --- Groups: Members ---
@@ -374,13 +374,13 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--group", "Group name"}, {"--user", "Username to add"},
 				{"--role", "Role (owner, aclkeeper, gatekeeper, member, guest)"},
 			},
-			Handler: func() error { return cmdgroup.GroupAddMember(db, user, args) },
+			Handler: func() error { return cmdgroup.AddMember(db, user, args) },
 		},
 		{
 			Name: "groupDelMember", Description: "Remove a member from a group", Permission: "groupDelMember",
 			Category: "MANAGE GROUPS", SubCategory: "Group member management",
 			Args:    []ArgSpec{{"--group", "Group name"}, {"--user", "Username to remove"}},
-			Handler: func() error { return cmdgroup.GroupDelMember(db, user, args) },
+			Handler: func() error { return cmdgroup.DelMember(db, user, args) },
 		},
 
 		// --- Groups: Egress ---
@@ -388,7 +388,7 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "groupListEgressKeys", Description: "List group egress keys", Permission: "groupListEgressKeys",
 			Category: "MANAGE GROUPS", SubCategory: "Group egress (bastion → server)",
 			Args:    []ArgSpec{{"--group", "Group name"}},
-			Handler: func() error { return cmdgroup.GroupListEgressKeys(db, user, args) },
+			Handler: func() error { return cmdgroup.ListEgressKeys(db, user, args) },
 		},
 		{
 			Name: "groupGenerateEgressKey", Description: "Generate a new group egress key", Permission: "groupGenerateEgressKey",
@@ -397,7 +397,7 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--group", "Group name"}, {"--type", "Key type"}, {"--size", "Key size"},
 				{"--comment", "Key comment"},
 			},
-			Handler: func() error { return cmdgroup.GroupGenerateEgressKey(db, user, args) },
+			Handler: func() error { return cmdgroup.GenerateEgressKey(db, user, args) },
 		},
 
 		// --- Groups: Accesses ---
@@ -405,7 +405,7 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "groupListAccesses", Description: "List accesses of the group", Permission: "groupListAccesses",
 			Category: "MANAGE GROUPS", SubCategory: "Group accesses",
 			Args:    []ArgSpec{{"--group", "Group name"}},
-			Handler: func() error { return cmdgroup.GroupListAccesses(db, user, args) },
+			Handler: func() error { return cmdgroup.ListAccesses(db, user, args) },
 		},
 		{
 			Name: "groupAddAccess", Description: "Add access to a group", Permission: "groupAddAccess",
@@ -419,13 +419,13 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--guest", "Allow guest role members to use this access"},
 				{"--force", "Skip connectivity check"},
 			},
-			Handler: func() error { return cmdgroup.GroupAddAccess(db, user, args) },
+			Handler: func() error { return cmdgroup.AddAccess(db, user, args) },
 		},
 		{
 			Name: "groupDelAccess", Description: "Remove access from a group", Permission: "groupDelAccess",
 			Category: "MANAGE GROUPS", SubCategory: "Group accesses",
 			Args:    []ArgSpec{{"--group", "Group name"}, {"--access", "Access ID to remove"}},
-			Handler: func() error { return cmdgroup.GroupDelAccess(db, user, args) },
+			Handler: func() error { return cmdgroup.DelAccess(db, user, args) },
 		},
 		{
 			Name: "groupSetMFA", Description: "Enable/disable JIT MFA requirement for a group", Permission: "groupSetMFA",
@@ -434,7 +434,7 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--group", "Group name"}, {"--required", "Require MFA for this group"},
 				{"--optional", "Remove MFA requirement for this group"},
 			},
-			Handler: func() error { return cmdgroup.GroupSetMFA(db, user, log, args) },
+			Handler: func() error { return cmdgroup.SetMFA(db, user, log, args) },
 		},
 
 		// --- Groups: Aliases ---
@@ -442,19 +442,19 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 			Name: "groupAddAlias", Description: "Add a group alias", Permission: "groupAddAlias",
 			Category: "MANAGE GROUPS", SubCategory: "Group alias (group)",
 			Args:    []ArgSpec{{"--group", "Group name"}, {"--alias", "Alias"}, {"--hostname", "Host name"}},
-			Handler: func() error { return cmdgroup.GroupAddAlias(db, user, args) },
+			Handler: func() error { return cmdgroup.AddAlias(db, user, args) },
 		},
 		{
 			Name: "groupDelAlias", Description: "Delete a group alias", Permission: "groupDelAlias",
 			Category: "MANAGE GROUPS", SubCategory: "Group alias (group)",
 			Args:    []ArgSpec{{"--group", "Group name"}, {"--id", "Alias ID"}},
-			Handler: func() error { return cmdgroup.GroupDelAlias(db, user, args) },
+			Handler: func() error { return cmdgroup.DelAlias(db, user, args) },
 		},
 		{
 			Name: "groupListAliases", Description: "List group aliases", Permission: "groupListAliases",
 			Category: "MANAGE GROUPS", SubCategory: "Group alias (group)",
 			Args:    []ArgSpec{{"--group", "Group name"}},
-			Handler: func() error { return cmdgroup.GroupListAliases(db, user, args) },
+			Handler: func() error { return cmdgroup.ListAliases(db, user, args) },
 		},
 
 		// --- TTY ---
@@ -465,13 +465,13 @@ func BuildRegistry(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 				{"--startDate", "Start date"}, {"--endDate", "End date"},
 				{"--host", "Filter by server hostname"},
 			},
-			Handler: func() error { return cmdtty.TtyList(db, user, args) },
+			Handler: func() error { return cmdtty.List(db, user, args) },
 		},
 		{
 			Name: "ttyPlay", Description: "Replay a recorded tty session", Permission: "ttyPlay",
 			Category: "TTY SESSIONS", SubCategory: "",
 			Args:    []ArgSpec{{"--file", "File name"}},
-			Handler: func() error { return cmdtty.TtyPlay(db, user, args) },
+			Handler: func() error { return cmdtty.Play(db, user, args) },
 		},
 
 		// --- Misc ---

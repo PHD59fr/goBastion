@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestGroupDelMember_Success(t *testing.T) {
+func TestDelMember_Success(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 	alice := newRegularUser(t, db, "alice")
@@ -21,7 +21,7 @@ func TestGroupDelMember_Success(t *testing.T) {
 		t.Fatalf("create user group: %v", err)
 	}
 
-	err := GroupDelMember(db, admin, []string{
+	err := DelMember(db, admin, []string{
 		"--group", "mygroup",
 		"--user", "alice",
 	})

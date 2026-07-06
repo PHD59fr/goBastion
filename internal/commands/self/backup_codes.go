@@ -12,9 +12,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfGenerateBackupCodes generates new TOTP backup codes for the current user.
+// GenerateBackupCodes generates new TOTP backup codes for the current user.
 // Any previously existing codes are invalidated.
-func SelfGenerateBackupCodes(db *gorm.DB, user *models.User, log *slog.Logger) error {
+func GenerateBackupCodes(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	plainCodes, jsonHashes, err := totp.GenerateBackupCodes()
 	if err != nil {
 		return fmt.Errorf("failed to generate backup codes: %w", err)
@@ -52,8 +52,8 @@ func SelfGenerateBackupCodes(db *gorm.DB, user *models.User, log *slog.Logger) e
 	return nil
 }
 
-// SelfShowBackupCodeCount shows how many backup codes remain.
-func SelfShowBackupCodeCount(db *gorm.DB, user *models.User) error {
+// ShowBackupCodeCount shows how many backup codes remain.
+func ShowBackupCodeCount(db *gorm.DB, user *models.User) error {
 	count := totp.CountBackupCodes(user.BackupCodes)
 	if count == 0 {
 		console.DisplayBlock(console.ContentBlock{

@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfAddAlias creates an alias for a personal access target.
-func SelfAddAlias(db *gorm.DB, user *models.User, args []string) error {
+// AddAlias creates an alias for a personal access target.
+func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddAlias", flag.ContinueOnError)
 	var alias, hostname string
 	fs.StringVar(&alias, "alias", "", "Alias")

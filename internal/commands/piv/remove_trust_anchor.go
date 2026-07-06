@@ -11,9 +11,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// PivRemoveTrustAnchor removes a PIV trust anchor by name (admin only).
+// RemoveTrustAnchor removes a PIV trust anchor by name (admin only).
 // Usage: pivRemoveTrustAnchor --name <name>
-func PivRemoveTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error {
+func RemoveTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("pivRemoveTrustAnchor", flag.ContinueOnError)
 	var name string
 	fs.StringVar(&name, "name", "", "Name of the trust anchor to remove")

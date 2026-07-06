@@ -6,7 +6,7 @@ import (
 	"goBastion/internal/models"
 )
 
-func TestSelfDelAccess_Success(t *testing.T) {
+func TestDelAccess_Success(t *testing.T) {
 	db := newTestDB(t)
 	user := newRegularUser(t, db, "alice")
 
@@ -22,10 +22,10 @@ func TestSelfDelAccess_Success(t *testing.T) {
 		t.Fatalf("create access: %v", err)
 	}
 
-	// Note: SelfDelAccess uses flag.Func whose String() always returns "",
+	// Note: DelAccess uses flag.Func whose String() always returns "",
 	// so the "id empty" guard triggers and the function returns nil without deleting.
 	// This test verifies the function does not panic or return an error.
-	err := SelfDelAccess(db, user, []string{"--id", access.ID.String()})
+	err := DelAccess(db, user, []string{"--id", access.ID.String()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

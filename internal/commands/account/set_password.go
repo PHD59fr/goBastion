@@ -15,8 +15,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountSetPassword sets or clears a password MFA second factor for a user account (admin only).
-func AccountSetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
+// SetPassword sets or clears a password MFA second factor for a user account (admin only).
+func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("accountSetPassword", flag.ContinueOnError)
 	var targetUser string
 	var clear bool
@@ -71,15 +71,15 @@ func AccountSetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 	if err != nil {
 		return fmt.Errorf("could not read password: %v", err)
 	}
-	passStr := string(passBytes)
-	if len(passStr) < 8 {
+	password := string(passBytes)
+	if len(password) < 8 {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Set Account Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
 		})
 		return nil
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(passStr), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("bcrypt error: %v", err)
 	}

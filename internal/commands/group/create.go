@@ -15,8 +15,8 @@ import (
 
 var groupNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
-// GroupCreate creates a new group.
-func GroupCreate(db *gorm.DB, currentUser *models.User, args []string) error {
+// Create creates a new group.
+func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupCreate", flag.ContinueOnError)
 	var groupName string
 	fs.StringVar(&groupName, "group", "", "Group name")

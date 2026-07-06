@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupAddMember adds a user to a group with a specified role.
-func GroupAddMember(db *gorm.DB, currentUser *models.User, args []string) error {
+// AddMember adds a user to a group with a specified role.
+func AddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddMember", flag.ContinueOnError)
 	var groupName, username, role string
 	fs.StringVar(&groupName, "group", "", "Group name")

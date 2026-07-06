@@ -60,7 +60,7 @@ func addIngressKey(db *gorm.DB, user *models.User, pubKeyText, comment string, p
 // the key is accepted.
 //
 // Usage: selfAddIngressKeyPIV --attest <path> --intermediate <path> [--comment <comment>]
-func SelfAddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) error {
+func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("selfAddIngressKeyPIV", flag.ContinueOnError)
 	var attestFile, intermediateFile, comment string
 	fs.StringVar(&attestFile, "attest", "", "Path to PIV attestation certificate (PEM)")

@@ -9,8 +9,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// SelfListEgressKeys lists all egress SSH keys for the current user.
-func SelfListEgressKeys(db *gorm.DB, user *models.User) error {
+// ListEgressKeys lists all egress SSH keys for the current user.
+func ListEgressKeys(db *gorm.DB, user *models.User) error {
 	var keys []models.SelfEgressKey
 	result := db.Where("user_id = ?", user.ID).Find(&keys)
 	if result.Error != nil {

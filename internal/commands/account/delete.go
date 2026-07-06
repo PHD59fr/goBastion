@@ -15,8 +15,8 @@ import (
 	gosync "goBastion/internal/utils/sync"
 )
 
-// AccountDelete removes a user account from the system.
-func AccountDelete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.User, args []string) error {
+// Delete removes a user account from the system.
+func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountDelete", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username to delete")

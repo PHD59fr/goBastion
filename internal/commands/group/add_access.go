@@ -16,8 +16,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// GroupAddAccess adds an SSH access entry to a group.
-func GroupAddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+// AddAccess adds an SSH access entry to a group.
+func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddAccess", flag.ContinueOnError)
 	var groupName, server, username, comment, allowedFrom, protocol string
 	var port int64
