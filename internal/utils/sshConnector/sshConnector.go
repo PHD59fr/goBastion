@@ -13,6 +13,7 @@ import (
 
 	"log/slog"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	bastionSync "goBastion/internal/utils/sync"
@@ -42,22 +43,22 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("error getting user home directory: %v", err)
+		return fmt.Errorf("error getting user home directory: %w", err)
 	}
 	tmpFilePath := filepath.Join(homeDir, ".tmp", fmt.Sprintf("sshkey-%s.pem", uuid.New().String()))
 
 	if err = os.MkdirAll(filepath.Dir(tmpFilePath), 0700); err != nil {
-		return fmt.Errorf("error creating ~/.tmp directory: %v", err)
+		return fmt.Errorf("error creating ~/.tmp directory: %w", err)
 	}
 	privateKey := access.PrivateKey + "\n"
 	if err = os.WriteFile(tmpFilePath, []byte(privateKey), 0600); err != nil {
-		return fmt.Errorf("error writing private key: %v", err)
+		return fmt.Errorf("error writing private key: %w", err)
 	}
 	defer func(name string) {
 		_ = os.Remove(name)
 	}(tmpFilePath)
 
-	knownHostsFile := fmt.Sprintf("/home/%s/.ssh/known_hosts", strings.ToLower(user.Username))
+	knownHostsFile := filepath.Join(config.Get().Paths.HomeBaseDir, strings.ToLower(user.Username), ".ssh", "known_hosts")
 	sshArgs := []string{
 		"-i", tmpFilePath,
 		"-o", "StrictHostKeyChecking=yes",
@@ -85,7 +86,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			case "exit status 100", "exit status 130", "signal: interrupt":
 				return nil
 			}
-			return fmt.Errorf("ssh execution error: %v", cmdErr)
+			return fmt.Errorf("ssh execution error: %w", cmdErr)
 		}
 		return nil
 	}
@@ -97,9 +98,11 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	safeUser = strings.ReplaceAll(safeUser, "..", "_")
 	safeServer := strings.ReplaceAll(access.Server, "/", "_")
 	safeServer = strings.ReplaceAll(safeServer, "..", "_")
-	dir := fmt.Sprintf("/app/ttyrec/%s/%s/", safeUser, safeServer)
+	safeAccessUser := strings.ReplaceAll(access.Username, "/", "_")
+	safeAccessUser = strings.ReplaceAll(safeAccessUser, "..", "_")
+	dir := fmt.Sprintf("%s/%s/%s/", config.Get().Paths.TtyrecDir, safeUser, safeServer)
 	if err = os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("error creating ttyrec dir: %v", err)
+		return fmt.Errorf("error creating ttyrec dir: %w", err)
 	}
 
 	// Non-interactive sessions (remote command) get a _cmd suffix in the filename
@@ -110,13 +113,13 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	if sessionID != "" {
 		filenameSuffix += "_sid-" + sessionID
 	}
-	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, access.Username, access.Server, access.Port, timestamp, filenameSuffix)
+	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeAccessUser, access.Server, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
 
 	// Create gzip output via temp file + atomic rename to prevent symlink attacks.
 	tmpGz, err := os.CreateTemp(dir, "*.gz.tmp")
 	if err != nil {
-		return fmt.Errorf("error creating temp gzip file: %v", err)
+		return fmt.Errorf("error creating temp gzip file: %w", err)
 	}
 	tmpGzPath := tmpGz.Name()
 	defer func() { _ = os.Remove(tmpGzPath) }() // cleanup on failure
@@ -153,7 +156,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			n, readErr := f.Read(buf)
 			if n > 0 {
 				if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
-					done <- fmt.Errorf("gzip write error: %v", werr)
+					done <- fmt.Errorf("gzip write error: %w", werr)
 					return
 				}
 			}
@@ -166,13 +169,17 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 						n, drainErr := f.Read(buf)
 						if n > 0 {
 							if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
-								done <- fmt.Errorf("gzip write error: %v", werr)
+								done <- fmt.Errorf("gzip write error: %w", werr)
 								return
 							}
 						}
-						if drainErr != nil {
+				if drainErr != nil {
+						if drainErr == io.EOF {
 							done <- nil
-							return
+						} else {
+							done <- fmt.Errorf("file drain error: %w", drainErr)
+						}
+						return
 						}
 					}
 				default:
@@ -182,7 +189,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 				}
 			}
 			if readErr != nil {
-				done <- fmt.Errorf("file read error: %v", readErr)
+				done <- fmt.Errorf("file read error: %w", readErr)
 				return
 			}
 		}
@@ -199,14 +206,22 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 
 	// Signal the goroutine that ttyrec has exited, then wait for it to finish draining.
 	close(cmdDone)
-	<-done
+	gzipErr := <-done
 
-	_ = gzipWriter.Close()
-	_ = tmpGz.Close()
+	if cerr := gzipWriter.Close(); cerr != nil {
+		return fmt.Errorf("gzip close error: %w", cerr)
+	}
+	if err := tmpGz.Close(); err != nil {
+		return fmt.Errorf("temp file close error: %w", err)
+	}
+
+	if gzipErr != nil {
+		return fmt.Errorf("gzip compression error: %w", gzipErr)
+	}
 
 	// Atomic rename from temp to final path
 	if err := os.Rename(tmpGzPath, ttyrecGzFile); err != nil {
-		return fmt.Errorf("error renaming gzip file: %v", err)
+		return fmt.Errorf("error renaming gzip file: %w", err)
 	}
 	// Prevent defer cleanup of successfully renamed temp file
 	tmpGzPath = ""
@@ -223,7 +238,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 }
 
 // hostKeyTTL is how long a stored host key is considered fresh before re-scanning.
-const hostKeyTTL = 24 * time.Hour
+// Value is read from configuration.
 
 // CheckAndUpdateHostKey implements TOFU (Trust On First Use) for the target server.
 //   - First connection: the scanned key is stored in DB and trusted.
@@ -244,7 +259,9 @@ func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 
 	// Fetch existing DB entries for this user.
 	var dbEntries []models.KnownHostsEntry
-	db.Where("user_id = ?", user.ID).Find(&dbEntries)
+	if err := db.Where("user_id = ?", user.ID).Find(&dbEntries).Error; err != nil {
+		return fmt.Errorf("error retrieving known hosts: %w", err)
+	}
 
 	// Build map keyType → stored entry for this specific host,
 	// and find the most recent update time.
@@ -261,12 +278,12 @@ func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 	}
 
 	// If the host is known and entries are still fresh, skip the network scan.
-	if len(existing) > 0 && time.Since(mostRecentUpdate) < hostKeyTTL {
+	if len(existing) > 0 && time.Since(mostRecentUpdate) < config.Get().SSH.HostKeyTTL {
 		return nil
 	}
 
 	// Run ssh-keyscan only when host is unknown or entries are stale.
-	out, err := exec.Command("ssh-keyscan", "-p", portStr, "-T", "5", server).Output()
+	out, err := exec.Command("ssh-keyscan", "-p", portStr, "-T", fmt.Sprintf("%d", int(config.Get().SSH.KeyscanTimeout.Seconds())), server).Output()
 	if err != nil || len(out) == 0 {
 		// Can't scan (unreachable, firewall…) - let SSH fail naturally.
 		return nil

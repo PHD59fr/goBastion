@@ -60,7 +60,7 @@ func DisplayHelpFromRegistry(cmds []registry.CommandSpec, db *gorm.DB, user mode
 
 	// Build SectionContent per (category, subcategory).
 	// Category title (> MANAGE GROUPS) only on the first subcategory of each category.
-	catColor := map[string]func(a ...interface{}) string{
+	catColor := map[string]func(a ...any) string{
 		"MANAGE YOUR ACCOUNT":   utils.FgYellowB,
 		"MANAGE OTHER ACCOUNTS": utils.FgRedB,
 		"MANAGE GROUPS":         utils.FgMagentaB,
@@ -147,10 +147,16 @@ func DisplayInfo() {
 		Title:     "Info",
 		BlockType: "info",
 		Sections: []console.SectionContent{
-			{SubTitle: "goBastion", Body: []string{
-				fmt.Sprintf("Version: %s", version.Version),
-				"Repository: https://github.com/phd59fr/goBastion",
-			}},
+			{SubTitle: "goBastion", Body: func() []string {
+				v := version.Version
+				if v == "" {
+					v = "unknown"
+				}
+				return []string{
+					fmt.Sprintf("Version: %s", v),
+					"Repository: https://github.com/phd59fr/goBastion",
+				}
+			}()},
 		},
 	})
 }

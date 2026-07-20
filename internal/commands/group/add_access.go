@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/validation"
@@ -23,7 +23,6 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	var port int64
 	var ttlDays int
 	var force bool
-	var guest bool
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&server, "server", "", "Server to add access for")
 	fs.Int64Var(&port, "port", 22, "Port number")
@@ -32,7 +31,6 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
 	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never, must be positive if set)")
 	fs.StringVar(&protocol, "protocol", "ssh", "Protocol restriction: ssh (all), scpupload, scpdownload, sftp, rsync")
-	fs.BoolVar(&guest, "guest", false, "Allow guest role members to use this access")
 	fs.BoolVar(&force, "force", false, "Skip TCP connectivity check")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
@@ -41,7 +39,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync] [--guest] [--force]"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAccess --group <groupName> --server <server> --port <port> --username <username> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync] [--force]"}}},
 		})
 		return nil
 	}
@@ -77,9 +75,9 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	// Restrict active checks to private/reserved targets to avoid scanner-like behavior.
 	if !force {
 		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
-		shouldCheck := isPrivateOrReservedTarget(server)
+		shouldCheck := validation.IsPrivateOrReservedTarget(server)
 		if shouldCheck {
-			conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+			conn, err := net.DialTimeout("tcp", addr, config.Get().Proxy.TCPConnectTimeout)
 			if err != nil {
 				console.DisplayBlock(console.ContentBlock{
 					Title:     "Add Group Access",
@@ -159,14 +157,13 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	}
 
 	access := models.GroupAccess{
-		GroupID:      group.ID,
-		Server:       server,
-		Port:         port,
-		Username:     username,
-		GuestAllowed: guest,
-		Comment:      comment,
-		AllowedFrom:  allowedFrom,
-		Protocol:     protocol,
+		GroupID:     group.ID,
+		Server:      server,
+		Port:        port,
+		Username:    username,
+		Comment:     comment,
+		AllowedFrom: allowedFrom,
+		Protocol:    protocol,
 	}
 	if ttlDays > 0 {
 		t := time.Now().AddDate(0, 0, ttlDays)
@@ -189,13 +186,3 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	return nil
 }
 
-func isPrivateOrReservedTarget(server string) bool {
-	host := strings.TrimSpace(server)
-	host = strings.TrimPrefix(host, "[")
-	host = strings.TrimSuffix(host, "]")
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
-}

@@ -74,8 +74,9 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 
 	tmpDir := fmt.Sprintf("/home/%s/.tmp", currentUser.Username)
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {
-		return fmt.Errorf("error creating temporary directory: %v", err)
+		return fmt.Errorf("error creating temporary directory: %w", err)
 	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 	tmpFile := fmt.Sprintf("%s/sshkey_%s.pem", tmpDir, uuid.New().String())
 	hostname, _ := os.Hostname()
 	cmd := exec.Command("ssh-keygen", "-t", keyType, "-b", strconv.Itoa(keySize), "-C", groupName+"@"+hostname+":GROUP", "-f", tmpFile, "-N", "")
@@ -93,13 +94,12 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 
 	parsedKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyBytes)
 	if err != nil {
-		return fmt.Errorf("invalid SSH key: %v", err)
+		return fmt.Errorf("invalid SSH key: %w", err)
 	}
 
 	sha256Fingerprint := sha256.Sum256(parsedKey.Marshal())
 	fingerprint := base64.StdEncoding.EncodeToString(sha256Fingerprint[:])
 	keySize = sshkey.GetKeySize(parsedKey)
-	_ = os.RemoveAll(tmpDir)
 
 	privKey := strings.TrimSpace(string(privKeyBytes))
 	encrypted, encErr := cryptokey.ReEncryptIfNeeded(privKey)

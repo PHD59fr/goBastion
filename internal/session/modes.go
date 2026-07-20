@@ -25,6 +25,7 @@ import (
 	"goBastion/internal/commands/registry"
 	cmdssh "goBastion/internal/commands/ssh"
 	cmdtty "goBastion/internal/commands/tty"
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
@@ -63,7 +64,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
 			return
 		}
-		if !checkTOTP(db, &currentUser, log) {
+		if !checkMFA(db, &currentUser, log) {
 			return
 		}
 		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
@@ -76,7 +77,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			return
 		}
 		if strings.TrimSpace(cmd) == "" {
-			if !checkTOTP(db, &currentUser, log) {
+			if !checkMFA(db, &currentUser, log) {
 				return
 			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
@@ -86,7 +87,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
 			isSftpSession := strings.HasPrefix(cmd, "sftp-session")
 			if !isTCPProxy && !isSftpSession {
-				if !checkTOTP(db, &currentUser, log) {
+				if !checkMFA(db, &currentUser, log) {
 					return
 				}
 			}
@@ -230,7 +231,7 @@ func captureOutput(run func() error) (stdout string, stderr string, runErr error
 	os.Stderr = wErr
 	doneOut := make(chan string, 1)
 	doneErr := make(chan string, 1)
-	readErr := make(chan error, 2)
+	readErr := make(chan error, 1)
 	go func() {
 		var buf bytes.Buffer
 		_, cErr := io.Copy(&buf, r)
@@ -259,16 +260,18 @@ func captureOutput(run func() error) (stdout string, stderr string, runErr error
 	_ = r.Close()
 	_ = rErr.Close()
 
-	var out, errOut string
+	// Drain both channels. Pipes are closed so goroutines will finish and
+	// send exactly one value each (either a string or an error). We always
+	// iterate twice to avoid goroutine leaks and data loss.
 	for i := 0; i < 2; i++ {
 		select {
-		case out = <-doneOut:
-		case errOut = <-doneErr:
-		case err = <-readErr:
-			return "", "", runErr, err
+		case stdout = <-doneOut:
+		case stderr = <-doneErr:
+		case captureErr = <-readErr:
+			// Save the error but continue draining the other channel.
 		}
 	}
-	return out, errOut, runErr, nil
+	return stdout, stderr, runErr, captureErr
 }
 
 func emitJSONPayload(mode oshJSONMode, payload map[string]any) {
@@ -445,7 +448,7 @@ func resetStdIn() {
 }
 
 // maxMFAAttempts is the maximum number of TOTP/backup code attempts allowed per login.
-const maxMFAAttempts = 3
+// Value is read from configuration.
 
 // checkMFA prompts for TOTP and/or password second factors if configured.
 // Returns false if any check fails, which should cause the session to be terminated immediately.
@@ -482,8 +485,8 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	}
 	log.Info("mfa_challenge", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
 
-	for attempt := 1; attempt <= maxMFAAttempts; attempt++ {
-		fmt.Printf("🔐 Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, maxMFAAttempts)
+	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
+		fmt.Printf("🔐 Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
 		reader := bufio.NewReader(os.Stdin)
 		code, err := reader.ReadString('\n')
 		if err != nil {
@@ -518,21 +521,16 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 			}
 		}
 
-		if attempt < maxMFAAttempts {
+		if attempt < config.Get().MFA.MaxAttempts {
 			fmt.Println("⛔ Invalid code. Try again.")
-			time.Sleep(time.Duration(attempt) * time.Second) // exponential backoff
+			time.Sleep(time.Duration(attempt) * config.Get().MFA.BackoffBase) // linear backoff
 		}
 	}
 
-	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.Int("attempts", maxMFAAttempts))
-	fmt.Printf("⛔ Invalid TOTP or backup code. Access denied after %d attempts.\n", maxMFAAttempts)
+	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.Int("attempts", config.Get().MFA.MaxAttempts))
+	fmt.Printf("⛔ Invalid TOTP or backup code. Access denied after %d attempts.\n", config.Get().MFA.MaxAttempts)
 	fmt.Println("If you lost access to your authenticator, contact your admin to disable TOTP (accountDisableTOTP --user " + user.Username + ").")
 	return false
-}
-
-// checkTOTP is kept for backward compatibility; delegates to checkMFA.
-func checkTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
-	return checkMFA(db, user, log)
 }
 
 // parseTCPProxyRequest detects an OpenSSH -W host:port proxy request and returns the target.
@@ -569,7 +567,15 @@ func isMoshServerRequest(command string, args []string) bool {
 	return command == "mosh-server" || strings.HasPrefix(command, "mosh-server ")
 }
 
-// runMoshServer exec's mosh-server directly, passing through all arguments.
+// allowedMoshFlags is the set of flags that mosh-server is permitted to receive.
+// Any other flag is rejected to prevent argument injection.
+var allowedMoshFlags = map[string]bool{
+	"-s": true,
+	"-c": true,
+	"-":  true,
+}
+
+// runMoshServer exec's mosh-server directly, passing through validated arguments.
 // stdin/stdout/stderr are inherited so the mosh client can negotiate the UDP port.
 func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 	// Reconstruct the full argument list from the original command string + extra args.
@@ -580,6 +586,28 @@ func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 	}
 	// parts[0] is "mosh-server", parts[1:] are inline args from the command string.
 	cmdArgs := append(parts[1:], extraArgs...)
+
+	// Validate arguments to prevent injection of unexpected flags.
+	// Only known-safe flags (-s, -c, -) and positional arguments (host, port) are allowed.
+	for i, arg := range cmdArgs {
+		if arg == "--" {
+			// End-of-options marker; everything after this is positional and safe.
+			break
+		}
+		if strings.HasPrefix(arg, "-") && !allowedMoshFlags[arg] {
+			log.Error("mosh_server_rejected",
+				slog.String("reason", "unexpected flag"),
+				slog.String("flag", arg),
+			)
+			fmt.Fprintf(os.Stderr, "mosh-server: rejected unsafe argument %q\n", arg)
+			return
+		}
+		// Skip the value that follows a flag that expects an argument.
+		if allowedMoshFlags[arg] && arg != "-" && i+1 < len(cmdArgs) {
+			// Skip the next token (value for this flag).
+			continue
+		}
+	}
 
 	log.Info("mosh_server")
 

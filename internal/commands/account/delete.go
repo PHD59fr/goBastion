@@ -71,7 +71,7 @@ func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) e
 	if err := adapter.DeleteUser(username); err != nil {
 		return err
 	}
-	if err := deleteDBUser(db, username); err != nil {
+	if err := deleteDBUser(db, &user); err != nil {
 		syncer := gosync.New(db, adapter, *slog.Default())
 		if restoreErr := syncer.CreateUserFromDB(user); restoreErr != nil {
 			return fmt.Errorf("delete failed after OS removal: %v; restore also failed: %v", err, restoreErr)
@@ -82,12 +82,8 @@ func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) e
 }
 
 // deleteDBUser soft-deletes the user record from the database.
-func deleteDBUser(db *gorm.DB, username string) error {
-	var user models.User
-	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-		return fmt.Errorf("user not found: %w", err)
-	}
-	if err := db.Delete(&user).Error; err != nil {
+func deleteDBUser(db *gorm.DB, user *models.User) error {
+	if err := db.Delete(user).Error; err != nil {
 		return fmt.Errorf("error deleting user: %w", err)
 	}
 	return nil

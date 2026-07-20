@@ -19,7 +19,7 @@ import (
 func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) bool {
 	if os.Getuid() == 0 {
 		fmt.Println("You cannot run this program as root.")
-		os.Exit(1)
+		return false
 	}
 
 	ip := system.ClientIPFromEnv()

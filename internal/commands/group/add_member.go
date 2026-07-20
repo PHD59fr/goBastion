@@ -95,7 +95,7 @@ func AddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return err
 	}
-	currentUser.InvalidateGroupsCache()
+	models.InvalidateGroupsCache(currentUser.ID)
 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Add Member",

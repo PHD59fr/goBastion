@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 
 	"gorm.io/gorm"
@@ -75,18 +76,10 @@ func ListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	sections := make([]console.SectionContent, len(egressKeys))
-	for i, key := range egressKeys {
-		sections[i] = console.SectionContent{
-			SubTitle: fmt.Sprintf("Key ID: %s", key.ID.String()),
-			Body: []string{
-				fmt.Sprintf("Type: %s", key.Type),
-				fmt.Sprintf("Fingerprint: %s", key.Fingerprint),
-				fmt.Sprintf("Size: %d", key.Size),
-				fmt.Sprintf("Last Update: %s", key.UpdatedAt.Format("2006-01-02 15:04:05")),
-				fmt.Sprintf("Public Key: %s", key.PubKey),
-			},
-		}
+	keySections := utils.RenderEgressKeysTable(egressKeys)
+	sections := make([]console.SectionContent, len(keySections))
+	for i, ks := range keySections {
+		sections[i] = console.SectionContent{SubTitle: ks.SubTitle, Body: ks.Body}
 	}
 
 	console.DisplayBlock(console.ContentBlock{

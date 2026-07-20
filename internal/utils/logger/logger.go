@@ -12,9 +12,9 @@ import (
 	"os"
 	"strings"
 	"sync"
-)
 
-const logFile = "/goBastion.log"
+	"goBastion/internal/config"
+)
 
 // slogLevelToGelf maps a slog level to a GELF syslog severity number.
 func slogLevelToGelf(l slog.Level) int {
@@ -262,14 +262,15 @@ func (h *plainTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup is a no-op.
 func (h *plainTextHandler) WithGroup(_ string) slog.Handler { return h }
 
-// NewLogger returns a logger writing to /goBastion.log (always)
+// NewLogger returns a logger writing to the configured log file (always)
 // and to syslog (best-effort).
 //
 // Log format is controlled by the LOG_FORMAT environment variable:
 //   - "json"  (default): structured JSON lines — compatible with log aggregators
 //   - "plain": human-readable timestamped text — useful for local debugging
 func NewLogger() *slog.Logger {
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	cfg := config.Get()
+	f, err := os.OpenFile(cfg.Paths.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
 	if err != nil {
 		f = os.Stderr
 	}

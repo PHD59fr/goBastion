@@ -2,8 +2,11 @@ package models
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -71,12 +74,20 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.IsAdmin()
 	case "accountDisableTOTP":
 		return u.IsAdmin()
+	case "accountUnexpire":
+		return u.IsAdmin()
+	case "accountExpire":
+		return u.IsAdmin()
 	case "pivAddTrustAnchor", "pivListTrustAnchors", "pivRemoveTrustAnchor":
 		return u.canDoRestricted(db, right)
 	case "whoHasAccessTo":
 		return u.IsAdmin()
 
 	case "accountSetPassword":
+		return u.IsAdmin()
+
+	// Bastion Config
+	case "bastionConfig":
 		return u.IsAdmin()
 
 	case "realmCreate", "realmDelete", "realmList", "realmInfo":
@@ -163,6 +174,32 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 			return false
 		}
 		return u.canDoInGroup(userGroups, target, isOwnerOrACLKeeper)
+
+	case "groupAddGuestAccess", "groupDelGuestAccess":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
+
+	case "groupListGuestAccesses":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrMember)
 
 	case "groupCreate", "groupDelete":
 		return u.IsAdmin()
@@ -257,26 +294,44 @@ func (u *User) canDoRestricted(db *gorm.DB, right string) bool {
 		Where("user_id = ? AND command = ?", u.ID, strings.TrimSpace(right)).
 		Count(&count).Error
 	if err != nil {
+		slog.Warn("canDoRestricted: db query failed", "error", err, "user", u.Username, "right", right)
 		return false
 	}
 	return count > 0
 }
 
+// groupsCache is a process-wide cache of group memberships keyed by user ID.
+// It avoids repeated DB queries when CanDo is called multiple times in one request.
+var (
+	groupsCacheMu sync.RWMutex
+	groupsCache   = make(map[uuid.UUID][]UserGroup)
+)
+
 // getGroups returns all group memberships for the user.
 // Results are cached for the duration of a session to avoid repeated DB queries.
 func (u *User) getGroups(db *gorm.DB) ([]UserGroup, error) {
-	if u.cachedGroups != nil {
-		return *u.cachedGroups, nil
+	groupsCacheMu.RLock()
+	if groups, ok := groupsCache[u.ID]; ok {
+		groupsCacheMu.RUnlock()
+		return groups, nil
 	}
+	groupsCacheMu.RUnlock()
+
 	var userGroups []UserGroup
 	if err := db.Preload("Group").Where("user_id = ?", u.ID).Find(&userGroups).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving user groups: %w", err)
 	}
-	u.cachedGroups = &userGroups
+
+	groupsCacheMu.Lock()
+	groupsCache[u.ID] = userGroups
+	groupsCacheMu.Unlock()
+
 	return userGroups, nil
 }
 
 // InvalidateGroupsCache clears the cached groups so the next CanDo call re-queries the DB.
-func (u *User) InvalidateGroupsCache() {
-	u.cachedGroups = nil
+func InvalidateGroupsCache(userID uuid.UUID) {
+	groupsCacheMu.Lock()
+	delete(groupsCache, userID)
+	groupsCacheMu.Unlock()
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
@@ -62,7 +63,7 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 		return fmt.Errorf("access denied for user %s to list TTY sessions", u.Username)
 	}
 
-	baseDir := fmt.Sprintf("/app/ttyrec/%s/", strings.ToLower(username))
+	baseDir := fmt.Sprintf("%s/%s/", config.Get().Paths.TtyrecDir, strings.ToLower(username))
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session List",

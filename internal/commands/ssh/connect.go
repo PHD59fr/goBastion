@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/cryptokey"
@@ -54,7 +55,7 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 	sshUser, sshHost, sshPort, remoteCmd, err := parseSSHCommand(cleanParams)
 	if err != nil {
-		return fmt.Errorf("invalid SSH command: %v", err)
+		return fmt.Errorf("invalid SSH command: %w", err)
 	}
 
 	sshFrom := system.ClientIPFromEnv()
@@ -113,7 +114,7 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
 		log.Warn("ssh_connect", slog.String("reason", "access_denied"), slog.String("error", err.Error()))
-		return fmt.Errorf("%v", err)
+		return fmt.Errorf("access filter failed: %w", err)
 	}
 
 	if len(accesses) > 0 {
@@ -142,10 +143,10 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 					fmt.Println("⛔ This group requires MFA but you have no TOTP secret configured.")
 					fmt.Println("   Run selfSetupTOTP first, then ask your admin to enable JIT MFA for this group.")
 					log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
-					return nil
+					return fmt.Errorf("⛔ MFA required but no TOTP secret configured")
 				}
 				if !promptTOTP(user, log) {
-					return nil
+					return fmt.Errorf("⛔ MFA validation failed")
 				}
 			}
 
@@ -263,7 +264,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 			"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
 		user.ID, username, host, portInt, now, protocol,
 	).Find(&selfAccesses).Error; err != nil {
-		return nil, fmt.Errorf("error retrieving self accesses: %v", err)
+		return nil, fmt.Errorf("error retrieving self accesses: %w", err)
 	}
 	for i := range selfAccesses {
 		sa := &selfAccesses[i]
@@ -279,13 +280,17 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	// --- Group accesses (scores 1 and 3) ---
 	var userGroups []models.UserGroup
 	if err = DB.Where("user_id = ?", user.ID).Preload("Group").Find(&userGroups).Error; err != nil {
-		return nil, fmt.Errorf("error retrieving user groups: %v", err)
+		return nil, fmt.Errorf("error retrieving user groups: %w", err)
 	}
 	groupIDs := make([]uuid.UUID, 0, len(userGroups))
 	groupRoles := make(map[uuid.UUID]string, len(userGroups))
+	hasGuestRole := false
 	for _, ug := range userGroups {
 		groupIDs = append(groupIDs, ug.GroupID)
 		groupRoles[ug.GroupID] = ug.Role
+		if ug.Role == models.GroupRoleGuest {
+			hasGuestRole = true
+		}
 	}
 
 	if len(groupIDs) > 0 {
@@ -297,18 +302,44 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return nil, validation.WrapDBError(err, "error retrieving group accesses")
 		}
-		for i := range groupAccesses {
-			ga := &groupAccesses[i]
-			if groupRoles[ga.GroupID] == models.GroupRoleGuest && !ga.GuestAllowed {
-				continue
+
+		// For guest-role users, collect their granular grants.
+		var guestGrants []models.GroupGuestAccess
+		if hasGuestRole {
+			_ = DB.Where(
+				"user_id = ? AND server = ? AND port = ? AND username = ? AND (expires_at IS NULL OR expires_at > ?)",
+				user.ID, host, portInt, username, now,
+			).Find(&guestGrants).Error
+			// Build a set of group IDs for which this user has a matching grant.
+			grantGroupIDs := make(map[uuid.UUID]bool, len(guestGrants))
+			for i := range guestGrants {
+				grantGroupIDs[guestGrants[i].GroupID] = true
 			}
-			score := scoreGroupWildcard
-			reason := "group-wildcard"
-			if ga.Username != "*" {
-				score = scoreGroupExact
-				reason = "group-exact"
+
+			for i := range groupAccesses {
+				ga := &groupAccesses[i]
+				if groupRoles[ga.GroupID] == models.GroupRoleGuest && !grantGroupIDs[ga.GroupID] {
+					continue
+				}
+				score := scoreGroupWildcard
+				reason := "group-wildcard"
+				if ga.Username != "*" {
+					score = scoreGroupExact
+					reason = "group-exact"
+				}
+				candidates = append(candidates, accessCandidate{groupAccess: ga, score: score, reason: reason})
 			}
-			candidates = append(candidates, accessCandidate{groupAccess: ga, score: score, reason: reason})
+		} else {
+			for i := range groupAccesses {
+				ga := &groupAccesses[i]
+				score := scoreGroupWildcard
+				reason := "group-wildcard"
+				if ga.Username != "*" {
+					score = scoreGroupExact
+					reason = "group-exact"
+				}
+				candidates = append(candidates, accessCandidate{groupAccess: ga, score: score, reason: reason})
+			}
 		}
 	}
 
@@ -361,7 +392,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	allowedFrom := ""
 	if best.selfAccess != nil {
 		allowedFrom = best.selfAccess.AllowedFrom
-	} else {
+	} else if best.groupAccess != nil {
 		allowedFrom = best.groupAccess.AllowedFrom
 	}
 	if !ipAllowed(clientIP, allowedFrom) {
@@ -393,7 +424,7 @@ func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess,
 	var key models.GroupEgressKey
 	if err := db.Where("group_id = ?", ga.GroupID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.AccessRight{}, validation.WrapDBError(fmt.Errorf("error retrieving egress key for group %v: %v", ga.GroupID, err), "database error")
+		return models.AccessRight{}, validation.WrapDBError(fmt.Errorf("error retrieving egress key for group %v: %w", ga.GroupID, err), "database error")
 	}
 
 	sourcePrefix := "group"
@@ -427,7 +458,7 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 	var key models.SelfEgressKey
 	if err := db.Where("user_id = ?", sa.UserID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.AccessRight{}, validation.WrapDBError(fmt.Errorf("error retrieving egress key for user %v: %v", sa.UserID, err), "database error")
+		return models.AccessRight{}, validation.WrapDBError(fmt.Errorf("error retrieving egress key for user %v: %w", sa.UserID, err), "database error")
 	}
 
 	sourcePrefix := "account"
@@ -496,7 +527,7 @@ func normalizeWildcardUsername(stored, requested string) string {
 	if requested != "" {
 		return requested
 	}
-	return "root"
+	return config.Get().Security.DefaultWildcardUsername
 }
 
 // detectProtocol inspects the remote command string to determine the access protocol.
@@ -523,8 +554,8 @@ func detectProtocol(remoteCmd string) string {
 // promptTOTP reads a TOTP code from stdin and verifies it.
 // Used for JIT MFA enforcement at connection time.
 func promptTOTP(user models.User, log *slog.Logger) bool {
-	for attempt := 1; attempt <= 3; attempt++ {
-		fmt.Printf("🔐 This group requires MFA. Enter TOTP code [attempt %d/3]: ", attempt)
+	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
+		fmt.Printf("🔐 This group requires MFA. Enter TOTP code [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
 		reader := bufio.NewReader(os.Stdin)
 		code, err := reader.ReadString('\n')
 		if err != nil {
@@ -536,9 +567,9 @@ func promptTOTP(user models.User, log *slog.Logger) bool {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
 			return true
 		}
-		if attempt < 3 {
+		if attempt < config.Get().MFA.MaxAttempts {
 			fmt.Println("⛔ Invalid TOTP code. Try again.")
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(time.Duration(attempt) * config.Get().MFA.BackoffBase) // linear backoff
 		}
 	}
 	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
@@ -618,8 +649,14 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 	}
 
 	if port == "" {
-		port = "22"
+		port = strconv.FormatInt(config.Get().SSH.DefaultPort, 10)
 	}
+
+	portInt, err := strconv.ParseInt(port, 10, 64)
+	if err != nil || !validation.IsValidPort(portInt) {
+		return "", "", "", "", fmt.Errorf("invalid port: %q (must be 1-65535)", port)
+	}
+
 	// Do not default the username here. If the caller omitted a username, SSHConnect
 	// will attempt to infer it from stored accesses and fall back to "root" when needed.
 	if host == "" {
@@ -665,7 +702,7 @@ func extractForwardHops(params string) (string, []SSHHop, error) {
 
 // parseHop parses "[user@]host[:port]" into an SSHHop.
 func parseHop(s string) (SSHHop, error) {
-	hop := SSHHop{Port: "22"}
+	hop := SSHHop{Port: strconv.FormatInt(config.Get().SSH.DefaultPort, 10)}
 	s = strings.TrimSpace(s)
 	if idx := strings.Index(s, "@"); idx >= 0 {
 		hop.User = s[:idx]
@@ -736,7 +773,7 @@ func resolveRealmHop(db *gorm.DB, realmName string) (string, string, error) {
 	}
 	hopPort := realm.BastionPort
 	if hopPort == 0 {
-		hopPort = 22
+		hopPort = config.Get().SSH.DefaultPort
 	}
 	if !validation.IsValidPort(hopPort) {
 		return "", "", fmt.Errorf("⛔ Realm '%s' has invalid bastion port %d", realm.Name, hopPort)
@@ -791,7 +828,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port string) error {
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid port: %v", err)
+		return fmt.Errorf("invalid port: %w", err)
 	}
 
 	sshFrom := system.ClientIPFromEnv()
@@ -806,7 +843,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 	forcedHost, err := resolveForcedHost(db, user, host)
 	if err != nil {
 		log.Error("alias_resolved", slog.String("error", err.Error()))
-		return fmt.Errorf("error searching host: %v", err)
+		return fmt.Errorf("error searching host: %w", err)
 	}
 	if forcedHost.Host != "" {
 		log.Info("alias_resolved", slog.String("alias", host), slog.String("to", forcedHost.Host))
@@ -855,7 +892,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
 	sshUser, sshHost, sshPort, _, err := parseSSHCommand(params)
 	if err != nil {
-		return fmt.Errorf("invalid sftp-session command: %v", err)
+		return fmt.Errorf("invalid sftp-session command: %w", err)
 	}
 
 	sshFrom := system.ClientIPFromEnv()
@@ -871,7 +908,7 @@ func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 	forcedHost, err := resolveForcedHost(db, user, sshHost)
 	if err != nil {
 		log.Error("alias_resolved", slog.String("error", err.Error()))
-		return fmt.Errorf("error searching host: %v", err)
+		return fmt.Errorf("error searching host: %w", err)
 	}
 	if forcedHost.Host != "" {
 		log.Info("alias_resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
@@ -935,9 +972,13 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 		return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve user groups: %w", err)
 	}
 	groupRoles := make(map[uuid.UUID]string, len(userGroups))
+	hasGuestRole := false
 	for _, ug := range userGroups {
 		groupIDs = append(groupIDs, ug.GroupID)
 		groupRoles[ug.GroupID] = ug.Role
+		if ug.Role == models.GroupRoleGuest {
+			hasGuestRole = true
+		}
 	}
 	if len(groupIDs) > 0 {
 		if err := db.Where(
@@ -973,8 +1014,23 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 			return access, nil
 		}
 	}
+
+	// For guest-role users, collect their granular grants.
+	var guestGrantGroupIDs map[uuid.UUID]bool
+	if hasGuestRole {
+		var guestGrants []models.GroupGuestAccess
+		_ = db.Where(
+			"user_id = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+			user.ID, host, port, now,
+		).Find(&guestGrants).Error
+		guestGrantGroupIDs = make(map[uuid.UUID]bool, len(guestGrants))
+		for i := range guestGrants {
+			guestGrantGroupIDs[guestGrants[i].GroupID] = true
+		}
+	}
+
 	for _, ga := range groupAccesses {
-		if groupRoles[ga.GroupID] == models.GroupRoleGuest && !ga.GuestAllowed {
+		if hasGuestRole && groupRoles[ga.GroupID] == models.GroupRoleGuest && !guestGrantGroupIDs[ga.GroupID] {
 			continue
 		}
 		if !ipAllowed(clientIP, ga.AllowedFrom) {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 
@@ -48,28 +49,28 @@ func Proxy(access models.AccessRight) error {
 	// 1. Connect to the target with the egress key.
 	signer, err := ssh.ParsePrivateKey([]byte(access.PrivateKey))
 	if err != nil {
-		return fmt.Errorf("parse egress key: %v", err)
+		return fmt.Errorf("parse egress key: %w", err)
 	}
 
 	targetAddr := net.JoinHostPort(access.Server, fmt.Sprintf("%d", access.Port))
-	netConn, err := net.DialTimeout("tcp", targetAddr, 15*time.Second)
+	netConn, err := net.DialTimeout("tcp", targetAddr, config.Get().Proxy.SFTPDialTimeout)
 	if err != nil {
-		return fmt.Errorf("connect to target %s: %v", targetAddr, err)
+		return fmt.Errorf("connect to target %s: %w", targetAddr, err)
 	}
 	defer func() { _ = netConn.Close() }()
 
 	currentUser, err := user.Current()
 	if err != nil {
-		return fmt.Errorf("resolve current user: %v", err)
+		return fmt.Errorf("resolve current user: %w", err)
 	}
-	knownHostsFile := filepath.Join("/home", utils.NormalizeUsername(currentUser.Username), ".ssh", "known_hosts")
+	knownHostsFile := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(currentUser.Username), ".ssh", "known_hosts")
 	hostKeyCallback, err := knownhosts.New(knownHostsFile)
 	if err != nil {
-		return fmt.Errorf("load known_hosts callback: %v", err)
+		return fmt.Errorf("load known_hosts callback: %w", err)
 	}
 
 	sshServerAddr := targetAddr
-	if access.Port == 22 {
+	if access.Port == config.Get().SSH.DefaultPort {
 		sshServerAddr = access.Server
 	}
 
@@ -77,12 +78,12 @@ func Proxy(access models.AccessRight) error {
 		User:            access.Username,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         15 * time.Second,
+		Timeout:         config.Get().Proxy.SFTPSSHTimeout,
 	}
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, sshServerAddr, clientConfig)
 	if err != nil {
-		return fmt.Errorf("ssh connect to %s: %v", targetAddr, err)
+		return fmt.Errorf("ssh connect to %s: %w", targetAddr, err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
 	defer func() { _ = client.Close() }()
@@ -90,31 +91,31 @@ func Proxy(access models.AccessRight) error {
 	// 2. Request the sftp subsystem on the target.
 	session, err := client.NewSession()
 	if err != nil {
-		return fmt.Errorf("open ssh session: %v", err)
+		return fmt.Errorf("open ssh session: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
 	if err = session.RequestSubsystem("sftp"); err != nil {
-		return fmt.Errorf("request sftp subsystem: %v", err)
+		return fmt.Errorf("request sftp subsystem: %w", err)
 	}
 
 	targetIn, err := session.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("target stdin pipe: %v", err)
+		return fmt.Errorf("target stdin pipe: %w", err)
 	}
 	targetOut, err := session.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("target stdout pipe: %v", err)
+		return fmt.Errorf("target stdout pipe: %w", err)
 	}
 
 	// 3. Generate an ephemeral RSA host key for our fake SSH server.
 	hostKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return fmt.Errorf("generate ephemeral host key: %v", err)
+		return fmt.Errorf("generate ephemeral host key: %w", err)
 	}
 	hostSigner, err := ssh.NewSignerFromKey(hostKey)
 	if err != nil {
-		return fmt.Errorf("create host signer: %v", err)
+		return fmt.Errorf("create host signer: %w", err)
 	}
 
 	// 4. Present a minimal SSH server on stdin/stdout.
@@ -129,7 +130,7 @@ func Proxy(access models.AccessRight) error {
 
 	serverConn, newChans, globalReqs, err := ssh.NewServerConn(&stdinoutConn{}, serverConfig)
 	if err != nil {
-		return fmt.Errorf("ssh server handshake: %v", err)
+		return fmt.Errorf("ssh server handshake: %w", err)
 	}
 	defer func() { _ = serverConn.Close() }()
 	go ssh.DiscardRequests(globalReqs)
@@ -143,7 +144,7 @@ func Proxy(access models.AccessRight) error {
 
 		ch, requests, err := newChan.Accept()
 		if err != nil {
-			return fmt.Errorf("accept channel: %v", err)
+			return fmt.Errorf("accept channel: %w", err)
 		}
 
 		// Acknowledge subsystem and other requests silently.

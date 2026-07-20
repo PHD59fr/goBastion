@@ -14,6 +14,15 @@ import (
 
 // List lists configured realms.
 func List(db *gorm.DB, currentUser *models.User, args []string) error {
+	if !currentUser.CanDo(db, "realmList", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Realm List",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list realms."}}},
+		})
+		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+
 	var realms []models.Realm
 	if err := db.Preload("CreatedBy").Order("name asc").Find(&realms).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

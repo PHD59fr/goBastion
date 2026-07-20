@@ -50,9 +50,12 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	// Load all accesses and filter in Go (supports CIDR matching)
+	// Filter self_accesses by server substring in SQL to reduce dataset,
+	// then do Go-side filtering for CIDR containment.
 	var allSelfAccesses []models.SelfAccess
-	if err := db.Preload("User", "deleted_at IS NULL").Where("deleted_at IS NULL").Find(&allSelfAccesses).Error; err != nil {
+	if err := db.Preload("User", "deleted_at IS NULL").
+		Where("deleted_at IS NULL AND server LIKE ?", "%"+server+"%").
+		Find(&allSelfAccesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
 			BlockType: "error",
@@ -61,14 +64,29 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
+	// Filter group_accesses by server substring in SQL to reduce dataset.
 	var allGroupAccesses []models.GroupAccess
-	if err := db.Preload("Group", "deleted_at IS NULL").Where("deleted_at IS NULL").Find(&allGroupAccesses).Error; err != nil {
+	if err := db.Preload("Group", "deleted_at IS NULL").
+		Where("deleted_at IS NULL AND server LIKE ?", "%"+server+"%").
+		Find(&allGroupAccesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"An error occurred while retrieving group accesses."}}},
 		})
 		return err
+	}
+
+	// Batch-load all UserGroup records with preloaded User to avoid N+1 queries.
+	var allUserGroups []models.UserGroup
+	if err := db.Preload("User", "deleted_at IS NULL").
+		Where("deleted_at IS NULL").
+		Find(&allUserGroups).Error; err != nil {
+		allUserGroups = nil
+	}
+	groupMemberships := make(map[uuid.UUID][]models.UserGroup, len(allUserGroups))
+	for _, ug := range allUserGroups {
+		groupMemberships[ug.GroupID] = append(groupMemberships[ug.GroupID], ug)
 	}
 
 	var buf bytes.Buffer
@@ -87,30 +105,14 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		if !serverMatchesQuery(ga.Server, server) {
 			continue
 		}
-		var userGroups []models.UserGroup
-		if err := db.Preload("User", "deleted_at IS NULL").
-			Where("group_id = ? AND deleted_at IS NULL", ga.GroupID).
-			Find(&userGroups).Error; err != nil {
-			continue
-		}
+		userGroups := groupMemberships[ga.GroupID]
 
 		for _, ug := range userGroups {
 			if ug.User.ID == uuid.Nil {
 				continue
 			}
 
-			role := utils.GetRoles(ug)
-			var coloredRole string
-			switch role {
-			case "Owner":
-				coloredRole = utils.BgRedB("Owner")
-			case "ACL Keeper":
-				coloredRole = utils.BgYellowB("ACL Keeper")
-			case "Gate Keeper":
-				coloredRole = utils.BgGreenB("Gate Keeper")
-			default:
-				coloredRole = utils.BgBlueB("Member")
-			}
+			coloredRole := utils.RoleColor(ug)
 
 			_, _ = fmt.Fprintf(w, "Group\t%s\t%s\t%-12s\t%s\n",
 				ga.Group.Name,

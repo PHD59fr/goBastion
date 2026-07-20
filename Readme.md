@@ -77,10 +77,13 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ❌ `accountDelAccess`        | Remove a user's access to a server.                                          |
 | 📋 `whoHasAccessTo`         | Show all users with access to a specific server (supports CIDR).             |
 | 🔐 `accountDisableTOTP`    | Disable TOTP two-factor authentication for a user.                           |
+| 🔄 `accountUnexpire`       | Re-enable a disabled account (reactivate after max inactive days lockout).    |
+| 🔒 `accountExpire`         | Immediately lock a user account (force disable on departure).                 |
 | 🔑 `accountSetPassword`    | *(admin)* Set or clear a user's password second factor.                       |
 | 🛡️ `pivAddTrustAnchor`     | Register a Yubico PIV CA certificate as a trust anchor.                      |
 | 📋 `pivListTrustAnchors`    | List all registered PIV trust anchor CAs.                                    |
 | ❌ `pivRemoveTrustAnchor`   | Remove a PIV trust anchor CA.                                                |
+| ⚙️ `bastionConfig`         | Interactive configuration manager (view/edit bastion config stored in DB).    |
 
 ---
 
@@ -114,9 +117,52 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction and optional `--guest` scope). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
 | ❌ `groupDelAccess`          | Remove access from a group.                       |
 | 🔐 `groupSetMFA`            | Enable or disable JIT MFA requirement for a group (owner/admin only).       |
+| ➕ `groupAddGuestAccess`    | Grant guest access to a specific server in a group (gatekeeper+).            |
+| ❌ `groupDelGuestAccess`    | Remove a guest access grant from a group.                                    |
+| 📋 `groupListGuestAccesses`| List guest access grants for a user in a group.                              |
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
 | ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
 | 📋 `groupListAliases`       | List all group SSH aliases.                       |
+
+---
+
+### 👥 **Guest Access Management**
+
+Guests are users who need **limited, per-server access** to a group's resources. Unlike members (who can connect to all servers in a group), guests can only connect to **specific servers** explicitly granted to them.
+
+**Concept:**
+- A user must first be added to a group as a `guest` role via `groupAddMember --role guest`
+- Then, gatekeepers/owners grant them access to specific servers via `groupAddGuestAccess`
+- The guest uses the **group's egress key** but only on the servers listed in their grants
+- Grants can have TTL, protocol restrictions, and IP restrictions — just like regular accesses
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `groupAddGuestAccess` | Grant a guest access to a specific server (host/user/port) |
+| `groupDelGuestAccess` | Remove a guest access grant (all or specific grant ID) |
+| `groupListGuestAccesses` | List all guest access grants for a user in a group |
+
+**Example workflow:**
+```sh
+# 1. Add bob as a guest to the "infra" group
+groupAddMember --group infra --user bob --role guest
+
+# 2. Grant bob access to db01 (as deploy user, port 22)
+groupAddGuestAccess --group infra --account bob --host db01 --user deploy --port 22
+
+# 3. Grant bob temporary access to web01 (expires in 7 days)
+groupAddGuestAccess --group infra --account bob --host web01 --user root --port 22 --ttl 7
+
+# 4. List what bob can access in the infra group
+groupListGuestAccesses --group infra --account bob
+
+# 5. Remove bob's access to db01
+groupDelGuestAccess --group infra --account bob --grant <grant_id>
+```
+
+> **Key difference from members:** Members can connect to ALL servers in the group. Guests can only connect to servers explicitly listed in their grants.
 
 ---
 
@@ -246,6 +292,31 @@ to use that specific access entry. Without `--guest`, guest members are denied f
 
 Both constraints are enforced at connection time - expired or out-of-range connections are denied.
 The `Expires` and `From` columns appear in all `listAccesses` outputs.
+
+### ⏳ **Account Inactivity Lockout (MaxInactiveDays)**
+
+Admins can configure a maximum number of inactive days via `bastionConfig`. If a user hasn't logged in for more than `MaxInactiveDays`, the account is automatically disabled during the sync cycle.
+
+| Config Key | Default | Description |
+|------------|---------|-------------|
+| `account.max_inactive_days` | `0` (disabled) | Number of days after last login before the account is disabled. Set to `0` to disable this feature. |
+
+- Only accounts with a non-zero `last_login_at` are affected (accounts that have never logged in are left alone).
+- Disabled accounts can be re-enabled by an admin using `accountUnexpire`.
+- Admins can also **immediately lock** an account using `accountExpire` (e.g. when a collaborator leaves).
+- The inactivity check runs during every sync cycle (every 5 minutes by default).
+
+```sh
+# Set max inactive days to 90 via the interactive config
+ssh -tp 2222 admin@bastion -- bastionConfig
+# → Navigate to account.max_inactive_days, Enter, type 90
+
+# Immediately lock a departing collaborator's account
+ssh -tp 2222 admin@bastion -- -osh accountExpire --user alice
+
+# Re-enable a locked-out account
+ssh -tp 2222 admin@bastion -- -osh accountUnexpire --account alice
+```
 
 > **Security note (IP restrictions):** If a `--from` CIDR restriction is set on an access entry
 > and the bastion cannot determine the client IP (e.g. missing `SSH_CLIENT`), the connection
@@ -583,6 +654,9 @@ ssh -p 2222 user@bastion -- -osh groupList --json-pretty
 - `accountSetPassword`
 - `whoHasAccessTo`
 - `accountDisableTOTP`
+- `accountUnexpire`
+- `accountExpire`
+- `bastionConfig`
 - `pivAddTrustAnchor`
 - `pivListTrustAnchors`
 - `pivRemoveTrustAnchor`
@@ -622,6 +696,9 @@ The following commands require admin or superowner by default, but can be grante
 | `groupAddAccess`         | ✅    | ✅        | ✅         |        |
 | `groupDelAccess`         | ✅    | ✅        | ✅         |        |
 | `groupSetMFA`            | ✅    |           |            |        |
+| `groupAddGuestAccess`    | ✅    | ✅        | ✅         |        |
+| `groupDelGuestAccess`    | ✅    | ✅        | ✅         |        |
+| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅ (siens)
 | `groupAddMember`         | ✅    | ✅        |            |        |
 | `groupDelMember`         | ✅    | ✅        |            |        |
 | `groupGenerateEgressKey` | ✅    |           |            |        |
@@ -758,6 +835,7 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 | `DB_DRIVER`     | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
 | `DB_DSN`        | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
 | `EGRESS_ENC_KEY`| *(none)* | AES key for encrypting egress private keys at rest. See [Egress Key Encryption](#-egress-key-encryption). |
+| `INSTANCE_ID`   | *(hostname)* | Unique identifier for this bastion instance. Used to distinguish master/slave instances and to store per-instance config in the database. Falls back to hostname, then to `"master"` if unset. |
 | `LOG_FORMAT`    | `json`   | Log output format: `json` (structured JSON, compatible with log aggregators) or `plain` (human-readable text for local debugging). |
 
 ### DSN examples
@@ -817,6 +895,27 @@ FLUSH PRIVILEGES;
 ```
 
 > The app user only needs `SELECT`, `INSERT`, `UPDATE`, `DELETE` — no `CREATE`, `ALTER`, or `DROP`.
+
+### 🗄️ **DB-Based Configuration**
+
+In **goBastion**, the configuration is stored in the database (table `bastion_instances`), not in a TOML file. The only values read from environment variables are the bootstrap connection parameters:
+
+| Variable | Purpose |
+|----------|---------|
+| `DB_DRIVER` | Database backend (sqlite, mysql, postgres) |
+| `DB_DSN` | Database connection string |
+| `INSTANCE_ID` | Instance identifier (defaults to hostname, then `"master"`) |
+
+Everything else (sync interval, account policies, system config...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.
+
+**How it works:**
+1. At startup, goBastion reads `DB_DRIVER`, `DB_DSN`, and `INSTANCE_ID` from environment variables.
+2. It connects to the database and reads the full configuration from `bastion_instances` for this `INSTANCE_ID`.
+3. If no row exists, it creates one with default values.
+4. Configuration is reloaded automatically at every sync cycle.
+5. Admins can view and modify config interactively via `bastionConfig`.
+
+> **Note:** To change bootstrap parameters (`DB_DRIVER`, `DB_DSN`), you must update environment variables and restart the container. All other config changes are live — no restart needed.
 
 ### 🔐 Egress Key Encryption
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/validation"
@@ -100,24 +101,40 @@ func AddAccess(db *gorm.DB, user *models.User, args []string) error {
 	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
 	// A failed connectivity check is a warning only — it must not block access creation.
 	// Network reachability can change after the access entry is saved.
+	// Restrict active checks to private/reserved targets to avoid scanner-like behavior.
 	if !force {
 		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
+		shouldCheck := validation.IsPrivateOrReservedTarget(server)
+		if shouldCheck {
+			conn, err := net.DialTimeout("tcp", addr, config.Get().Proxy.TCPConnectTimeout)
+			if err != nil {
+				console.DisplayBlock(console.ContentBlock{
+					Title:     "Add Personal Access",
+					BlockType: "warning",
+					Sections: []console.SectionContent{{
+						SubTitle: "Connectivity Warning",
+						Body: []string{
+							fmt.Sprintf("Could not reach %s over TCP: %v", addr, err),
+							"The access entry was saved anyway. Verify the target is reachable before connecting.",
+							"Use --force to suppress this check.",
+						},
+					}},
+				})
+			} else {
+				_ = conn.Close()
+			}
+		} else {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "Add Personal Access",
-				BlockType: "warning",
+				BlockType: "info",
 				Sections: []console.SectionContent{{
-					SubTitle: "Connectivity Warning",
+					SubTitle: "Connectivity Check Skipped",
 					Body: []string{
-						fmt.Sprintf("Could not reach %s over TCP: %v", addr, err),
-						"The access entry was saved anyway. Verify the target is reachable before connecting.",
-						"Use --force to suppress this check.",
+						fmt.Sprintf("Active connectivity check skipped for non-private target: %s", addr),
+						"Only private/reserved targets are probed by default.",
 					},
 				}},
 			})
-		} else {
-			_ = conn.Close()
 		}
 	}
 
@@ -163,7 +180,7 @@ func AddAccess(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to add personal access. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error adding personal access: %v", err)
+		return fmt.Errorf("error adding personal access: %w", err)
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Add Personal Access",

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 
+	"goBastion/internal/config"
 	internalDB "goBastion/internal/db"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/session"
@@ -25,9 +26,13 @@ func isRootNonSSH() bool {
 }
 
 func main() {
+	// Phase 1: Bootstrap config from env vars (DB_DRIVER, DB_DSN, INSTANCE_ID).
+	config.Load()
+
 	log := logger.NewLogger()
 	slog.SetDefault(log)
 
+	// Phase 2: Connect to database using bootstrap DB config.
 	db, err := internalDB.Init(log)
 	if err != nil {
 		log.Error("Failed to initialize database",
@@ -35,6 +40,14 @@ func main() {
 			slog.String("error_text", err.Error()),
 		)
 		return
+	}
+
+	// Phase 3: Ensure this instance has a config row, then load it.
+	if err := config.EnsureInstance(db); err != nil {
+		log.Warn("config_ensure_instance_failed", slog.Any("error", err))
+	}
+	if err := config.LoadFromDB(db); err != nil {
+		log.Warn("config_load_from_db_failed", slog.Any("error", err))
 	}
 
 	adapter := osadapter.NewLinuxAdapter()

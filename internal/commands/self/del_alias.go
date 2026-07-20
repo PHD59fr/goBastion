@@ -48,7 +48,7 @@ func DelAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Invalid alias ID format."}},
 			},
 		})
-		return fmt.Errorf("invalid alias ID format: %v", err)
+		return fmt.Errorf("invalid alias ID format: %w", err)
 	}
 	var host models.Aliases
 	result := db.Where("id = ? AND user_id = ?", parsedID, user.ID).First(&host)
@@ -79,7 +79,7 @@ func DelAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to delete alias. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error deleting alias: %v", err)
+		return fmt.Errorf("error deleting alias: %w", err)
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Delete Personal Alias",

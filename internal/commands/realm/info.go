@@ -28,6 +28,15 @@ func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 		return nil
 	}
 
+	if !currentUser.CanDo(db, "realmInfo", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Realm Info",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view realm info."}}},
+		})
+		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+
 	var realm models.Realm
 	if err := db.Preload("CreatedBy").Where("name = ?", strings.ToLower(strings.TrimSpace(realmName))).First(&realm).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

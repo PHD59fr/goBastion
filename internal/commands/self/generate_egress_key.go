@@ -96,7 +96,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to read private key. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error reading private key: %v", err)
+		return fmt.Errorf("error reading private key: %w", err)
 	}
 	pubKeyData, err := os.ReadFile(tmpFile + ".pub")
 	if err != nil {
@@ -107,7 +107,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to read public key. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error reading public key: %v", err)
+		return fmt.Errorf("error reading public key: %w", err)
 	}
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyData)
 	if err != nil || pubKey == nil {
@@ -146,7 +146,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to store key in database. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error storing key in database: %v", err)
+		return fmt.Errorf("error storing key in database: %w", err)
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Generate Egress Key",

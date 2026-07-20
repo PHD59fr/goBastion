@@ -73,7 +73,9 @@ func DelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 	// Prevent removing the last owner
 	if membership.Role == models.GroupRoleOwner {
 		var ownerCount int64
-		db.Model(&models.UserGroup{}).Where("group_id = ? AND role = ? AND deleted_at IS NULL", g.ID, models.GroupRoleOwner).Count(&ownerCount)
+		if err := db.Model(&models.UserGroup{}).Where("group_id = ? AND role = ? AND deleted_at IS NULL", g.ID, models.GroupRoleOwner).Count(&ownerCount).Error; err != nil {
+			return fmt.Errorf("failed to count group owners: %w", err)
+		}
 		if ownerCount <= 1 {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "Remove Member",
@@ -92,7 +94,7 @@ func DelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return err
 	}
-	currentUser.InvalidateGroupsCache()
+	models.InvalidateGroupsCache(currentUser.ID)
 
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Remove Member",

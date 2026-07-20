@@ -95,14 +95,34 @@ func ReEncryptIfNeeded(plaintext string) (string, error) {
 }
 
 // IsEncrypted returns true if the value looks like a valid encrypted blob.
-// A valid encrypted blob is base64-encoded and at least (nonce + tag) bytes after decoding.
+// A valid encrypted blob is base64-encoded, decodable, and has the exact size
+// of nonce (12) + ciphertext + tag (16) for AES-GCM, i.e. at least 28 bytes
+// but also must NOT look like a standard PEM or OpenSSH key.
 func IsEncrypted(raw string) bool {
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
 		return false
 	}
 	// AES-256-GCM nonce is 12 bytes, tag is 16 bytes = minimum 28 bytes.
-	return len(data) >= 28
+	if len(data) < 28 {
+		return false
+	}
+	// Heuristic: encrypted blobs have no line breaks. SSH keys and PEM data
+	// contain newlines. Also reject data that looks like it starts with
+	// common SSH key type markers (ssh-rsa, ssh-ed25519, etc.).
+	trimmed := strings.TrimSpace(raw)
+	if strings.Contains(trimmed, "\n") || strings.Contains(trimmed, "\r") {
+		return false
+	}
+	// Reject data starting with known PEM headers.
+	if strings.HasPrefix(trimmed, "-----") {
+		return false
+	}
+	// Reject base64 that decodes to something starting with "ssh-" (common SSH key prefix).
+	if len(data) > 4 && string(data[:4]) == "ssh-" {
+		return false
+	}
+	return true
 }
 
 // readKeyFromEnv reads EGRESS_ENC_KEY from env or fallback config file.

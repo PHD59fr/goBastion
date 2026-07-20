@@ -5,6 +5,18 @@
 -- Usage:
 --   mysql -h <host> -u <admin> -p <dbname> < mysql.sql
 
+-- ── bastion_instances ───────────────────────────────────────────────────────
+-- Stores per-instance configuration (DB is the source of truth for config).
+-- The Config column holds a JSON-encoded copy of the full configuration
+-- (everything except bootstrap DB connection params).
+CREATE TABLE IF NOT EXISTS bastion_instances (
+    instance_id varchar(191) NOT NULL PRIMARY KEY,
+    role        longtext NOT NULL,        -- 'master' or 'slave'
+    config      longtext,                 -- JSON-encoded config
+    created_at  datetime,
+    updated_at  datetime
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ── users ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id              varchar(36) NOT NULL PRIMARY KEY,
@@ -138,7 +150,6 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     server          longtext NOT NULL,
     port            bigint NOT NULL,
     protocol        longtext NOT NULL DEFAULT 'ssh',
-    guest_allowed   tinyint(1) NOT NULL DEFAULT 0,
     comment         longtext,
     allowed_from    longtext,
     expires_at      datetime,
@@ -150,6 +161,30 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     KEY idx_group_accesses_deleted_at (deleted_at),
     KEY idx_group_access_lookup (group_id),
     CONSTRAINT fk_group_accesses_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── group_guest_accesses ─────────────────────────────────────────────────────
+-- Granular per-user, per-server guest access grants.
+-- A guest-role user can only connect to servers listed in their grants.
+CREATE TABLE IF NOT EXISTS group_guest_accesses (
+    id            varchar(36) NOT NULL PRIMARY KEY,
+    group_id      varchar(36) NOT NULL,
+    user_id       varchar(36) NOT NULL,
+    username      longtext NOT NULL,
+    server        longtext NOT NULL,
+    port          bigint NOT NULL,
+    protocol      longtext NOT NULL DEFAULT 'ssh',
+    comment       longtext,
+    allowed_from  longtext,
+    expires_at    datetime,
+    created_at    datetime,
+    updated_at    datetime,
+    deleted_at    datetime,
+    KEY idx_group_guest_accesses_group_id (group_id),
+    KEY idx_group_guest_accesses_user_id (user_id),
+    KEY idx_group_guest_accesses_deleted_at (deleted_at),
+    CONSTRAINT fk_group_guest_accesses_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
+    CONSTRAINT fk_group_guest_accesses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ── aliases ──────────────────────────────────────────────────────────────────

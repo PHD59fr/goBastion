@@ -17,6 +17,7 @@ import (
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils/sshHostKey"
 	gosync "goBastion/internal/utils/sync"
+	"goBastion/internal/utils/validation"
 )
 
 // Run processes root-only CLI flags.
@@ -99,7 +100,10 @@ func runDBImport(db *gorm.DB, log *slog.Logger) {
 //  2. Exit 0 if an admin user exists, exit 1 otherwise.
 func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) {
 	var userCount int64
-	db.Model(&models.User{}).Count(&userCount)
+	if err := db.Model(&models.User{}).Count(&userCount).Error; err != nil {
+		log.Error("startup_count_users_failed", slog.Any("error", err))
+		os.Exit(1)
+	}
 	if userCount > 0 {
 		log.Info("startup_sync_state")
 		if err := syncer.EnforceFromDB(); err != nil {
@@ -149,6 +153,9 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return fmt.Errorf("username cannot be empty")
+	}
+	if !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid username: use only letters, digits, dots, hyphens, and underscores (max 32 chars)")
 	}
 
 	fmt.Print("Enter the complete public SSH key: ")

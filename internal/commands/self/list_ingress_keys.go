@@ -1,10 +1,8 @@
 package self
 
 import (
-	"fmt"
-	"time"
-
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 
 	"gorm.io/gorm"
@@ -33,32 +31,10 @@ func ListIngressKeys(db *gorm.DB, user *models.User) error {
 		})
 		return nil
 	}
-	var sections []console.SectionContent
-	for _, key := range keys {
-		expires := "Never"
-		if key.ExpiresAt != nil {
-			if key.ExpiresAt.Before(time.Now()) {
-				expires = "⚠️ EXPIRED (" + key.ExpiresAt.Format("2006-01-02") + ")"
-			} else {
-				expires = key.ExpiresAt.Format("2006-01-02")
-			}
-		}
-		pivLabel := ""
-		if key.PIVAttested {
-			pivLabel = " 🔐 PIV-attested"
-		}
-		section := console.SectionContent{
-			SubTitle: fmt.Sprintf("Key ID: %s", key.ID.String()),
-			Body: []string{
-				fmt.Sprintf("Type: %s%s", key.Type, pivLabel),
-				fmt.Sprintf("Fingerprint: %s", key.Fingerprint),
-				fmt.Sprintf("Size: %d", key.Size),
-				fmt.Sprintf("Expires: %s", expires),
-				fmt.Sprintf("Last Update: %s", key.UpdatedAt.Format("2006-01-02 15:04:05")),
-				fmt.Sprintf("Public Key: %s", key.Key),
-			},
-		}
-		sections = append(sections, section)
+	keySections := utils.RenderIngressKeysTable(keys)
+	sections := make([]console.SectionContent, len(keySections))
+	for i, ks := range keySections {
+		sections[i] = console.SectionContent{SubTitle: ks.SubTitle, Body: ks.Body}
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "My Ingress Keys",

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
 
@@ -75,7 +76,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 	}
 
 	server := matches[1]
-	baseDir := fmt.Sprintf("/app/ttyrec/%s/%s/", strings.ToLower(username), server)
+	baseDir := fmt.Sprintf("%s/%s/%s/", config.Get().Paths.TtyrecDir, strings.ToLower(username), server)
 	ttyFile := filepath.Join(baseDir, file)
 
 	if _, err := os.Stat(ttyFile); os.IsNotExist(err) {
@@ -102,7 +103,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 
 	pipe, err := zcatCmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create pipe: %v", err)
+		return fmt.Errorf("failed to create pipe: %w", err)
 	}
 	playCmd.Stdin = pipe
 	playCmd.Stdout = os.Stdout

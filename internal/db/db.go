@@ -6,9 +6,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
-	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/logger"
 
@@ -19,23 +20,27 @@ import (
 	gormLogger "gorm.io/gorm/logger"
 )
 
-const (
-	dbDir      = "/var/lib/goBastion"
-	dbConfFile = "/run/gobastion/db.conf"
-)
-
-// Init opens the database, runs migrations and applies configuration.
 // resolveDBConfig returns DB_DRIVER and DB_DSN from environment variables, falling
-// back to /run/gobastion/db.conf when the env vars are not set (e.g. SSH ForceCommand
-// sessions where sshd strips the Docker environment).
+// back to the config file, then to /run/gobastion/db.conf when the env vars are
+// not set (e.g. SSH ForceCommand sessions where sshd strips the Docker environment).
 func resolveDBConfig() (driver, dsn string) {
-	driver = os.Getenv("DB_DRIVER")
-	dsn = os.Getenv("DB_DSN")
-	if driver != "" {
+	cfg := config.Get()
+	driver = cfg.Database.Driver
+	dsn = cfg.Database.DSN
+
+	// Env vars override config file values.
+	if v := os.Getenv("DB_DRIVER"); v != "" {
+		driver = v
+	}
+	if v := os.Getenv("DB_DSN"); v != "" {
+		dsn = v
+	}
+	if driver != "" && driver != "sqlite" {
 		return
 	}
 
-	f, err := os.Open(dbConfFile)
+	// Fallback: legacy /run/gobastion/db.conf
+	f, err := os.Open(cfg.Paths.DbConfFile)
 	if err != nil {
 		return
 	}
@@ -70,9 +75,9 @@ func resolveDBConfig() (driver, dsn string) {
 //	DB_DRIVER=postgres           - requires DB_DSN (e.g. "host=... user=... password=... dbname=... port=5432 sslmode=disable")
 //
 // When env vars are absent (e.g. in an SSH ForceCommand session where sshd strips the
-// environment), goBastion falls back to reading /run/gobastion/db.conf written by the
-// entrypoint at container startup.
+// environment), goBastion falls back to reading the config file, then /run/gobastion/db.conf.
 func Init(log *slog.Logger) (*gorm.DB, error) {
+	cfg := config.Get()
 	driver, dsn := resolveDBConfig()
 
 	var dialector gorm.Dialector
@@ -92,10 +97,10 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	case "", "sqlite":
 		driver = "sqlite"
 		if dsn == "" {
-			if err := os.MkdirAll(dbDir, 0750); err != nil {
-				return nil, fmt.Errorf("failed to create DB directory %s: %w", dbDir, err)
+			if err := os.MkdirAll(cfg.Paths.DbDir, 0750); err != nil {
+				return nil, fmt.Errorf("failed to create DB directory %s: %w", cfg.Paths.DbDir, err)
 			}
-			dsn = "file:" + filepath.Join(dbDir, "bastion.db") + "?cache=shared&mode=rwc"
+			dsn = "file:" + filepath.Join(cfg.Paths.DbDir, "bastion.db") + "?cache=shared&mode=rwc"
 		}
 		dialector = sqlite.Open(dsn)
 
@@ -104,7 +109,7 @@ func Init(log *slog.Logger) (*gorm.DB, error) {
 	}
 
 	gormLogCfg := gormLogger.Config{
-		SlowThreshold: time.Second,
+		SlowThreshold: cfg.Database.SlowQueryThreshold,
 		LogLevel:      gormLogger.Silent,
 		Colorful:      true,
 	}
@@ -180,22 +185,7 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 
 // migrate runs GORM AutoMigrate for all managed models and creates custom indexes.
 func migrate(db *gorm.DB, driver string) error {
-	err := db.AutoMigrate(
-		&models.User{},
-		&models.Group{},
-		&models.UserGroup{},
-		&models.IngressKey{},
-		&models.SelfEgressKey{},
-		&models.GroupEgressKey{},
-		&models.SelfAccess{},
-		&models.GroupAccess{},
-		&models.Aliases{},
-		&models.SshHostKey{},
-		&models.KnownHostsEntry{},
-		&models.PIVTrustAnchor{},
-		&models.Realm{},
-		&models.RestrictedCommandGrant{},
-	)
+	err := db.AutoMigrate(ManagedModelsInDependencyOrder()...)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate models: %w", err)
 	}
@@ -235,25 +225,23 @@ func migrate(db *gorm.DB, driver string) error {
 		}
 
 	case "mysql":
-		// MySQL does not support partial indexes (no WHERE clause) and column
-		// type constraints make prefix lengths unreliable across configurations.
-		// Index only the most selective leading columns; MySQL will use them to
-		// narrow the row set before filtering on the remaining columns.
+		// MySQL does not support partial indexes (no WHERE clause).
+		// Create composite indexes matching the PostgreSQL/SQLite ones.
 		if err := db.Exec(`
 			CREATE INDEX IF NOT EXISTS idx_self_access_lookup
-			ON self_accesses(user_id);
+			ON self_accesses(user_id, server, port, username, protocol);
 		`).Error; err != nil {
 			return fmt.Errorf("failed to create idx_self_access_lookup: %w", err)
 		}
 		if err := db.Exec(`
 			CREATE INDEX IF NOT EXISTS idx_group_access_lookup
-			ON group_accesses(group_id);
+			ON group_accesses(group_id, server, port, username, protocol);
 		`).Error; err != nil {
 			return fmt.Errorf("failed to create idx_group_access_lookup: %w", err)
 		}
 		if err := db.Exec(`
 			CREATE INDEX IF NOT EXISTS idx_user_group_lookup
-			ON user_groups(user_id);
+			ON user_groups(user_id, group_id);
 		`).Error; err != nil {
 			return fmt.Errorf("failed to create idx_user_group_lookup: %w", err)
 		}
@@ -264,6 +252,7 @@ func migrate(db *gorm.DB, driver string) error {
 
 // configure sets connection pool parameters and SQLite-specific pragmas (SQLite only).
 func configure(db *gorm.DB, driver string) error {
+	cfg := config.Get()
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get generic database object: %w", err)
@@ -275,20 +264,20 @@ func configure(db *gorm.DB, driver string) error {
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
 	case "postgres", "mysql":
-		sqlDB.SetMaxOpenConns(10)
-		sqlDB.SetMaxIdleConns(5)
+		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
 	default:
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
 	}
-	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
 
 	if driver == "sqlite" {
 		pragmas := []string{
 			"PRAGMA journal_mode=WAL;",
 			"PRAGMA synchronous=NORMAL;",
-			"PRAGMA cache_size=-2000;",
-			"PRAGMA busy_timeout=20000;",
+			fmt.Sprintf("PRAGMA cache_size=-%d;", cfg.Database.SQLite.CacheSize),
+			fmt.Sprintf("PRAGMA busy_timeout=%d;", cfg.Database.SQLite.BusyTimeout),
 		}
 		for _, p := range pragmas {
 			if err := db.Exec(p).Error; err != nil {
@@ -313,12 +302,15 @@ var allowedBoolColumns = map[string]bool{
 	"piv_attested": true,
 }
 
+// validColumnName matches safe SQL column names: lowercase letters, digits, and underscores only.
+var validColumnName = regexp.MustCompile(`^[a-z_]+$`)
+
 // BoolFalseExpr returns a SQL WHERE fragment matching rows where column is false/0.
 // Dispatches to the correct expression based on the active database driver.
 // Panics (development) or returns a safe default (production) if the column
 // name is not in the allowlist.
 func BoolFalseExpr(db *gorm.DB, column string) string {
-	if !allowedBoolColumns[column] {
+	if !allowedBoolColumns[column] || !validColumnName.MatchString(column) {
 		return "1=0" // safe default: match nothing
 	}
 	switch db.Name() {
@@ -336,7 +328,7 @@ func BoolFalseExpr(db *gorm.DB, column string) string {
 // BoolTrueExpr returns a SQL WHERE fragment matching rows where column is true/1.
 // Dispatches to the correct expression based on the active database driver.
 func BoolTrueExpr(db *gorm.DB, column string) string {
-	if !allowedBoolColumns[column] {
+	if !allowedBoolColumns[column] || !validColumnName.MatchString(column) {
 		return "1=0" // safe default: match nothing
 	}
 	switch db.Name() {
@@ -353,6 +345,7 @@ func BoolTrueExpr(db *gorm.DB, column string) string {
 
 func ManagedModelsInDependencyOrder() []any {
 	return []any{
+		&models.BastionInstance{},
 		&models.User{},
 		&models.Group{},
 		&models.SshHostKey{},
@@ -362,6 +355,7 @@ func ManagedModelsInDependencyOrder() []any {
 		&models.GroupEgressKey{},
 		&models.SelfAccess{},
 		&models.GroupAccess{},
+		&models.GroupGuestAccess{},
 		&models.Aliases{},
 		&models.KnownHostsEntry{},
 		&models.PIVTrustAnchor{},

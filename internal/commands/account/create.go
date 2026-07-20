@@ -66,7 +66,7 @@ func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Key Format", Body: []string{"The provided SSH public key is invalid."}}},
 		})
-		return fmt.Errorf("invalid SSH key: %v", err)
+		return fmt.Errorf("invalid SSH key: %w", err)
 	}
 
 	if err = CreateUser(db, adapter, username, pubKey); err != nil {
@@ -141,8 +141,12 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 	syncer := gosync.New(db, adapter, *slog.Default())
 	if err = syncer.CreateUserFromDB(*newUser); err != nil {
 		// Compensate DB changes when OS sync fails to avoid DB/OS drift.
-		_ = db.Unscoped().Where("user_id = ?", newUser.ID).Delete(&models.IngressKey{}).Error
-		_ = db.Unscoped().Delete(&models.User{}, "id = ?", newUser.ID).Error
+		if delErr := db.Unscoped().Where("user_id = ?", newUser.ID).Delete(&models.IngressKey{}).Error; delErr != nil {
+			slog.Error("compensation_failed", slog.String("event", "cleanup_ingress_keys"), slog.Any("error", delErr))
+		}
+		if delErr := db.Unscoped().Delete(&models.User{}, "id = ?", newUser.ID).Error; delErr != nil {
+			slog.Error("compensation_failed", slog.String("event", "cleanup_user"), slog.Any("error", delErr))
+		}
 		return err
 	}
 	return nil

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/validation"
@@ -47,7 +48,11 @@ func (l *LinuxAdapter) DeleteUser(username string) error {
 }
 
 func (l *LinuxAdapter) UpdateSudoers(user *models.User) error {
-	sudoersPath := "/etc/sudoers.d/" + user.Username
+	username := utils.NormalizeUsername(user.Username)
+	if !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
+	sudoersPath := "/etc/sudoers.d/" + username
 	if user.Role == models.RoleAdmin {
 		// Keep sudo scope minimal: user management commands remain constrained to their
 		// exact forms, and chown is restricted to SSH home directories only.
@@ -76,7 +81,7 @@ func (l *LinuxAdapter) ChownDir(user models.User, dir string) error {
 	}
 	_, err := l.ExecCommand("chown", "-R", userUsername+":"+userUsername, dir)
 	if err != nil {
-		expectedSSHDir := filepath.Join("/home", userUsername, ".ssh")
+		expectedSSHDir := filepath.Join(config.Get().Paths.HomeBaseDir, userUsername, ".ssh")
 		if dir != expectedSSHDir {
 			return fmt.Errorf("sudo chown denied for non-SSH directory '%s'", dir)
 		}
@@ -95,7 +100,7 @@ func (l *LinuxAdapter) ExecCommand(name string, args ...string) (string, error) 
 }
 
 func (l *LinuxAdapter) UserHomeExists(username string) bool {
-	userDir := filepath.Join("/home", utils.NormalizeUsername(username))
+	userDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(username))
 	_, err := os.Stat(userDir)
-	return !os.IsNotExist(err)
+	return err == nil
 }

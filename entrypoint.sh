@@ -4,7 +4,7 @@
 # When docker stop sends SIGTERM, clean up background processes and stop sshd.
 TAIL_PID=""
 SYNC_PID=""
-SSHD_PID=""
+PIPE_PID=""
 
 cleanup() {
   printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"shutting down","_mode":"system","_event":"shutdown"}\n' \
@@ -14,11 +14,14 @@ cleanup() {
   if [ -n "$SYNC_PID" ]; then
     kill -- -"$SYNC_PID" 2>/dev/null || kill "$SYNC_PID" 2>/dev/null
   fi
-  [ -n "$SSHD_PID" ] && kill "$SSHD_PID" 2>/dev/null
-  wait "$SSHD_PID" 2>/dev/null
+  # Kill sshd pipeline: kill awk, pipe breaks, sshd gets SIGPIPE
+  [ -n "$PIPE_PID" ] && kill "$PIPE_PID" 2>/dev/null
+  wait "$TAIL_PID" 2>/dev/null
+  wait "$SYNC_PID" 2>/dev/null
+  wait "$PIPE_PID" 2>/dev/null
   exit 0
 }
-trap cleanup TERM INT
+trap cleanup TERM INT EXIT
 
 # ── Config ───────────────────────────────────────────────────────────────────
 # Write DB config to a file so ForceCommand sessions can read it.
@@ -30,6 +33,7 @@ mkdir -p /run/gobastion
   [ -n "$DB_DRIVER" ] && printf 'DB_DRIVER=%s\n' "$DB_DRIVER"
   [ -n "$DB_DSN" ]    && printf 'DB_DSN=%s\n'    "$DB_DSN"
   [ -n "$EGRESS_ENC_KEY" ] && printf 'EGRESS_ENC_KEY=%s\n' "$EGRESS_ENC_KEY"
+  [ -n "$INSTANCE_ID" ] && printf 'INSTANCE_ID=%s\n' "$INSTANCE_ID"
 } > /run/gobastion/db.conf
 chmod 600 /run/gobastion/db.conf
 
@@ -50,10 +54,12 @@ until /app/goBastion; do
 done
 
 # ── Periodic sync ────────────────────────────────────────────────────────────
-# Enforce DB as source of truth every 5 minutes.
+# Enforce DB as source of truth at configurable intervals.
 # Logs drift (rogue users, key changes) and corrects it automatically.
+# Override with SYNC_INTERVAL_SECONDS env var (default: 300 = 5 minutes).
+SYNC_INTERVAL="${SYNC_INTERVAL_SECONDS:-300}"
 (while true; do
-    sleep 300
+    sleep "$SYNC_INTERVAL"
     /app/goBastion --sync
 done) &
 SYNC_PID=$!
@@ -63,6 +69,7 @@ printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"s
   "${HOSTNAME:-goBastion}" "$(date +%s)"
 
 # -e sends sshd logs to stderr instead of syslog; 2>&1 forwards them to docker logs.
+# Run in background so we can track the pipeline PID for cleanup.
 /usr/sbin/sshd -D -e 2>&1 \
 | awk '
 function esc(s,    t){ t=s; gsub(/\\/,"\\\\",t); gsub(/"/,"\\\"",t); gsub(/\r/,"",t); return t }
@@ -305,4 +312,9 @@ function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
     emit(msg, host, lvl, ev, from, port, user, to, fp)
   }
 }
-'
+' &
+PIPE_PID=$!
+
+# Wait for sshd to exit (kills awk which breaks the pipe, then sshd gets SIGPIPE)
+wait "$PIPE_PID" 2>/dev/null
+exit $?

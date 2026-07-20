@@ -59,7 +59,7 @@ func DelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Invalid Ingress Key ID format."}},
 			},
 		})
-		return fmt.Errorf("invalid key UUID: %v", err)
+		return fmt.Errorf("invalid key UUID: %w", err)
 	}
 	result := db.Where("id = ? AND user_id = ?", keyId, user.ID).Delete(&models.IngressKey{})
 	if result.Error != nil {

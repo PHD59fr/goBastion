@@ -6,7 +6,7 @@ DOCKER_TAG ?= gobastion:latest
 
 ## build: compile the binary
 build:
-	CGO_ENABLED=0 go build -o $(BINARY) .
+	CGO_ENABLED=0 go build -ldflags "-s -w -X goBastion/version.Version=$(shell git describe --tags --always 2>/dev/null || echo dev)" -o $(BINARY) .
 
 ## test: run all tests with race detector and coverage
 test:
