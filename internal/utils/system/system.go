@@ -1,15 +1,15 @@
 package system
 
 import (
-	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"goBastion/internal/models"
-	"goBastion/internal/utils"
-	"goBastion/internal/utils/validation"
+	"goBastion/internal/osadapter"
 )
+
+// defaultAdapter is the production adapter used by standalone helper functions.
+var defaultAdapter = osadapter.NewLinuxAdapter()
 
 // ClientIPFromEnv safely extracts the client IP address from the SSH_CLIENT
 // environment variable. Returns "unknown" if the variable is empty, missing,
@@ -27,82 +27,30 @@ func ClientIPFromEnv() string {
 }
 
 // CreateUser adds a new system OS user with disabled password.
+// Delegates to the OS adapter to avoid code duplication with linux.go.
 func CreateUser(username string) error {
-	username = utils.NormalizeUsername(username)
-	if !validation.IsValidUsername(username) {
-		return fmt.Errorf("invalid username: %s", username)
-	}
-	output, err := ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-adduser", username)
-	if err != nil {
-		return fmt.Errorf("error adding system user '%s': %s, output: %s", username, err, output)
-	}
-
-	output, err = ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-passwd-delete", username)
-	if err != nil {
-		return fmt.Errorf("error deleting password for user '%s': %s, output: %s", username, err, output)
-	}
-	return nil
+	return defaultAdapter.CreateUser(username)
 }
 
 // DeleteUser removes a system OS user and their home directory.
+// Delegates to the OS adapter to avoid code duplication with linux.go.
 func DeleteUser(username string) error {
-	username = utils.NormalizeUsername(username)
-	if !validation.IsValidUsername(username) {
-		return fmt.Errorf("invalid username: %s", username)
-	}
-	if _, err := ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-deluser", username); err != nil {
-		return fmt.Errorf("error deleting system user: %w", err)
-	}
-	return nil
+	return defaultAdapter.DeleteUser(username)
 }
 
 // ChownDir recursively changes ownership of a directory to the given user.
+// Delegates to the OS adapter to avoid code duplication with linux.go.
 func ChownDir(user models.User, dir string) error {
-	if !validation.IsValidUsername(user.Username) {
-		return fmt.Errorf("invalid username: %s", user.Username)
-	}
-	// Without sudo
-	_, err := ExecCommand("chown", "-R", user.Username+":"+user.Username, dir)
-	if err != nil {
-		expectedSSHDir := "/home/" + user.Username + "/.ssh"
-		if dir != expectedSSHDir {
-			return fmt.Errorf("sudo chown denied for non-SSH directory '%s'", dir)
-		}
-		// if failed, with constrained wrapper
-		_, err = ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-chown-ssh", user.Username)
-		if err != nil {
-			return fmt.Errorf("failed to set ownership on '%s': %w", dir, err)
-		}
-	}
-	return nil
+	return defaultAdapter.ChownDir(user, dir)
 }
 
 // UpdateSudoers writes or removes the sudoers entry for a user based on their role.
+// Delegates to the OS adapter to avoid code duplication with linux.go.
 func UpdateSudoers(user *models.User) error {
-	sudoersPath := "/etc/sudoers.d/" + user.Username
-	if user.Role == models.RoleAdmin {
-		sudoersConfig := fmt.Sprintf(`%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-adduser *
-%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-passwd-delete *
-%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-deluser *
-%s ALL=(ALL) NOPASSWD: /usr/local/sbin/gobastion-chown-ssh *
-`, user.Username, user.Username, user.Username, user.Username)
-
-		if err := os.WriteFile(sudoersPath, []byte(sudoersConfig), 0440); err != nil {
-			return fmt.Errorf("error writing sudoers file for user '%s': %s", user.Username, err)
-		}
-	} else {
-		if _, err := os.Stat(sudoersPath); err == nil {
-			if err := os.Remove(sudoersPath); err != nil {
-				return fmt.Errorf("error removing sudoers file for user '%s': %s", user.Username, err)
-			}
-		}
-	}
-	return nil
+	return defaultAdapter.UpdateSudoers(user)
 }
 
 // ExecCommand runs an OS command and returns its combined output.
 func ExecCommand(name string, arg ...string) (string, error) {
-	cmd := exec.Command(name, arg...)
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	return defaultAdapter.ExecCommand(name, arg...)
 }

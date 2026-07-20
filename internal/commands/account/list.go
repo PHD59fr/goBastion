@@ -7,6 +7,7 @@ import (
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -46,16 +47,19 @@ func List(db *gorm.DB, currentUser *models.User) error {
 		return nil
 	}
 
+	// Batch-load all UserGroup records in a single query to avoid N+1.
+	var allUserGroups []models.UserGroup
+	if err := db.Preload("Group").Find(&allUserGroups).Error; err != nil {
+		allUserGroups = nil
+	}
+	groupsByUser := make(map[uuid.UUID][]models.UserGroup, len(users))
+	for _, ug := range allUserGroups {
+		groupsByUser[ug.UserID] = append(groupsByUser[ug.UserID], ug)
+	}
+
 	sections := make([]console.SectionContent, 0, len(users))
 	for _, u := range users {
-		var userGroups []models.UserGroup
-		if err := db.Preload("Group").Where("user_id = ?", u.ID).Find(&userGroups).Error; err != nil {
-			sections = append(sections, console.SectionContent{
-				SubTitle: fmt.Sprintf("User: %s", u.Username),
-				Body:     []string{"Unable to load groups."},
-			})
-			continue
-		}
+		userGroups := groupsByUser[u.ID]
 
 		userInfo := []string{
 			fmt.Sprintf("Username: %s", u.Username),
@@ -68,18 +72,7 @@ func List(db *gorm.DB, currentUser *models.User) error {
 		if len(userGroups) > 0 {
 			groupLines := []string{"Groups:"}
 			for _, ug := range userGroups {
-				role := utils.GetRoles(ug)
-				var coloredRole string
-				switch role {
-				case "Owner":
-					coloredRole = utils.BgRedB("Owner")
-				case "ACL Keeper":
-					coloredRole = utils.BgYellowB("ACL Keeper")
-				case "Gate Keeper":
-					coloredRole = utils.BgGreenB("Gate Keeper")
-				default:
-					coloredRole = utils.BgBlueB("Member")
-				}
+				coloredRole := utils.RoleColor(ug)
 
 				groupLines = append(groupLines, fmt.Sprintf("  - %s - %s", ug.Group.Name, coloredRole))
 			}

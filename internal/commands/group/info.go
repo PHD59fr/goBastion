@@ -68,17 +68,7 @@ func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 	if len(userGroups) > 0 {
 		infoLines = append(infoLines, "Members:")
 		for _, ug := range userGroups {
-			myRoles := utils.GetRoles(ug)
-			roleColored := utils.BgBlueB("Member")
-			if myRoles == "Owner" {
-				roleColored = utils.BgRedB("Owner")
-			}
-			if myRoles == "ACL Keeper" {
-				roleColored = utils.BgYellowB("ACL Keeper")
-			}
-			if myRoles == "Gate Keeper" {
-				roleColored = utils.BgGreenB("Gate Keeper")
-			}
+			roleColored := utils.RoleColor(ug)
 
 			infoLines = append(infoLines, fmt.Sprintf(" - %s - %s", ug.User.Username, roleColored))
 		}

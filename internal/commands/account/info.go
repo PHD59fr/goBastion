@@ -104,18 +104,7 @@ func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 	} else {
 		for _, ug := range userGroups {
 
-			role := utils.GetRoles(ug)
-			var coloredRole string
-			switch role {
-			case "Owner":
-				coloredRole = utils.BgRedB("Owner")
-			case "ACL Keeper":
-				coloredRole = utils.BgYellowB("ACL Keeper")
-			case "Gate Keeper":
-				coloredRole = utils.BgGreenB("Gate Keeper")
-			default:
-				coloredRole = utils.BgBlueB("Member")
-			}
+			coloredRole := utils.RoleColor(ug)
 
 			infoLines = append(infoLines, fmt.Sprintf(" - %s - %s", ug.Group.Name, coloredRole))
 		}

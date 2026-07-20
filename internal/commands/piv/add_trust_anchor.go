@@ -8,6 +8,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
@@ -27,6 +28,15 @@ func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error 
 			Title:     "Add PIV Trust Anchor",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: pivAddTrustAnchor --name <name> --cert <path-to-pem>"}}},
+		})
+		return nil
+	}
+
+	if !validation.EntityNameRegexp.MatchString(name) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add PIV Trust Anchor",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Name", Body: []string{"Name must contain only letters, digits, dots, hyphens, and underscores."}}},
 		})
 		return nil
 	}

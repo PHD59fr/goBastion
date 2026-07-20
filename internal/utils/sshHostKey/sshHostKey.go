@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 
 	"gorm.io/gorm"
@@ -14,10 +15,11 @@ import (
 
 // sshKeysExist returns true if the SSH host key files are present on disk.
 func sshKeysExist() bool {
+	sshHostKeyDir := config.Get().Paths.SshHostKeyDir
 	keyTypes := []string{"rsa", "dsa", "ecdsa", "ed25519"}
 
 	for _, keyType := range keyTypes {
-		privateKeyPath := fmt.Sprintf("/etc/ssh/ssh_host_%s_key", keyType)
+		privateKeyPath := fmt.Sprintf("%s/ssh_host_%s_key", sshHostKeyDir, keyType)
 		if _, err := os.Stat(privateKeyPath); err == nil {
 			return true
 		}
@@ -33,7 +35,7 @@ func GenerateSSHHostKeys(db *gorm.DB, force bool) error {
 
 	if force {
 		if err := removeSSHHostKeys(); err != nil {
-			return fmt.Errorf("error removing existing SSH keys: %v", err)
+			return fmt.Errorf("error removing existing SSH keys: %w", err)
 		}
 	}
 
@@ -49,10 +51,11 @@ func GenerateSSHHostKeys(db *gorm.DB, force bool) error {
 
 // saveSSHHostKeys reads generated key files and stores them in the database.
 func saveSSHHostKeys(db *gorm.DB) error {
+	sshHostKeyDir := config.Get().Paths.SshHostKeyDir
 	keyTypes := []string{"rsa", "dsa", "ecdsa", "ed25519"}
 
 	for _, keyType := range keyTypes {
-		privateKeyPath := fmt.Sprintf("/etc/ssh/ssh_host_%s_key", keyType)
+		privateKeyPath := fmt.Sprintf("%s/ssh_host_%s_key", sshHostKeyDir, keyType)
 		publicKeyPath := privateKeyPath + ".pub"
 
 		privateKey, err := os.ReadFile(privateKeyPath)
@@ -70,23 +73,25 @@ func saveSSHHostKeys(db *gorm.DB) error {
 			PublicKey:  publicKey,
 		}
 
-		db.Save(&sshKey)
+		if err := db.Save(&sshKey).Error; err != nil {
+			return fmt.Errorf("error saving SSH host key %s: %w", keyType, err)
+		}
 	}
 	return nil
 }
 
 // removeSSHHostKeys deletes the SSH host key files from disk.
 func removeSSHHostKeys() error {
-	pattern := "/etc/ssh/ssh_host_*"
+	pattern := config.Get().Paths.SshHostKeyDir + "/ssh_host_*"
 
 	files, err := filepath.Glob(pattern)
 	if err != nil {
-		return fmt.Errorf("error finding SSH host key files: %v", err)
+		return fmt.Errorf("error finding SSH host key files: %w", err)
 	}
 
 	for _, file := range files {
 		if err = os.Remove(file); err != nil {
-			return fmt.Errorf("error deleting %s: %v", file, err)
+			return fmt.Errorf("error deleting %s: %w", file, err)
 		}
 	}
 
@@ -107,7 +112,7 @@ func RestoreSSHHostKeys(db *gorm.DB) error {
 	}
 
 	for _, key := range keys {
-		privateKeyPath := fmt.Sprintf("/etc/ssh/ssh_host_%s_key", key.Type)
+		privateKeyPath := fmt.Sprintf("%s/ssh_host_%s_key", config.Get().Paths.SshHostKeyDir, key.Type)
 		publicKeyPath := privateKeyPath + ".pub"
 
 		err := os.WriteFile(privateKeyPath, key.PrivateKey, 0600)

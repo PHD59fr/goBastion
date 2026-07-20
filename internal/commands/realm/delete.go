@@ -28,6 +28,15 @@ func Delete(db *gorm.DB, currentUser *models.User, args []string) error {
 		return nil
 	}
 
+	if !currentUser.CanDo(db, "realmDelete", "") {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Realm Delete",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete realms."}}},
+		})
+		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+
 	res := db.Where("name = ?", strings.ToLower(strings.TrimSpace(realmName))).Delete(&models.Realm{})
 	if res.Error != nil || res.RowsAffected == 0 {
 		console.DisplayBlock(console.ContentBlock{

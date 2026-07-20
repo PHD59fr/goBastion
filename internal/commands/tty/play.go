@@ -12,8 +12,10 @@ import (
 	"regexp"
 	"strings"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
@@ -50,6 +52,17 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		username = u.Username
 	}
 
+	if !validation.IsValidUsername(username) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "TTY Session Playback",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Invalid Username", Body: []string{"The specified username is invalid."}},
+			},
+		})
+		return fmt.Errorf("invalid username: %s", username)
+	}
+
 	if !u.CanDo(db, "ttyPlay", username) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
@@ -61,9 +74,8 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		return fmt.Errorf("access denied for user %s to play TTY sessions", u.Username)
 	}
 
-	re := regexp.MustCompile(`^[^.]+\.(?P<server>[^_:]+)(?::\d+)?_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ttyrec.gz$`)
-	matches := re.FindStringSubmatch(file)
-	if len(matches) < 2 {
+	server, validFile := recordingServer(file)
+	if !validFile {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
 			BlockType: "error",
@@ -74,8 +86,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		return nil
 	}
 
-	server := matches[1]
-	baseDir := fmt.Sprintf("/app/ttyrec/%s/%s/", strings.ToLower(username), server)
+	baseDir := filepath.Join(config.Get().Paths.TtyrecDir, strings.ToLower(strings.TrimSpace(username)), server)
 	ttyFile := filepath.Join(baseDir, file)
 
 	if _, err := os.Stat(ttyFile); os.IsNotExist(err) {
@@ -102,7 +113,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 
 	pipe, err := zcatCmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create pipe: %v", err)
+		return fmt.Errorf("failed to create pipe: %w", err)
 	}
 	playCmd.Stdin = pipe
 	playCmd.Stdout = os.Stdout
@@ -168,6 +179,19 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 	})
 
 	return nil
+}
+
+var recordingNameRegexp = regexp.MustCompile(`^[^./]+\.(?P<server>[^/]+):\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_cmd)?(?:_sid-[a-fA-F0-9-]+)?\.ttyrec.gz$`)
+
+// recordingServer validates a recording basename and extracts its server.
+// The server component is greedy up to the mandatory :port suffix, allowing
+// IPv6 literals and hostnames containing underscores without permitting paths.
+func recordingServer(file string) (string, bool) {
+	matches := recordingNameRegexp.FindStringSubmatch(file)
+	if len(matches) < 2 || matches[1] == "." || matches[1] == ".." {
+		return "", false
+	}
+	return matches[1], true
 }
 
 // extractDate parses the date from a ttyrec filename.

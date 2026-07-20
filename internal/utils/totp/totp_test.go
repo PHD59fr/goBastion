@@ -4,26 +4,29 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"goBastion/internal/config"
 )
 
 func TestGenerateBackupCodes_CountAndLength(t *testing.T) {
+	cfg := config.Get().TOTP
 	codes, jsonStr, err := GenerateBackupCodes()
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
 	}
-	if len(codes) != NumBackupCodes {
-		t.Fatalf("expected %d codes, got %d", NumBackupCodes, len(codes))
+	if len(codes) != cfg.BackupCodesCount {
+		t.Fatalf("expected %d codes, got %d", cfg.BackupCodesCount, len(codes))
 	}
 	for i, c := range codes {
-		if len(c) != BackupCodeLength {
-			t.Errorf("code %d has length %d, expected %d", i, len(c), BackupCodeLength)
+		if len(c) != cfg.BackupCodeLength {
+			t.Errorf("code %d has length %d, expected %d", i, len(c), cfg.BackupCodeLength)
 		}
 	}
 	if jsonStr == "" {
 		t.Fatal("expected non-empty JSON string")
 	}
-	if CountBackupCodes(jsonStr) != NumBackupCodes {
-		t.Fatalf("CountBackupCodes: expected %d, got %d", NumBackupCodes, CountBackupCodes(jsonStr))
+	if CountBackupCodes(jsonStr) != cfg.BackupCodesCount {
+		t.Fatalf("CountBackupCodes: expected %d, got %d", cfg.BackupCodesCount, CountBackupCodes(jsonStr))
 	}
 }
 

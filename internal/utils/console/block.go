@@ -16,13 +16,13 @@ type ContentBlock struct {
 
 type SectionContent struct {
 	SubTitle      string
-	SubTitleColor func(a ...interface{}) string
+	SubTitleColor func(a ...any) string
 	SubSubTitle   string
 	Body          []string
 }
 
 // getTitleColor returns the color function for a block title based on its type.
-func getTitleColor(blockType string) func(a ...interface{}) string {
+func getTitleColor(blockType string) func(a ...any) string {
 	switch strings.ToLower(blockType) {
 	case "error":
 		return utils.FgRedB
@@ -40,7 +40,7 @@ func getTitleColor(blockType string) func(a ...interface{}) string {
 }
 
 // getFrameColor returns the color function for a block frame based on its type.
-func getFrameColor(blockType string) func(a ...interface{}) string {
+func getFrameColor(blockType string) func(a ...any) string {
 	switch strings.ToLower(blockType) {
 	case "error":
 		return utils.FgRed
@@ -93,38 +93,30 @@ func DisplayBlock(block ContentBlock) {
 	fmt.Println(frameColor("╰──────────────────────────────────────────────────────────"))
 }
 
-const (
-	BlockTypeError   = "error"
-	BlockTypeSuccess = "success"
-	BlockTypeWarning = "warning"
-	BlockTypeInfo    = "info"
-	BlockTypeHelp    = "help"
-)
-
 func ErrorBlock(title, subtitle, message string) {
 	DisplayBlock(ContentBlock{
-		Title: title, BlockType: BlockTypeError,
+		Title: title, BlockType: "error",
 		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
 	})
 }
 
 func SuccessBlock(title, subtitle, message string) {
 	DisplayBlock(ContentBlock{
-		Title: title, BlockType: BlockTypeSuccess,
+		Title: title, BlockType: "success",
 		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
 	})
 }
 
 func WarningBlock(title, subtitle, message string) {
 	DisplayBlock(ContentBlock{
-		Title: title, BlockType: BlockTypeWarning,
+		Title: title, BlockType: "warning",
 		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
 	})
 }
 
 func InfoBlock(title, subtitle, message string) {
 	DisplayBlock(ContentBlock{
-		Title: title, BlockType: BlockTypeInfo,
+		Title: title, BlockType: "info",
 		Sections: []SectionContent{{SubTitle: subtitle, Body: []string{message}}},
 	})
 }

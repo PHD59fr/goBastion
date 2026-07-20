@@ -7,11 +7,8 @@ import (
 	"strings"
 )
 
-var (
-	AliasRegexp     = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	GroupNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	RealmNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-)
+// EntityNameRegexp matches valid entity names (aliases, group names, realm names, etc.).
+var EntityNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // ValidProtocols is the set of accepted protocol values for access entries.
 var ValidProtocols = map[string]bool{
@@ -27,9 +24,6 @@ func IsValidProtocol(p string) bool {
 	return ValidProtocols[p]
 }
 
-// hostRegexp matches valid hostnames/FQDNs.
-var hostRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-
 // IsValidHost returns true when h is a valid hostname or IP address.
 // IPv6 addresses enclosed in square brackets (e.g. [::1]) are accepted.
 // Rejects strings containing spaces, '@', '/', or '\'.
@@ -44,7 +38,7 @@ func IsValidHost(h string) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
-	return hostRegexp.MatchString(host)
+	return EntityNameRegexp.MatchString(host)
 }
 
 // IsValidUsername returns true when u is a valid Linux username.
@@ -114,4 +108,20 @@ func IsValidCIDRs(cidrs string) bool {
 // IsValidPort returns true when port is in the valid TCP/UDP range 1-65535.
 func IsValidPort(port int64) bool {
 	return port >= 1 && port <= 65535
+}
+
+// IsPrivateOrReservedTarget returns true when server resolves to a private,
+// loopback, link-local, multicast, or unspecified IP address.
+// Hostnames that do not resolve to an IP are not considered private.
+// This is used to restrict active TCP probes to internal targets only,
+// preventing scanner-like behavior against public addresses.
+func IsPrivateOrReservedTarget(server string) bool {
+	host := strings.TrimSpace(server)
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
 }

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"goBastion/internal/config"
 )
 
 // GenerateSecret creates a cryptographically random 20-byte secret encoded as Base32.
@@ -76,18 +78,14 @@ func OtpAuthURL(issuer, username, secret string) string {
 	)
 }
 
-const (
-	NumBackupCodes   = 10
-	BackupCodeLength = 8
-)
-
-// GenerateBackupCodes creates NumBackupCodes random alphanumeric codes.
+// GenerateBackupCodes creates backup codes using configured count and length.
 // Returns the plain codes (to show the user once) and a JSON string of bcrypt hashes (to store).
 func GenerateBackupCodes() ([]string, string, error) {
-	codes := make([]string, NumBackupCodes)
-	hashes := make([]string, NumBackupCodes)
+	cfg := config.Get().TOTP
+	codes := make([]string, cfg.BackupCodesCount)
+	hashes := make([]string, cfg.BackupCodesCount)
 	for i := range codes {
-		code, err := randomCode(BackupCodeLength)
+		code, err := randomCode(cfg.BackupCodeLength)
 		if err != nil {
 			return nil, "", fmt.Errorf("generate backup code: %w", err)
 		}

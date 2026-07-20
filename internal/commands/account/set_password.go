@@ -52,7 +52,7 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 
 	if clear {
 		if err := db.Model(&user).Update("password_hash", "").Error; err != nil {
-			return fmt.Errorf("failed to clear password: %v", err)
+			return fmt.Errorf("failed to clear password: %w", err)
 		}
 		log.Info("password_mfa_cleared",
 			slog.String("by", currentUser.Username),
@@ -69,7 +69,7 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 	passBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {
-		return fmt.Errorf("could not read password: %v", err)
+		return fmt.Errorf("could not read password: %w", err)
 	}
 	password := string(passBytes)
 	if len(password) < 8 {
@@ -81,10 +81,10 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("bcrypt error: %v", err)
+		return fmt.Errorf("bcrypt error: %w", err)
 	}
 	if err := db.Model(&user).Update("password_hash", string(hash)).Error; err != nil {
-		return fmt.Errorf("failed to save password: %v", err)
+		return fmt.Errorf("failed to save password: %w", err)
 	}
 	log.Info("password_mfa_set",
 		slog.String("by", currentUser.Username),

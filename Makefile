@@ -3,10 +3,11 @@
 BINARY   := goBastion
 PKG      := ./...
 DOCKER_TAG ?= gobastion:latest
+VERSION    ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 
 ## build: compile the binary
 build:
-	CGO_ENABLED=0 go build -o $(BINARY) .
+	CGO_ENABLED=0 go build -ldflags "-s -w -X goBastion/version.Version=$(VERSION)" -o $(BINARY) ./cmd/goBastion/
 
 ## test: run all tests with race detector and coverage
 test:
@@ -33,7 +34,7 @@ tidy:
 
 ## docker: build the Docker image
 docker:
-	docker build -t $(DOCKER_TAG) .
+	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_TAG) .
 
 ## clean: remove build artefacts
 clean:

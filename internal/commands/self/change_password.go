@@ -23,7 +23,7 @@ func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []str
 	fmt.Print("Enter current password: ")
 	current, err := readPassword()
 	if err != nil {
-		return fmt.Errorf("could not read password: %v", err)
+		return fmt.Errorf("could not read password: %w", err)
 	}
 	fmt.Println()
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
@@ -37,12 +37,12 @@ func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []str
 	fmt.Print("Enter new password: ")
 	pass1, err := readPassword()
 	if err != nil {
-		return fmt.Errorf("could not read password: %v", err)
+		return fmt.Errorf("could not read password: %w", err)
 	}
 	fmt.Print("\nConfirm new password: ")
 	pass2, err := readPassword()
 	if err != nil {
-		return fmt.Errorf("could not read password: %v", err)
+		return fmt.Errorf("could not read password: %w", err)
 	}
 	fmt.Println()
 	if pass1 != pass2 {
@@ -61,10 +61,10 @@ func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []str
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(pass1), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("bcrypt error: %v", err)
+		return fmt.Errorf("bcrypt error: %w", err)
 	}
 	if err := db.Model(user).Update("password_hash", string(hash)).Error; err != nil {
-		return fmt.Errorf("failed to save password: %v", err)
+		return fmt.Errorf("failed to save password: %w", err)
 	}
 	user.PasswordHash = string(hash)
 	log.Info("password_mfa_changed", slog.String("user", user.Username))

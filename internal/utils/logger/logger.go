@@ -12,9 +12,9 @@ import (
 	"os"
 	"strings"
 	"sync"
-)
 
-const logFile = "/goBastion.log"
+	"goBastion/internal/config"
+)
 
 // slogLevelToGelf maps a slog level to a GELF syslog severity number.
 func slogLevelToGelf(l slog.Level) int {
@@ -66,14 +66,14 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 //
 // Output includes both GELF 1.1 standard fields and human-readable fields:
 //
-//	{"version":"1.1","host":"goBastion","short_message":"user_login","timestamp":1743200175.123,"level":6,"time":"2026-03-28T00:06:15.123Z","msg":"user_login","_user":"alice"}
+//	{"version":"1.1","host":"goBastion","short_message":"user_login","timestamp":1743200175,"level":6,"time":"2026-03-28T00:06:15.123Z","msg":"user_login","_user":"alice"}
 func (h *jsonHandler) Handle(_ context.Context, r slog.Record) error {
 	m := map[string]any{
 		// GELF 1.1 standard fields
 		"version":       "1.1",
 		"host":          h.host,
 		"short_message": r.Message,
-		"timestamp":     float64(r.Time.UnixMilli()) / 1000.0,
+		"timestamp":     r.Time.Unix(),
 		"level":         slogLevelToGelf(r.Level),
 		// Human-readable fields
 		"msg":  r.Message,
@@ -133,7 +133,9 @@ func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
 	for _, handler := range h.handlers {
 		if handler.Enabled(ctx, r.Level) {
-			_ = handler.Handle(ctx, r.Clone())
+			if err := handler.Handle(ctx, r.Clone()); err != nil {
+				fmt.Fprintf(os.Stderr, "log_handler_failed handler=%T error=%v\n", handler, err)
+			}
 		}
 	}
 	return nil
@@ -262,14 +264,15 @@ func (h *plainTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup is a no-op.
 func (h *plainTextHandler) WithGroup(_ string) slog.Handler { return h }
 
-// NewLogger returns a logger writing to /goBastion.log (always)
+// NewLogger returns a logger writing to the configured log file (always)
 // and to syslog (best-effort).
 //
 // Log format is controlled by the LOG_FORMAT environment variable:
 //   - "json"  (default): structured JSON lines — compatible with log aggregators
 //   - "plain": human-readable timestamped text — useful for local debugging
 func NewLogger() *slog.Logger {
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	cfg := config.DefaultConfig()
+	f, err := os.OpenFile(cfg.Paths.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
 	if err != nil {
 		f = os.Stderr
 	}

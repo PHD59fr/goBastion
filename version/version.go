@@ -1,3 +1,4 @@
 package version
 
-const Version = "1.0.0"
+// Version is set at build time via -ldflags "-s -w -X goBastion/version.Version=..."
+var Version string

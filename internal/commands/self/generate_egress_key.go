@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/cryptokey"
@@ -59,7 +61,17 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return nil
 	}
-	tmpDir := fmt.Sprintf("/home/%s/.tmp", user.Username)
+	if keyType == "rsa" && keySize < 2048 {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Generate Egress Key",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Weak Key Size", Body: []string{"RSA key size must be at least 2048 bits."}},
+			},
+		})
+		return nil
+	}
+	tmpDir := filepath.Join(config.Get().Paths.HomeBaseDir, user.Username, ".tmp")
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
@@ -70,6 +82,9 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return fmt.Errorf("error creating .tmp directory: %w", err)
 	}
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
 	tmpFile := fmt.Sprintf("%s/sshkey_%s.pem", tmpDir, uuid.New().String())
 	cmd := exec.Command("ssh-keygen", "-t", keyType, "-b", strconv.Itoa(keySize), "-f", tmpFile, "-N", "")
 	var stderr bytes.Buffer
@@ -84,9 +99,6 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return fmt.Errorf("error generating SSH key: %v, %s", err, stderr.String())
 	}
-	defer func() {
-		_ = os.RemoveAll(tmpDir)
-	}()
 	privKeyStr, err := os.ReadFile(tmpFile)
 	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -96,7 +108,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to read private key. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error reading private key: %v", err)
+		return fmt.Errorf("error reading private key: %w", err)
 	}
 	pubKeyData, err := os.ReadFile(tmpFile + ".pub")
 	if err != nil {
@@ -107,7 +119,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to read public key. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error reading public key: %v", err)
+		return fmt.Errorf("error reading public key: %w", err)
 	}
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyData)
 	if err != nil || pubKey == nil {
@@ -146,7 +158,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to store key in database. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error storing key in database: %v", err)
+		return fmt.Errorf("error storing key in database: %w", err)
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Generate Egress Key",

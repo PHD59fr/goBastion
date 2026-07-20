@@ -88,7 +88,7 @@ func DelAccess(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to delete personal access. Please contact admin."}},
 			},
 		})
-		return fmt.Errorf("error deleting personal access: %v", err)
+		return fmt.Errorf("error deleting personal access: %w", err)
 	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Delete Personal Access",

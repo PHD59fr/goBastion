@@ -25,7 +25,7 @@ func DisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []st
 	fmt.Print("Enter current password: ")
 	current, err := readPassword()
 	if err != nil {
-		return fmt.Errorf("could not read password: %v", err)
+		return fmt.Errorf("could not read password: %w", err)
 	}
 	fmt.Println()
 
@@ -40,7 +40,7 @@ func DisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []st
 	}
 
 	if err := db.Model(user).Update("password_hash", "").Error; err != nil {
-		return fmt.Errorf("failed to clear password: %v", err)
+		return fmt.Errorf("failed to clear password: %w", err)
 	}
 	user.PasswordHash = ""
 	log.Info("password_mfa_disabled", slog.String("user", user.Username))

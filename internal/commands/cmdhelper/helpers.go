@@ -2,69 +2,16 @@ package cmdhelper
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
-	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
-
-type StringFlag struct {
-	Ptr   *string
-	Name  string
-	Def   string
-	Usage string
-}
-
-type BoolFlag struct {
-	Ptr   *bool
-	Name  string
-	Def   bool
-	Usage string
-}
-
-type IntFlag struct {
-	Ptr   *int
-	Name  string
-	Def   int
-	Usage string
-}
-
-type Int64Flag struct {
-	Ptr   *int64
-	Name  string
-	Def   int64
-	Usage string
-}
-
-func ParseFlags(cmdName, usage string, args []string, flags ...interface{}) (*flag.FlagSet, error) {
-	fs := flag.NewFlagSet(cmdName, flag.ContinueOnError)
-	for _, f := range flags {
-		switch v := f.(type) {
-		case StringFlag:
-			fs.StringVar(v.Ptr, v.Name, v.Def, v.Usage)
-		case BoolFlag:
-			fs.BoolVar(v.Ptr, v.Name, v.Def, v.Usage)
-		case IntFlag:
-			fs.IntVar(v.Ptr, v.Name, v.Def, v.Usage)
-		case Int64Flag:
-			fs.Int64Var(v.Ptr, v.Name, v.Def, v.Usage)
-		}
-	}
-	return fs, fs.Parse(args)
-}
-
-func CleanArgs(ptrs ...*string) {
-	for _, p := range ptrs {
-		*p = strings.TrimSpace(*p)
-	}
-}
 
 func RequirePermission(db *gorm.DB, user *models.User, permission, resource, title string) error {
 	if !user.CanDo(db, permission, resource) {
@@ -111,46 +58,6 @@ func EnsureNotLastAdmin(db *gorm.DB, title string) error {
 		return fmt.Errorf("cannot demote the last remaining admin")
 	}
 	return nil
-}
-
-func ValidateHost(host, title string) bool {
-	if !validation.IsValidHost(host) {
-		console.ErrorBlock(title, "Invalid Server", "Server hostname/IP contains invalid characters (e.g., '@').")
-		return false
-	}
-	return true
-}
-
-func ValidateUsername(username, title string) bool {
-	if !validation.IsValidUsername(username) {
-		console.ErrorBlock(title, "Invalid Username", "SSH username contains invalid characters.")
-		return false
-	}
-	return true
-}
-
-func ValidatePort(port int64, title string) bool {
-	if !validation.IsValidPort(port) {
-		console.ErrorBlock(title, "Invalid Port", "Port must be between 1 and 65535.")
-		return false
-	}
-	return true
-}
-
-func ValidateProtocol(protocol, title string) bool {
-	if !validation.IsValidProtocol(protocol) {
-		console.ErrorBlock(title, "Invalid Protocol", "Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync.")
-		return false
-	}
-	return true
-}
-
-func ValidateCIDRs(cidrs, title string) bool {
-	if !validation.IsValidCIDRs(cidrs) {
-		console.ErrorBlock(title, "Invalid CIDRs", "--from must be a comma-separated list of valid CIDR notation (e.g. 10.0.0.0/8,192.168.1.0/24).")
-		return false
-	}
-	return true
 }
 
 func ReadInput(prompt string) (string, error) {

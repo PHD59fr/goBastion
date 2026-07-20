@@ -31,6 +31,10 @@ func CreateDBIngressKey(db *gorm.DB, user *models.User, key string) error {
 	fingerprint := base64.StdEncoding.EncodeToString(sha256Fingerprint[:])
 	keySize := sshkey.GetKeySize(pub)
 
+	if pub.Type() == "ssh-rsa" && keySize < 2048 {
+		return fmt.Errorf("RSA key size must be at least 2048 bits (got %d)", keySize)
+	}
+
 	var existingKey models.IngressKey
 	if err = db.Where("user_id = ? AND fingerprint = ?", user.ID, fingerprint).First(&existingKey).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {

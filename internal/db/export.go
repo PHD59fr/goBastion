@@ -20,6 +20,8 @@ import (
 	"golang.org/x/crypto/argon2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
+
+	"goBastion/internal/config"
 )
 
 const (
@@ -105,13 +107,14 @@ func deriveKeyForExport(secret string) ([]byte, exportKDFEnvelope, error) {
 		return nil, exportKDFEnvelope{}, fmt.Errorf("generate salt: %w", err)
 	}
 
+	cfg := config.Get().DBExport
 	kdf := exportKDFEnvelope{
 		Name:    "argon2id",
 		Salt:    base64.StdEncoding.EncodeToString(salt),
-		Time:    3,
-		Memory:  64 * 1024,
-		Threads: 2,
-		KeyLen:  32,
+		Time:    cfg.Argon2Time,
+		Memory:  cfg.Argon2Memory,
+		Threads: cfg.Argon2Threads,
+		KeyLen:  cfg.Argon2KeyLen,
 	}
 
 	key := argon2.IDKey([]byte(secret), salt, kdf.Time, kdf.Memory, kdf.Threads, kdf.KeyLen)
@@ -261,9 +264,9 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 }
 
 // Import reads an encrypted logical JSON export from r and restores it into an empty DB.
-func Import(db *gorm.DB, r io.Reader, log *slog.Logger) error {
-	// Limit import to 512 MiB to prevent OOM from malicious input.
-	raw, err := io.ReadAll(io.LimitReader(r, 512*1024*1024))
+func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
+	// Limit import size to prevent OOM from malicious input.
+	raw, err := io.ReadAll(io.LimitReader(r, config.Get().DBExport.ImportMaxSize))
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
 	}
@@ -332,7 +335,12 @@ func Import(db *gorm.DB, r io.Reader, log *slog.Logger) error {
 	defer func() {
 		if r := recover(); r != nil {
 			_ = tx.Rollback()
-			panic(r)
+			switch v := r.(type) {
+			case error:
+				importErr = fmt.Errorf("import panic: %w", v)
+			default:
+				importErr = fmt.Errorf("import panic: %v", v)
+			}
 		}
 	}()
 
@@ -700,12 +708,12 @@ func resetPostgresSequences(db *gorm.DB) error {
 
 		query := fmt.Sprintf(`
 SELECT setval(
-	pg_get_serial_sequence('%s', '%s'),
+	pg_get_serial_sequence(%s, %s),
 	COALESCE(MAX(%s), 1),
 	MAX(%s) IS NOT NULL
 )
 FROM %s
-`, sch.Table, pk.DBName, columnQuoted, columnQuoted, tableQuoted)
+`, tableQuoted, columnQuoted, columnQuoted, columnQuoted, tableQuoted)
 
 		if err := db.Exec(query).Error; err != nil {
 			return fmt.Errorf("reset sequence for %s.%s: %w", sch.Table, pk.DBName, err)

@@ -8,6 +8,18 @@
 -- ── Extensions ───────────────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- ── bastion_instances ───────────────────────────────────────────────────────
+-- Stores per-instance configuration (DB is the source of truth for config).
+-- The Config column holds a JSON-encoded copy of the full configuration
+-- (everything except bootstrap DB connection params).
+CREATE TABLE IF NOT EXISTS bastion_instances (
+    instance_id text PRIMARY KEY,
+    role        text NOT NULL DEFAULT 'master',  -- 'master' or 'slave'
+    config      text,                            -- JSON-encoded config
+    created_at  timestamptz,
+    updated_at  timestamptz
+);
+
 -- ── users ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id              uuid PRIMARY KEY,
@@ -135,7 +147,6 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     server          text NOT NULL,
     port            bigint NOT NULL,
     protocol        text NOT NULL DEFAULT 'ssh',
-    guest_allowed   boolean NOT NULL DEFAULT false,
     comment         text,
     allowed_from    text,
     expires_at      timestamptz,
@@ -147,6 +158,28 @@ CREATE TABLE IF NOT EXISTS group_accesses (
 CREATE INDEX IF NOT EXISTS idx_group_accesses_group_id ON group_accesses (group_id);
 CREATE INDEX IF NOT EXISTS idx_group_accesses_deleted_at ON group_accesses (deleted_at);
 CREATE INDEX IF NOT EXISTS idx_group_access_lookup ON group_accesses (group_id, server, port, username, protocol) WHERE deleted_at IS NULL;
+
+-- ── group_guest_accesses ─────────────────────────────────────────────────────
+-- Granular per-user, per-server guest access grants.
+-- A guest-role user can only connect to servers listed in their grants.
+CREATE TABLE IF NOT EXISTS group_guest_accesses (
+    id            uuid PRIMARY KEY,
+    group_id      uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username      text NOT NULL,
+    server        text NOT NULL,
+    port          bigint NOT NULL,
+    protocol      text NOT NULL DEFAULT 'ssh',
+    comment       text,
+    allowed_from  text,
+    expires_at    timestamptz,
+    created_at    timestamptz,
+    updated_at    timestamptz,
+    deleted_at    timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_group_guest_accesses_group_id ON group_guest_accesses (group_id);
+CREATE INDEX IF NOT EXISTS idx_group_guest_accesses_user_id ON group_guest_accesses (user_id);
+CREATE INDEX IF NOT EXISTS idx_group_guest_accesses_deleted_at ON group_guest_accesses (deleted_at);
 
 -- ── aliases ──────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS aliases (

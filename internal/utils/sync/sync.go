@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"goBastion/internal/config"
 	internaldb "goBastion/internal/db"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
@@ -35,14 +36,28 @@ func New(db *gorm.DB, os osadapter.SystemAdapter, log slog.Logger) *Syncer {
 
 // CreateUserFromDB creates the OS system user and writes its authorized_keys from DB.
 func (s *Syncer) CreateUserFromDB(user models.User) error {
-	if s.os.UserHomeExists(user.Username) {
-		return fmt.Errorf("user %s already exists", user.Username)
+	if os.Geteuid() != 0 {
+		if _, ok := s.os.(*osadapter.LinuxAdapter); ok {
+			out, err := s.os.ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-sync-user", user.Username)
+			if err != nil {
+				return fmt.Errorf("privileged user sync failed: %w, output: %s", err, out)
+			}
+			return nil
+		}
 	}
-	if err := s.os.CreateUser(user.Username); err != nil {
-		return fmt.Errorf("error creating system user for %s: %w", user.Username, err)
+	if !s.os.UserHomeExists(user.Username) {
+		if err := s.os.CreateUser(user.Username); err != nil {
+			return fmt.Errorf("error creating system user for %s: %w", user.Username, err)
+		}
 	}
 	if err := s.IngressKeyFromDB(user); err != nil {
 		return fmt.Errorf("error syncing ingress keys for %s: %w", user.Username, err)
+	}
+	if err := s.KnownHostsFromDB(&user); err != nil {
+		return fmt.Errorf("error syncing known_hosts for %s: %w", user.Username, err)
+	}
+	if err := s.os.UpdateSudoers(&user); err != nil {
+		return fmt.Errorf("error updating sudoers for %s: %w", user.Username, err)
 	}
 	return nil
 }
@@ -50,7 +65,7 @@ func (s *Syncer) CreateUserFromDB(user models.User) error {
 // CreateUsersFromDB syncs all DB users to the OS, creating missing system accounts.
 // Only runs on fresh installation (empty /home).
 func (s *Syncer) CreateUsersFromDB() error {
-	homeFiles, err := os.ReadDir("/home")
+	homeFiles, err := os.ReadDir(config.Get().Paths.HomeBaseDir)
 	if err != nil {
 		return fmt.Errorf("error reading HOME directory: %w", err)
 	}
@@ -119,12 +134,21 @@ func (s *Syncer) CreateSystemUsersFromSystemToDb() error {
 
 // IngressKeyFromDB writes the user's ingress keys to their authorized_keys file.
 func (s *Syncer) IngressKeyFromDB(user models.User) error {
+	if os.Geteuid() != 0 {
+		if _, ok := s.os.(*osadapter.LinuxAdapter); ok {
+			out, err := s.os.ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-sync-user", user.Username)
+			if err != nil {
+				return fmt.Errorf("privileged ingress-key sync failed: %w, output: %s", err, out)
+			}
+			return nil
+		}
+	}
 	var keys []models.IngressKey
 	if err := s.db.Where("user_id = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, time.Now()).Find(&keys).Error; err != nil {
 		return fmt.Errorf("error retrieving keys for %s: %w", user.Username, err)
 	}
 
-	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
+	sshDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(user.Username), ".ssh")
 	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
 
 	existingKeys := make(map[string]string)
@@ -136,7 +160,7 @@ func (s *Syncer) IngressKeyFromDB(user models.User) error {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if parts := strings.Split(line, " #ID:"); len(parts) > 0 {
+			if parts := strings.Split(line, " #ID:"); len(parts) > 1 {
 				existingKeys[parts[0]] = line
 			}
 		}
@@ -185,55 +209,63 @@ func (s *Syncer) IngressKeyFromDB(user models.User) error {
 }
 
 // KnownHostsFromDB writes the user's known_hosts entries from the database to disk.
+// It always writes directly as the current process. During initial sync (root),
+// ChownDir ensures correct ownership. During user sessions (non-root), the .ssh
+// directory is already owned by the user (ChownDir was called by IngressKeyFromDB).
 func (s *Syncer) KnownHostsFromDB(user *models.User) error {
-	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
+	sshDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(user.Username), ".ssh")
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
 
 	var entries []models.KnownHostsEntry
 	if err := s.db.Where("user_id = ?", user.ID).Find(&entries).Error; err != nil {
-		return fmt.Errorf("failed to retrieve known_hosts entries from DB: %v", err)
+		return fmt.Errorf("failed to retrieve known_hosts entries from DB: %w", err)
 	}
 
 	if len(entries) == 0 {
 		if err := os.Remove(knownHostsPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove known_hosts file: %v", err)
+			return fmt.Errorf("failed to remove known_hosts file: %w", err)
 		}
 		return nil
 	}
 
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		return fmt.Errorf("failed to create SSH directory: %v", err)
+		return fmt.Errorf("failed to create SSH directory: %w", err)
 	}
 
 	tmpFile, err := os.CreateTemp(sshDir, "known_hosts.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create temp known_hosts: %v", err)
+		return fmt.Errorf("failed to create temp known_hosts: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	if err = tmpFile.Chmod(0600); err != nil {
 		_ = tmpFile.Close()
-		return fmt.Errorf("failed to set permissions on temp known_hosts: %v", err)
+		return fmt.Errorf("failed to set permissions on temp known_hosts: %w", err)
 	}
 	for _, entry := range entries {
 		if _, err := fmt.Fprintln(tmpFile, entry.Entry); err != nil {
 			_ = tmpFile.Close()
-			return fmt.Errorf("failed to write known_hosts entry: %v", err)
+			return fmt.Errorf("failed to write known_hosts entry: %w", err)
 		}
 	}
 	if err = tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temp known_hosts: %v", err)
+		return fmt.Errorf("failed to close temp known_hosts: %w", err)
 	}
 	if err = os.Rename(tmpPath, knownHostsPath); err != nil {
-		return fmt.Errorf("failed to replace known_hosts: %v", err)
+		return fmt.Errorf("failed to replace known_hosts: %w", err)
+	}
+	if os.Geteuid() == 0 {
+		if err = s.os.ChownDir(*user, sshDir); err != nil {
+			return fmt.Errorf("error changing ownership of %s: %w", sshDir, err)
+		}
 	}
 	return nil
 }
 
 // KnownHostsEntriesFromSystemToDb imports known_hosts file entries into the database.
 func (s *Syncer) KnownHostsEntriesFromSystemToDb(user *models.User) error {
-	sshDir := filepath.Join("/home", utils.NormalizeUsername(user.Username), ".ssh")
+	sshDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(user.Username), ".ssh")
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
 
 	file, err := os.Open(knownHostsPath)
@@ -241,7 +273,7 @@ func (s *Syncer) KnownHostsEntriesFromSystemToDb(user *models.User) error {
 		if os.IsNotExist(err) {
 			return s.db.Where("user_id = ?", user.ID).Delete(&models.KnownHostsEntry{}).Error
 		}
-		return fmt.Errorf("failed to open known_hosts: %v", err)
+		return fmt.Errorf("failed to open known_hosts: %w", err)
 	}
 	defer func(f *os.File) { _ = f.Close() }(file)
 
@@ -253,12 +285,12 @@ func (s *Syncer) KnownHostsEntriesFromSystemToDb(user *models.User) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading known_hosts file: %v", err)
+		return fmt.Errorf("error reading known_hosts file: %w", err)
 	}
 
 	var dbEntries []models.KnownHostsEntry
 	if err := s.db.Where("user_id = ?", user.ID).Find(&dbEntries).Error; err != nil {
-		return fmt.Errorf("failed to fetch known_hosts entries from DB: %v", err)
+		return fmt.Errorf("failed to fetch known_hosts entries from DB: %w", err)
 	}
 
 	dbEntriesMap := make(map[string]uuid.UUID)
@@ -288,12 +320,12 @@ func (s *Syncer) KnownHostsEntriesFromSystemToDb(user *models.User) error {
 
 	if len(toInsert) > 0 {
 		if err := s.db.Create(&toInsert).Error; err != nil {
-			return fmt.Errorf("failed to insert known_hosts entries: %v", err)
+			return fmt.Errorf("failed to insert known_hosts entries: %w", err)
 		}
 	}
 	if len(toDelete) > 0 {
 		if err := s.db.Where("id IN (?)", toDelete).Delete(&models.KnownHostsEntry{}).Error; err != nil {
-			return fmt.Errorf("failed to delete old known_hosts entries: %v", err)
+			return fmt.Errorf("failed to delete old known_hosts entries: %w", err)
 		}
 	}
 	return nil
@@ -311,8 +343,15 @@ func (s *Syncer) RestoreBastionSSHHostKeys() error {
 func (s *Syncer) EnforceFromDB() error {
 	s.log.Info("sync_start")
 
+	// Reload config from DB to pick up admin changes.
+	config.Reload(s.db)
+
 	if err := s.RestoreBastionSSHHostKeys(); err != nil {
 		s.log.Error("sync_ssh_host_keys_failed", slog.Any("error", err))
+	}
+
+	if err := s.disableInactiveUsers(); err != nil {
+		s.log.Error("sync_disable_inactive_failed", slog.Any("error", err))
 	}
 
 	var dbUsers []models.User
@@ -333,6 +372,10 @@ func (s *Syncer) EnforceFromDB() error {
 				continue
 			}
 		}
+		homeDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(u.Username))
+		if hErr := s.os.ChownDir(u, homeDir); hErr != nil {
+			s.log.Warn("sync_chown_home_failed", slog.String("user", u.Username), slog.Any("error", hErr))
+		}
 		if err := s.IngressKeyFromDB(u); err != nil {
 			s.log.Error("sync_authorized_keys_failed", slog.String("user", u.Username), slog.Any("error", err))
 		}
@@ -344,9 +387,9 @@ func (s *Syncer) EnforceFromDB() error {
 		}
 	}
 
-	homeEntries, err := os.ReadDir("/home")
+	homeEntries, err := os.ReadDir(config.Get().Paths.HomeBaseDir)
 	if err != nil {
-		return fmt.Errorf("[sync] error reading /home: %w", err)
+		return fmt.Errorf("[sync] error reading %s: %w", config.Get().Paths.HomeBaseDir, err)
 	}
 	for _, entry := range homeEntries {
 		if !entry.IsDir() {
@@ -369,5 +412,34 @@ func (s *Syncer) EnforceFromDB() error {
 	}
 
 	s.log.Info("sync_complete")
+	return nil
+}
+
+// disableInactiveUsers disables accounts that haven't logged in within the
+// configured MaxInactiveDays window. Accounts that have never logged in
+// (zero LastLoginAt) are excluded.
+func (s *Syncer) disableInactiveUsers() error {
+	maxDays := config.Get().Account.MaxInactiveDays
+	if maxDays <= 0 {
+		return nil
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -maxDays)
+	result := s.db.Model(&models.User{}).
+		Where(internaldb.BoolFalseExpr(s.db, "system_user")).
+		Where("enabled = ?", true).
+		Where("last_login_at != ?", time.Time{}).
+		Where("last_login_at < ?", cutoff).
+		Where("deleted_at IS NULL").
+		Update("enabled", false)
+	if result.Error != nil {
+		return fmt.Errorf("error disabling inactive users: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		s.log.Warn("sync_disabled_inactive_users",
+			slog.Int64("count", result.RowsAffected),
+			slog.Int("max_inactive_days", maxDays),
+		)
+	}
 	return nil
 }

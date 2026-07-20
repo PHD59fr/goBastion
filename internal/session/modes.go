@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/c-bata/go-prompt"
@@ -25,6 +27,7 @@ import (
 	"goBastion/internal/commands/registry"
 	cmdssh "goBastion/internal/commands/ssh"
 	cmdtty "goBastion/internal/commands/tty"
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
@@ -54,6 +57,16 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		return
 	}
 
+	// Maintenance mode: only administrators may connect.
+	if cfg := config.Get(); cfg.Maintenance.Enabled && !currentUser.IsAdmin() {
+		msg := cfg.Maintenance.Message
+		if msg == "" {
+			msg = "🚧 Bastion under maintenance: only administrators may connect."
+		}
+		fmt.Println(msg)
+		return
+	}
+
 	if !preConnectionCheck(db, currentUser, log) {
 		return
 	}
@@ -63,7 +76,11 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
 			return
 		}
-		if !checkTOTP(db, &currentUser, log) {
+		if config.Get().ForceOSHOnly.Enabled {
+			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
+			return
+		}
+		if !checkMFA(db, &currentUser, log) {
 			return
 		}
 		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
@@ -71,12 +88,19 @@ func Run(db *gorm.DB, log *slog.Logger) {
 	} else {
 		cmd := os.Args[1]
 		args := os.Args[2:]
-		if currentUser.OSHOnly && !strings.HasPrefix(strings.TrimSpace(cmd), "-osh") {
+
+		isInteractive := strings.TrimSpace(cmd) == "" || cmd == "--"
+
+		if config.Get().ForceOSHOnly.Enabled && !isInteractive && !strings.HasPrefix(strings.TrimSpace(cmd), "-osh") {
+			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
+			return
+		}
+		if currentUser.OSHOnly && !isInteractive && !strings.HasPrefix(strings.TrimSpace(cmd), "-osh") {
 			fmt.Println("⛔ This account is limited to -osh commands only.")
 			return
 		}
-		if strings.TrimSpace(cmd) == "" {
-			if !checkTOTP(db, &currentUser, log) {
+		if isInteractive {
+			if !checkMFA(db, &currentUser, log) {
 				return
 			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
@@ -86,7 +110,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
 			isSftpSession := strings.HasPrefix(cmd, "sftp-session")
 			if !isTCPProxy && !isSftpSession {
-				if !checkTOTP(db, &currentUser, log) {
+				if !checkMFA(db, &currentUser, log) {
 					return
 				}
 			}
@@ -128,12 +152,20 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			fmt.Fprintln(os.Stderr, "TCP proxy connection failed. Check the target host and your access rights.")
 		}
 	} else if strings.HasPrefix(command, "sftp-session") {
+		if !config.Get().SFTP.Enabled {
+			fmt.Fprintln(os.Stderr, "⛔ SFTP transfers are disabled.")
+			return
+		}
 		target := strings.TrimPrefix(strings.TrimPrefix(command, "sftp-session "), "sftp-session")
 		if err := cmdssh.SFTPSession(db, *currentUser, *log, target); err != nil {
 			log.Warn("sftp_session_failed", slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, "SFTP session failed. Check the target host and your access rights.")
 		}
 	} else if isMoshServerRequest(command, args) {
+		if !config.Get().Mosh.Enabled {
+			fmt.Fprintln(os.Stderr, "⛔ Mosh is disabled.")
+			return
+		}
 		runMoshServer(command, args, log)
 	} else {
 		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
@@ -230,7 +262,7 @@ func captureOutput(run func() error) (stdout string, stderr string, runErr error
 	os.Stderr = wErr
 	doneOut := make(chan string, 1)
 	doneErr := make(chan string, 1)
-	readErr := make(chan error, 2)
+	readErr := make(chan error, 1)
 	go func() {
 		var buf bytes.Buffer
 		_, cErr := io.Copy(&buf, r)
@@ -259,16 +291,18 @@ func captureOutput(run func() error) (stdout string, stderr string, runErr error
 	_ = r.Close()
 	_ = rErr.Close()
 
-	var out, errOut string
+	// Drain both channels. Pipes are closed so goroutines will finish and
+	// send exactly one value each (either a string or an error). We always
+	// iterate twice to avoid goroutine leaks and data loss.
 	for i := 0; i < 2; i++ {
 		select {
-		case out = <-doneOut:
-		case errOut = <-doneErr:
-		case err = <-readErr:
-			return "", "", runErr, err
+		case stdout = <-doneOut:
+		case stderr = <-doneErr:
+		case captureErr = <-readErr:
+			// Save the error but continue draining the other channel.
 		}
 	}
-	return out, errOut, runErr, nil
+	return stdout, stderr, runErr, captureErr
 }
 
 func emitJSONPayload(mode oshJSONMode, payload map[string]any) {
@@ -303,7 +337,18 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 
 	showCompletions := false
 
+	// shouldExit is checked by go-prompt's ExitChecker on every keystroke.
+	// When set, p.Run() returns cleanly (with terminal restored via tearDown).
+	var shouldExit atomic.Bool
+
+	// resetIdle is defined below; declared here so the completer closure can
+	// reset the idle watchdog on every keystroke (not just on command run).
+	var resetIdle func()
+
 	wrappedCompleter := func(d prompt.Document) []prompt.Suggest {
+		if resetIdle != nil {
+			resetIdle()
+		}
 		if showCompletions {
 			return autocomplete.Completion(d, currentUser, db)
 		}
@@ -328,12 +373,84 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 		},
 	}
 
+	// Navigation key bindings that also reset the idle timer.
+	// CursorDown/CursorUp can panic when the suggestion list is displayed
+	// because the extra suggestion rows make TranslateRowColToIndex go out
+	// of range. We recover silently — during suggestion display the user
+	// should use Tab/Shift-Tab to navigate, not arrow keys.
+	safeMove := func(fn func(*prompt.Buffer)) func(*prompt.Buffer) {
+		return func(buf *prompt.Buffer) {
+			defer func() { _ = recover() }()
+			resetIdle()
+			fn(buf)
+		}
+	}
+	navBindings := []prompt.KeyBind{
+		{Key: prompt.Up, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorUp(1) })},
+		{Key: prompt.Down, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorDown(1) })},
+		{Key: prompt.Left, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorLeft(1) })},
+		{Key: prompt.Right, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorRight(1) })},
+		{Key: prompt.Home, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorLeft(1000) })},
+		{Key: prompt.End, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorRight(1000) })},
+		{Key: prompt.PageUp, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorUp(10) })},
+		{Key: prompt.PageDown, Fn: safeMove(func(buf *prompt.Buffer) { buf.CursorDown(10) })},
+	}
+
 	promptSymbol := "$ "
 	if currentUser.IsAdmin() {
 		promptSymbol = "# "
 	}
 
 	bastionName, _ := os.Hostname()
+
+	// Idle timeout watchdog: reset on each executed command; fires (and exits
+	// the session) if no command runs within IdleTimeout. 0 = disabled.
+	idleTimeout := time.Duration(config.Get().Session.IdleTimeout)
+	var idleTimer *time.Timer
+	var idleMu sync.Mutex
+	resetIdle = func() {
+		if idleTimeout <= 0 {
+			return
+		}
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		idleTimer = time.AfterFunc(idleTimeout, func() {
+			log.Info("session_end", slog.String("user", currentUser.Username), slog.String("reason", "idle_timeout"))
+			// go-prompt reads /dev/tty directly — os.Stdin.Close() cannot stop it.
+			// Restore terminal and force-exit.
+			resetStdIn()
+			fmt.Println("\n⛔ Session timed out due to inactivity.")
+			os.Exit(0)
+		})
+	}
+	config.SetIdleResetFn(resetIdle)
+	resetIdle()
+	defer func() {
+		idleMu.Lock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		idleMu.Unlock()
+	}()
+
+	opts := []prompt.Option{
+		prompt.OptionPrefix(currentUser.Username + "@" + bastionName + ":" + promptSymbol),
+		prompt.OptionPrefixTextColor(prompt.DarkGreen),
+		prompt.OptionAddKeyBind(tabKeyBinding),
+		prompt.OptionAddKeyBind(escKeyBinding),
+	}
+	for _, b := range navBindings {
+		opts = append(opts, prompt.OptionAddKeyBind(b))
+	}
+
+	// ExitChecker is called on every keystroke via go-prompt's handleKeyBinding.
+	// When it returns true, p.Run() exits cleanly with terminal restored.
+	opts = append(opts, prompt.OptionSetExitCheckerOnInput(func(in string, breakline bool) bool {
+		return shouldExit.Load()
+	}))
 
 	p := prompt.New(
 		func(in string) {
@@ -342,13 +459,15 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 			if len(tokens) == 0 {
 				return
 			}
-			_ = executeCommand(db, currentUser, log, tokens[0], tokens[1:])
+			err := executeCommand(db, currentUser, log, tokens[0], tokens[1:])
+			if errors.Is(err, errSessionExit) {
+				shouldExit.Store(true)
+				return
+			}
+			resetIdle()
 		},
 		wrappedCompleter,
-		prompt.OptionPrefix(currentUser.Username+"@"+bastionName+":"+promptSymbol),
-		prompt.OptionPrefixTextColor(prompt.DarkGreen),
-		prompt.OptionAddKeyBind(tabKeyBinding),
-		prompt.OptionAddKeyBind(escKeyBinding),
+		opts...,
 	)
 	p.Run()
 	log.Info("session_end", slog.String("user", currentUser.Username), slog.String("reason", "disconnect"))
@@ -357,7 +476,102 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 var (
 	ErrUnknownCommand   = errors.New("unknown command")
 	ErrPermissionDenied = errors.New("permission denied")
+	// errSessionExit signals a normal session termination (exit command or idle timeout).
+	// The caller should close stdin to make p.Run() return gracefully.
+	errSessionExit = errors.New("session exit")
 )
+
+// featureEnabled reports whether the named feature toggle is on.
+func featureEnabled(feat string, cfg *config.Config) bool {
+	switch feat {
+	case "self_ingress":
+		return cfg.SelfIngress.Enabled
+	case "egress_key":
+		return cfg.EgressKey.Enabled
+	case "known_hosts":
+		return cfg.KnownHosts.Enabled
+	case "alias_self":
+		return cfg.AliasSelf.Enabled
+	case "self_mfa":
+		return cfg.SelfMFA.Enabled
+	case "self_password":
+		return cfg.SelfPassword.Enabled
+	case "pivs":
+		return cfg.PIV.Enabled
+	case "backup_codes":
+		return cfg.BackupCodes.Enabled
+	case "realms":
+		return cfg.Realms.Enabled
+	case "guest_access":
+		return cfg.GuestAccess.Enabled
+	case "groups":
+		return cfg.Groups.Enabled
+	case "restricted_cmds":
+		return cfg.RestrictedCmds.Enabled
+	case "restricted_grants":
+		return cfg.RestrictedGrants.Enabled
+	case "tty_play":
+		return cfg.TTYPlay.Enabled
+	case "alias_group":
+		return cfg.AliasGroup.Enabled
+	}
+	return true
+}
+
+// featureLabel returns a human-readable (English) label for a feature toggle.
+func featureLabel(feat string) string {
+	switch feat {
+	case "self_ingress":
+		return "Self ingress keys"
+	case "egress_key":
+		return "Egress key generation"
+	case "known_hosts":
+		return "Known-hosts self-management"
+	case "alias_self":
+		return "Personal aliases"
+	case "self_mfa":
+		return "TOTP self-setup"
+	case "self_password":
+		return "Password MFA self-management"
+	case "pivs":
+		return "PIV"
+	case "backup_codes":
+		return "Backup codes"
+	case "realms":
+		return "Realms"
+	case "guest_access":
+		return "Guest access"
+	case "groups":
+		return "Groups"
+	case "restricted_cmds":
+		return "Restricted commands"
+	case "restricted_grants":
+		return "Restricted command grants"
+	case "tty_play":
+		return "TTY replay"
+	case "alias_group":
+		return "Group aliases"
+	}
+	return feat
+}
+
+// featureDenied returns a non-empty English denial message if the command is
+// blocked by a disabled feature flag or by global read-only mode.
+func featureDenied(found *registry.CommandSpec, user *models.User) string {
+	cfg := config.Get()
+	for _, feat := range found.Features {
+		if !featureEnabled(feat, cfg) {
+			return fmt.Sprintf("⛔ %s is disabled.", featureLabel(feat))
+		}
+	}
+	if cfg.Readonly.Enabled && !user.IsAdmin() && found.Mutating {
+		if cfg.Readonly.Message != "" {
+			return cfg.Readonly.Message
+		}
+		return "🔒 Read-only mode: modifications are disabled."
+	}
+	return ""
+}
 
 // executeCommand looks up and runs a command from the central registry, enforcing permission checks.
 func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) error {
@@ -371,7 +585,6 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 	adapter := osadapter.NewLinuxAdapter()
 	cmds := registry.BuildRegistry(db, currentUser, log, adapter, args, func() {
 		log.Info("session_end", slog.String("reason", "exit"))
-		os.Exit(0)
 	})
 
 	var found *registry.CommandSpec
@@ -396,6 +609,15 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		return fmt.Errorf("%w: %s", ErrPermissionDenied, cmd)
 	}
 
+	// Feature-flag gate: disabled features (and global read-only mode) deny
+	// their commands before any handler runs.
+	if msg := featureDenied(found, currentUser); msg != "" {
+		log.Warn("command", slog.String("cmd", cmd),
+			slog.Any("args", args), slog.String("result", "feature_disabled"))
+		fmt.Println(msg)
+		return fmt.Errorf("%w: %s", ErrPermissionDenied, cmd)
+	}
+
 	// Special commands with custom inline logic
 	switch cmd {
 	case "help":
@@ -406,8 +628,7 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		return nil
 	case "exit":
 		log.Info("session_end", slog.String("reason", "exit"))
-		os.Exit(0)
-		return nil
+		return errSessionExit
 	case "ttyPlay":
 		err := cmdtty.Play(db, currentUser, args)
 		resetStdIn()
@@ -441,11 +662,13 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 func resetStdIn() {
 	cmd := exec.Command("/bin/stty", "-raw", "echo")
 	cmd.Stdin = os.Stdin
-	_ = cmd.Run() // Run() already calls Wait() internally
+	if err := cmd.Run(); err != nil {
+		slog.Warn("stty_restore_failed", slog.Any("error", err))
+	}
 }
 
 // maxMFAAttempts is the maximum number of TOTP/backup code attempts allowed per login.
-const maxMFAAttempts = 3
+// Value is read from configuration.
 
 // checkMFA prompts for TOTP and/or password second factors if configured.
 // Returns false if any check fails, which should cause the session to be terminated immediately.
@@ -478,12 +701,17 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 
 	// TOTP check
 	if !user.TOTPEnabled || user.TOTPSecret == "" {
+		// Global MFA enforcement: if required, a missing TOTP secret is fatal.
+		if config.Get().RequireMFA.Enabled {
+			fmt.Println("⛔ MFA (TOTP) is required. Run selfSetupTOTP to enable it before connecting.")
+			return false
+		}
 		return true
 	}
 	log.Info("mfa_challenge", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
 
-	for attempt := 1; attempt <= maxMFAAttempts; attempt++ {
-		fmt.Printf("🔐 Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, maxMFAAttempts)
+	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
+		fmt.Printf("🔐 Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
 		reader := bufio.NewReader(os.Stdin)
 		code, err := reader.ReadString('\n')
 		if err != nil {
@@ -518,21 +746,16 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 			}
 		}
 
-		if attempt < maxMFAAttempts {
+		if attempt < config.Get().MFA.MaxAttempts {
 			fmt.Println("⛔ Invalid code. Try again.")
-			time.Sleep(time.Duration(attempt) * time.Second) // exponential backoff
+			time.Sleep(time.Duration(attempt) * time.Duration(config.Get().MFA.BackoffBase)) // linear backoff
 		}
 	}
 
-	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.Int("attempts", maxMFAAttempts))
-	fmt.Printf("⛔ Invalid TOTP or backup code. Access denied after %d attempts.\n", maxMFAAttempts)
+	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.Int("attempts", config.Get().MFA.MaxAttempts))
+	fmt.Printf("⛔ Invalid TOTP or backup code. Access denied after %d attempts.\n", config.Get().MFA.MaxAttempts)
 	fmt.Println("If you lost access to your authenticator, contact your admin to disable TOTP (accountDisableTOTP --user " + user.Username + ").")
 	return false
-}
-
-// checkTOTP is kept for backward compatibility; delegates to checkMFA.
-func checkTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
-	return checkMFA(db, user, log)
 }
 
 // parseTCPProxyRequest detects an OpenSSH -W host:port proxy request and returns the target.
@@ -569,7 +792,15 @@ func isMoshServerRequest(command string, args []string) bool {
 	return command == "mosh-server" || strings.HasPrefix(command, "mosh-server ")
 }
 
-// runMoshServer exec's mosh-server directly, passing through all arguments.
+// allowedMoshFlags is the set of flags that mosh-server is permitted to receive.
+// Any other flag is rejected to prevent argument injection.
+var allowedMoshFlags = map[string]bool{
+	"-s": true,
+	"-c": true,
+	"-":  true,
+}
+
+// runMoshServer exec's mosh-server directly, passing through validated arguments.
 // stdin/stdout/stderr are inherited so the mosh client can negotiate the UDP port.
 func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 	// Reconstruct the full argument list from the original command string + extra args.
@@ -580,6 +811,28 @@ func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 	}
 	// parts[0] is "mosh-server", parts[1:] are inline args from the command string.
 	cmdArgs := append(parts[1:], extraArgs...)
+
+	// Validate arguments to prevent injection of unexpected flags.
+	// Only known-safe flags (-s, -c, -) and positional arguments (host, port) are allowed.
+	for i, arg := range cmdArgs {
+		if arg == "--" {
+			// End-of-options marker; everything after this is positional and safe.
+			break
+		}
+		if strings.HasPrefix(arg, "-") && !allowedMoshFlags[arg] {
+			log.Error("mosh_server_rejected",
+				slog.String("reason", "unexpected flag"),
+				slog.String("flag", arg),
+			)
+			fmt.Fprintf(os.Stderr, "mosh-server: rejected unsafe argument %q\n", arg)
+			return
+		}
+		// Skip the value that follows a flag that expects an argument.
+		if allowedMoshFlags[arg] && arg != "-" && i+1 < len(cmdArgs) {
+			// Skip the next token (value for this flag).
+			continue
+		}
+	}
 
 	log.Info("mosh_server")
 

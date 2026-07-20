@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"gorm.io/gorm"
@@ -12,7 +11,6 @@ import (
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils/console"
-	gosync "goBastion/internal/utils/sync"
 )
 
 // Delete removes a user account from the system.
@@ -58,8 +56,9 @@ func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 	return nil
 }
 
-// DeleteUser removes the user from the OS first, then soft-deletes the DB record.
-// If DB deletion fails after OS deletion, it attempts to restore the OS user from DB.
+// DeleteUser soft-deletes the DB record first, then removes the OS user.
+// This ensures the DB (source of truth) is updated before any irreversible
+// OS changes. If OS deletion fails, it attempts to restore the DB record.
 func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 
@@ -68,27 +67,40 @@ func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) e
 		return fmt.Errorf("user not found: %w", err)
 	}
 
-	if err := adapter.DeleteUser(username); err != nil {
-		return err
+	// DB first: soft-delete the audit trail before touching the OS.
+	if err := deleteDBUser(db, &user); err != nil {
+		return fmt.Errorf("error deleting user from database: %w", err)
 	}
-	if err := deleteDBUser(db, username); err != nil {
-		syncer := gosync.New(db, adapter, *slog.Default())
-		if restoreErr := syncer.CreateUserFromDB(user); restoreErr != nil {
-			return fmt.Errorf("delete failed after OS removal: %v; restore also failed: %v", err, restoreErr)
+
+	// Then remove the OS user. If this fails, restore the DB record.
+	if err := adapter.DeleteUser(username); err != nil {
+		if restoreErr := restoreDBUser(db, &user); restoreErr != nil {
+			return fmt.Errorf("OS deletion failed: %v; DB restore also failed: %v", err, restoreErr)
 		}
-		return fmt.Errorf("delete failed and OS user was restored: %w", err)
+		return fmt.Errorf("OS deletion failed, DB record restored: %w", err)
 	}
 	return nil
 }
 
 // deleteDBUser soft-deletes the user record from the database.
-func deleteDBUser(db *gorm.DB, username string) error {
-	var user models.User
-	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-		return fmt.Errorf("user not found: %w", err)
-	}
-	if err := db.Delete(&user).Error; err != nil {
+func deleteDBUser(db *gorm.DB, user *models.User) error {
+	if err := db.Delete(user).Error; err != nil {
 		return fmt.Errorf("error deleting user: %w", err)
 	}
 	return nil
+}
+
+// restoreDBUser un-deletes a soft-deleted user and their group memberships.
+func restoreDBUser(db *gorm.DB, user *models.User) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		// Un-delete the user record.
+		if err := tx.Unscoped().Model(&models.User{}).Where("id = ?", user.ID).Update("deleted_at", nil).Error; err != nil {
+			return fmt.Errorf("error restoring user: %w", err)
+		}
+		// Un-delete all UserGroup memberships that were cascade-soft-deleted.
+		if err := tx.Unscoped().Model(&models.UserGroup{}).Where("user_id = ?", user.ID).Update("deleted_at", nil).Error; err != nil {
+			return fmt.Errorf("error restoring group memberships: %w", err)
+		}
+		return nil
+	})
 }

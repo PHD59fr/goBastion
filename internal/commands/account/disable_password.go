@@ -49,7 +49,7 @@ func DisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, ar
 	}
 
 	if err := db.Model(&user).Update("password_hash", "").Error; err != nil {
-		return fmt.Errorf("failed to clear password: %v", err)
+		return fmt.Errorf("failed to clear password: %w", err)
 	}
 
 	log.Info("password_mfa_cleared",

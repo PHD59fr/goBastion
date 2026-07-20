@@ -39,9 +39,6 @@ type User struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	DeletedAt     gorm.DeletedAt `gorm:"index:idx_username_deletedat"`
-
-	// cachedGroups is a session-level cache for getGroups(). Not persisted.
-	cachedGroups *[]UserGroup
 }
 
 // BeforeDelete removes all group memberships for the user before deletion.

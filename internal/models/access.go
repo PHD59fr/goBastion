@@ -38,7 +38,6 @@ type GroupAccess struct {
 	Server         string     `gorm:"not null"`
 	Port           int64      `gorm:"not null"`
 	Protocol       string     `gorm:"default:ssh"` // ssh, scpupload, scpdownload, sftp, rsync
-	GuestAllowed   bool       `gorm:"type:boolean;default:false"`
 	Comment        string     `gorm:"default:null"`
 	AllowedFrom    string     `gorm:"default:null"`
 	ExpiresAt      *time.Time `gorm:"default:null"`
