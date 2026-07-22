@@ -50,7 +50,7 @@ func ListDBAccesses(db *gorm.DB, currentUser *models.User, args []string) error 
 	}
 
 	var accesses []models.GroupDBAccess
-	if err := db.Preload("DatabaseHost").Where("group_id = ?", group.ID).Find(&accesses).Error; err != nil {
+	if err := db.Where("group_id = ?", group.ID).Find(&accesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "List Group DB Access",
 			BlockType: "error",
@@ -87,10 +87,8 @@ func ListDBAccesses(db *gorm.DB, currentUser *models.User, args []string) error 
 		if comment == "" {
 			comment = "-"
 		}
-		line := fmt.Sprintf("  %s  %s  %s:%d  proto=%s  db=%s  expires=%s  %s",
-			a.ID.String()[:8], a.DatabaseHost.Name,
-			a.DatabaseHost.Host, a.DatabaseHost.Port,
-			a.DatabaseHost.Protocol, dbName, expires, comment)
+		line := fmt.Sprintf("  %s  %s:%d  proto=%s  user=%s  db=%s  expires=%s  %s",
+			a.ID.String()[:8], a.Host, a.Port, a.Protocol, a.Username, dbName, expires, comment)
 		bodyLines = append(bodyLines, line)
 	}
 

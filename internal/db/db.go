@@ -60,9 +60,9 @@ func resolveDBConfig() (driver, dsn string) {
 	// 3. Fallback to in-memory defaults (sqlite).
 	if driver == "" {
 		cfg := config.Get()
-		driver = cfg.Database.Driver
+		driver = cfg.InternalDB.Driver
 		if dsn == "" {
-			dsn = cfg.Database.DSN
+			dsn = cfg.InternalDB.DSN
 		}
 	}
 
@@ -117,7 +117,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 	}
 
 	gormLogCfg := gormLogger.Config{
-		SlowThreshold: cfg.Database.SlowQueryThreshold,
+		SlowThreshold: cfg.InternalDB.SlowQueryThreshold,
 		LogLevel:      gormLogger.Silent,
 		Colorful:      true,
 	}
@@ -338,20 +338,20 @@ func configure(db *gorm.DB, driver string) error {
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
 	case "postgres", "mysql":
-		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
-		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+		sqlDB.SetMaxOpenConns(cfg.InternalDB.MaxOpenConns)
+		sqlDB.SetMaxIdleConns(cfg.InternalDB.MaxIdleConns)
 	default:
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
 	}
-	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
+	sqlDB.SetConnMaxLifetime(cfg.InternalDB.ConnMaxLifetime)
 
 	if driver == "sqlite" {
 		pragmas := []string{
 			"PRAGMA journal_mode=WAL;",
 			"PRAGMA synchronous=NORMAL;",
-			fmt.Sprintf("PRAGMA cache_size=-%d;", cfg.Database.SQLite.CacheSize),
-			fmt.Sprintf("PRAGMA busy_timeout=%d;", cfg.Database.SQLite.BusyTimeout),
+			fmt.Sprintf("PRAGMA cache_size=-%d;", cfg.InternalDB.SQLite.CacheSize),
+			fmt.Sprintf("PRAGMA busy_timeout=%d;", cfg.InternalDB.SQLite.BusyTimeout),
 		}
 		for _, p := range pragmas {
 			if err := db.Exec(p).Error; err != nil {
@@ -435,9 +435,9 @@ func ManagedModelsInDependencyOrder() []any {
 		&models.PIVTrustAnchor{},
 		&models.Realm{},
 		&models.RestrictedCommandGrant{},
-		&models.DatabaseHost{},
 		&models.SelfDBAccess{},
 		&models.GroupDBAccess{},
 		&models.GroupGuestDBAccess{},
+		&models.DatabaseAlias{},
 	}
 }

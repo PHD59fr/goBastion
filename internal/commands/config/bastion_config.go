@@ -23,15 +23,15 @@ import (
 // than the real terminal makes the full-width borders wrap and scramble.
 const (
 	uiWidth  = 62
-	contentW = uiWidth - 2     // 60: space inside the left border
-	scrollW  = 1               // scrollbar column
+	contentW = uiWidth - 2        // 60: space inside the left border
+	scrollW  = 1                  // scrollbar column
 	textW    = contentW - scrollW // 59: text area reserved for content
 )
 
 // ANSI colors.
 const (
-	cFrame = "\033[36m"
-	cReset = "\033[0m"
+	cFrame  = "\033[36m"
+	cReset  = "\033[0m"
 	cYellow = "\033[33m"
 	cWhite  = "\033[37m"
 	cGreen  = "\033[32m"
@@ -712,8 +712,8 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 	if err := json.Unmarshal(patchedJSON, patchedCfg); err != nil {
 		return err
 	}
-	patchedCfg.Database.Driver = cfg.Database.Driver
-	patchedCfg.Database.DSN = cfg.Database.DSN
+	patchedCfg.InternalDB.Driver = cfg.InternalDB.Driver
+	patchedCfg.InternalDB.DSN = cfg.InternalDB.DSN
 
 	return config.SaveConfig(db, patchedCfg)
 }

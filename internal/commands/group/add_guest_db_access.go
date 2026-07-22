@@ -2,12 +2,14 @@ package group
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"time"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
@@ -16,11 +18,16 @@ import (
 // AddGuestDBAccess grants a guest-role user database access within a group.
 func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("groupAddGuestDBAccess", flag.ContinueOnError)
-	var groupName, account, host, database, comment, allowedFrom string
+	var groupName, account, host, username, comment, allowedFrom, protocol, password, database string
+	var port int64
 	var ttlDays int
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&account, "account", "", "Username to grant guest DB access to")
-	fs.StringVar(&host, "host", "", "DatabaseHost name")
+	fs.StringVar(&host, "host", "", "Database host")
+	fs.Int64Var(&port, "port", 0, "Port number")
+	fs.StringVar(&protocol, "protocol", "", "Protocol: mysql, postgres, mongo, redis")
+	fs.StringVar(&username, "user", "", "Database username")
+	fs.StringVar(&password, "password", "", "Database password (will be encrypted)")
 	fs.StringVar(&database, "database", "", "Specific database name (optional)")
 	fs.StringVar(&comment, "comment", "", "Comment")
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
@@ -28,12 +35,12 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
-	if err := fs.Parse(args); err != nil || groupName == "" || account == "" || host == "" {
+	if err := fs.Parse(args); err != nil || groupName == "" || account == "" || host == "" || username == "" || protocol == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest DB Access",
 			BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Usage", Body: []string{
-				"Usage: groupAddGuestDBAccess --group <group> --account <user> --host <host> [--database <database>] [--comment <text>] [--from <CIDRs>] [--ttl <days>]",
+				"Usage: groupAddGuestDBAccess --group <group> --account <user> --host <host> --user <username> --protocol <mysql|postgres|mongo|redis> [--port <port>] [--password <password>] [--database <database>] [--comment <text>] [--from <CIDRs>] [--ttl <days>]",
 			}}},
 		})
 		return err
@@ -48,13 +55,41 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
+	if !validation.IsValidDBProtocol(protocol) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Guest DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: mysql, postgres, mongo, redis"}}},
+		})
+		return fmt.Errorf("invalid protocol: %s", protocol)
+	}
+	if !validation.IsValidHost(host) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Guest DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Host", Body: []string{"Host hostname/IP contains invalid characters."}}},
+		})
+		return fmt.Errorf("invalid host: %s", host)
+	}
+	// Apply default port from protocol if not specified
+	if port == 0 {
+		port = validation.DBProtocolDefaultPort(protocol)
+	}
+	if !validation.IsValidPort(port) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Guest DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Port", Body: []string{"Port must be between 1 and 65535"}}},
+		})
+		return fmt.Errorf("invalid port: %d", port)
+	}
 	if !validation.IsValidCIDRs(allowedFrom) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest DB Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDRs"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid CIDRs: %s", allowedFrom)
 	}
 	if ttlDays < 0 {
 		console.DisplayBlock(console.ContentBlock{
@@ -62,7 +97,7 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid TTL", Body: []string{"TTL must be zero (never) or positive"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid TTL: %d", ttlDays)
 	}
 
 	var group models.Group
@@ -104,36 +139,51 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		return nil
 	}
 
-	// Look up the DatabaseHost by name.
-	var dbHost models.DatabaseHost
-	if err := db.Where("name = ?", host).First(&dbHost).Error; err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Guest DB Access",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("DatabaseHost '%s' not found. Check spelling.", host)}}},
-		})
-		return err
+	// Encrypt password if provided
+	var encryptedPassword string
+	if password != "" {
+		enc, err := cryptokey.Encrypt(password)
+		if err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Add Guest DB Access",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Encryption Error", Body: []string{fmt.Sprintf("Failed to encrypt password: %s", err)}}},
+			})
+			return err
+		}
+		encryptedPassword = enc
 	}
 
 	// Check for duplicate.
 	var existing models.GroupGuestDBAccess
-	if err := db.Where("group_id = ? AND user_id = ? AND database_host_id = ? AND deleted_at IS NULL",
-		group.ID, targetUser.ID, dbHost.ID).First(&existing).Error; err == nil {
+	if err := db.Where("group_id = ? AND user_id = ? AND host = ? AND port = ? AND protocol = ? AND deleted_at IS NULL",
+		group.ID, targetUser.ID, host, port, protocol).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest DB Access",
 			BlockType: "info",
 			Sections:  []console.SectionContent{{SubTitle: "Already Exists", Body: []string{"This guest DB access grant already exists."}}},
 		})
 		return nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Guest DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Database error while checking for existing access. Please try again."}}},
+		})
+		return fmt.Errorf("database error: %v", err)
 	}
 
 	guestAccess := models.GroupGuestDBAccess{
-		GroupID:        group.ID,
-		UserID:         targetUser.ID,
-		DatabaseHostID: dbHost.ID,
-		Database:       database,
-		Comment:        comment,
-		AllowedFrom:    allowedFrom,
+		GroupID:     group.ID,
+		UserID:      targetUser.ID,
+		Host:        host,
+		Port:        port,
+		Protocol:    protocol,
+		Username:    username,
+		Password:    encryptedPassword,
+		Database:    database,
+		Comment:     comment,
+		AllowedFrom: allowedFrom,
 	}
 	if ttlDays > 0 {
 		t := time.Now().AddDate(0, 0, ttlDays)
@@ -153,7 +203,7 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 		Title:     "Add Guest DB Access",
 		BlockType: "success",
 		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{
-			fmt.Sprintf("Guest DB access granted to '%s' for host '%s' in group '%s'.", account, host, groupName),
+			fmt.Sprintf("Guest DB access granted to '%s' for %s@%s:%d (%s) in group '%s'.", account, username, host, port, protocol, groupName),
 			"Use groupListGuestDBAccesses to review.",
 		}}},
 	})

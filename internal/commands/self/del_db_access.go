@@ -2,6 +2,7 @@ package self
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"strings"
@@ -60,17 +61,16 @@ func DelDBAccess(db *gorm.DB, user *models.User, args []string) error {
 	}
 	var access models.SelfDBAccess
 	result := db.Where("id = ? AND user_id = ?", accessID, user.ID).First(&access)
-	if result.Error != nil {
-		if strings.Contains(result.Error.Error(), "record not found") {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "Delete Personal DB Access",
-				BlockType: "error",
-				Sections: []console.SectionContent{
-					{SubTitle: "Error", Body: []string{"No such access found."}},
-				},
-			})
-			return nil
-		}
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Personal DB Access",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Error", Body: []string{"No such access found."}},
+			},
+		})
+		return nil
+	} else if result.Error != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Personal DB Access",
 			BlockType: "error",

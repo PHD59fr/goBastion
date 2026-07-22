@@ -32,6 +32,7 @@ import (
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/autocomplete"
+	"goBastion/internal/utils/dbConnector"
 	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/totp"
 )
@@ -167,6 +168,19 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			return
 		}
 		runMoshServer(command, args, log)
+	} else if command == "--db" {
+		if len(args) < 1 {
+			fmt.Fprintln(os.Stderr, "⛔ Usage: bastion --db [user@]host[:port[:protocol]] [--mysql|--pg|--mongo|--redis] [--dbname name]")
+			return
+		}
+		access, err := dbConnector.ResolveTarget(db, *currentUser, args[0], args[1:]...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⛔ %v\n", err)
+			return
+		}
+		if err := dbConnector.Connect(db, *currentUser, access); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	} else {
 		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
@@ -504,6 +518,8 @@ func featureEnabled(feat string, cfg *config.Config) bool {
 		return cfg.Realms.Enabled
 	case "guest_access":
 		return cfg.GuestAccess.Enabled
+	case "database":
+		return cfg.Database.Enabled
 	case "groups":
 		return cfg.Groups.Enabled
 	case "restricted_cmds":
@@ -541,6 +557,8 @@ func featureLabel(feat string) string {
 		return "Realms"
 	case "guest_access":
 		return "Guest access"
+	case "database":
+		return "Database access"
 	case "groups":
 		return "Groups"
 	case "restricted_cmds":

@@ -41,6 +41,11 @@ func isManagerOrMember(ug *UserGroup) bool {
 	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()
 }
 
+// isManagerOrMemberOrGuest returns true for any explicit group membership.
+func isManagerOrMemberOrGuest(ug *UserGroup) bool {
+	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember() || ug.IsGuest()
+}
+
 // isOwnerOrACLKeeper returns true for owner and aclkeeper roles.
 func isOwnerOrACLKeeper(ug *UserGroup) bool {
 	return ug.IsOwner() || ug.IsACLKeeper()
@@ -201,6 +206,87 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		if err != nil {
 			return false
 		}
+		return u.canDoInGroup(userGroups, target, isManagerOrMemberOrGuest)
+
+	// Group: DB Accesses
+	case "groupAddDBAccess", "groupDelDBAccess":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
+
+	case "groupListDBAccesses":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrMember)
+
+	// Group: Guest DB Accesses
+	case "groupAddGuestDBAccess", "groupDelGuestDBAccess":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
+
+	case "groupListGuestDBAccesses":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrMemberOrGuest)
+
+	// Group: DB Aliases
+	case "groupAddDBAlias", "groupDelDBAlias":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
+		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
+
+	case "groupListDBAliases":
+		if u.IsAdmin() {
+			return true
+		}
+		if u.IsSuperOwner() {
+			return true
+		}
+		userGroups, err := u.getGroups(db)
+		if err != nil {
+			return false
+		}
 		return u.canDoInGroup(userGroups, target, isManagerOrMember)
 
 	case "groupCreate", "groupDelete":
@@ -259,6 +345,18 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 	case "selfAddIngressKeyPIV":
 		return true
 	case "selfSetPassword", "selfChangePassword", "selfDisablePassword":
+		return true
+
+	// Self: DB Accesses
+	case "selfAddDBAccess", "selfDelDBAccess", "selfListDBAccesses":
+		return true
+
+	// Self: DB Aliases
+	case "selfAddDBAlias", "selfDelDBAlias", "selfListDBAliases":
+		return true
+
+	// DB Connect
+	case "dbConnect":
 		return true
 
 	// TTY

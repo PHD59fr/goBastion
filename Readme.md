@@ -48,6 +48,12 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 📋 `selfListAliases`             | List your personal SSH aliases.                                              |
 | ➕ `selfAddAlias`                 | Add a personal SSH alias.                                                    |
 | ❌ `selfDelAlias`                 | Delete a personal SSH alias.                                                 |
+| 📋 `selfListDBAccesses`          | List your personal database accesses.                                        |
+| ➕ `selfAddDBAccess`              | Add a personal database access (host, protocol, credentials, TTL, CIDR).     |
+| ❌ `selfDelDBAccess`              | Remove a personal database access.                                           |
+| 📋 `selfListDBAliases`           | List your personal database aliases.                                         |
+| ➕ `selfAddDBAlias`               | Add a personal database alias.                                               |
+| ❌ `selfDelDBAlias`               | Delete a personal database alias.                                            |
 | ❌ `selfRemoveHostFromKnownHosts` | Remove a host from your known\_hosts file.                                   |
 | 🔄 `selfReplaceKnownHost`        | Trust a new host key after it changed (TOFU reset).                          |
 | 🔐 `selfSetupTOTP`               | Enable TOTP two-factor authentication (generates QR/OTP URI).                |
@@ -123,6 +129,15 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
 | ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
 | 📋 `groupListAliases`       | List all group SSH aliases.                       |
+| 📋 `groupListDBAccesses`    | List all database accesses assigned to a group.   |
+| ➕ `groupAddDBAccess`        | Grant database access to a group.                 |
+| ❌ `groupDelDBAccess`        | Remove database access from a group.              |
+| 📋 `groupListDBAliases`     | List all group database aliases.                  |
+| ➕ `groupAddDBAlias`         | Add a group database alias.                       |
+| ❌ `groupDelDBAlias`         | Delete a group database alias.                    |
+| ➕ `groupAddGuestDBAccess`   | Grant guest database access inside a group.       |
+| ❌ `groupDelGuestDBAccess`   | Remove a guest database access grant.             |
+| 📋 `groupListGuestDBAccesses`| List guest database access grants in a group.     |
 
 ---
 
@@ -691,34 +706,47 @@ The following commands require admin or superowner by default, but can be grante
 
 ### 👥 **Group Permissions**
 
-| Permission               | Owner | ACLKeeper | GateKeeper | Member |
-| ------------------------ | :---: | :-------: | :--------: | :----: |
-| `groupAddAccess`         | ✅    | ✅        | ✅         |        |
-| `groupDelAccess`         | ✅    | ✅        | ✅         |        |
-| `groupSetMFA`            | ✅    |           |            |        |
-| `groupAddGuestAccess`    | ✅    | ✅        | ✅         |        |
-| `groupDelGuestAccess`    | ✅    | ✅        | ✅         |        |
-| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅ (siens)
-| `groupAddMember`         | ✅    | ✅        |            |        |
-| `groupDelMember`         | ✅    | ✅        |            |        |
-| `groupGenerateEgressKey` | ✅    |           |            |        |
-| `groupAddAlias`          | ✅    | ✅        | ✅         |        |
-| `groupDelAlias`          | ✅    | ✅        | ✅         |        |
-| `groupInfo`              | ✅    | ✅        | ✅         | ✅     |
-| `groupList`              | ✅    | ✅        | ✅         | ✅     |
-| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     |
-| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     |
-| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     |
+| Permission               | Owner | ACLKeeper | GateKeeper | Member | Guest |
+| ------------------------ | :---: | :-------: | :--------: | :----: | :---: |
+| `groupAddAccess`         | ✅    | ✅        | ✅         |        |       |
+| `groupDelAccess`         | ✅    | ✅        | ✅         |        |       |
+| `groupAddDBAccess`       | ✅    | ✅        | ✅         |        |       |
+| `groupDelDBAccess`       | ✅    | ✅        | ✅         |        |       |
+| `groupSetMFA`            | ✅    |           |            |        |       |
+| `groupAddGuestAccess`    | ✅    | ✅        | ✅         |        |       |
+| `groupDelGuestAccess`    | ✅    | ✅        | ✅         |        |       |
+| `groupAddGuestDBAccess`  | ✅    | ✅        | ✅         |        |       |
+| `groupDelGuestDBAccess`  | ✅    | ✅        | ✅         |        |       |
+| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅ (own only) |
+| `groupListGuestDBAccesses` | ✅  | ✅        | ✅         | ✅     | ✅ (own only) |
+| `groupAddMember`         | ✅    | ✅        |            |        |       |
+| `groupDelMember`         | ✅    | ✅        |            |        |       |
+| `groupGenerateEgressKey` | ✅    |           |            |        |       |
+| `groupAddAlias`          | ✅    | ✅        | ✅         |        |       |
+| `groupDelAlias`          | ✅    | ✅        | ✅         |        |       |
+| `groupAddDBAlias`        | ✅    | ✅        | ✅         |        |       |
+| `groupDelDBAlias`        | ✅    | ✅        | ✅         |        |       |
+| `groupInfo`              | ✅    | ✅        | ✅         | ✅     | ✅    |
+| `groupList`              | ✅    | ✅        | ✅         | ✅     | ✅    |
+| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListDBAccesses`    | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListDBAliases`     | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     | ✅    |
 
 ### 👤 **Self Permissions**
 
 - `selfAddAccess`
 - `selfAddAlias`
+- `selfAddDBAccess`
+- `selfAddDBAlias`
 - `selfAddIngressKey`
 - `selfAddIngressKeyPIV`
 - `selfChangePassword`
 - `selfDelAccess`
 - `selfDelAlias`
+- `selfDelDBAccess`
+- `selfDelDBAlias`
 - `selfDelIngressKey`
 - `selfDisablePassword`
 - `selfDisableTOTP`
@@ -726,6 +754,8 @@ The following commands require admin or superowner by default, but can be grante
 - `selfGenerateEgressKey`
 - `selfListAccesses`
 - `selfListAliases`
+- `selfListDBAccesses`
+- `selfListDBAliases`
 - `selfListEgressKeys`
 - `selfListIngressKeys`
 - `selfRemoveHostFromKnownHosts`
@@ -733,11 +763,14 @@ The following commands require admin or superowner by default, but can be grante
 - `selfSetPassword`
 - `selfSetupTOTP`
 - `selfShowBackupCodeCount`
+- `dbConnect`
 - `ttyList` *(own sessions only)*
 - `ttyPlay` *(own sessions only)*
 
 ⚠ **Alias Priority Warning**:
 If an alias is defined by the user (`selfAddAlias`) and the group defines an alias with the same name (`groupAddAlias`), **the user-defined alias always takes precedence**
+
+The same precedence rule applies to database aliases: `selfAddDBAlias` overrides `groupAddDBAlias` when the alias name is identical.
 
 ### 📜 **Misc Permissions**
 

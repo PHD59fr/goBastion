@@ -13,7 +13,7 @@ import (
 // ListDBAccesses lists all personal database accesses for the current user.
 func ListDBAccesses(db *gorm.DB, user *models.User) error {
 	var accesses []models.SelfDBAccess
-	result := db.Preload("DatabaseHost").Where("user_id = ?", user.ID).Find(&accesses)
+	result := db.Where("user_id = ?", user.ID).Find(&accesses)
 	if result.Error != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "My Personal DB Accesses",
@@ -54,10 +54,8 @@ func ListDBAccesses(db *gorm.DB, user *models.User) error {
 		if comment == "" {
 			comment = "-"
 		}
-		line := fmt.Sprintf("  %s  %s  %s:%d  proto=%s  db=%s  expires=%s  %s",
-			a.ID.String()[:8], a.DatabaseHost.Name,
-			a.DatabaseHost.Host, a.DatabaseHost.Port,
-			a.DatabaseHost.Protocol, dbName, expires, comment)
+		line := fmt.Sprintf("  %s  %s:%d  proto=%s  user=%s  db=%s  expires=%s  %s",
+			a.ID.String()[:8], a.Host, a.Port, a.Protocol, a.Username, dbName, expires, comment)
 		bodyLines = append(bodyLines, line)
 	}
 

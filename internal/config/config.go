@@ -64,27 +64,28 @@ type Config struct {
 	// defaults + env/db.conf at load time, so they cannot live in the DB (you
 	// need them to connect in the first place). Only the app-specific sections
 	// below are stored and editable via the DB.
-	Database DatabaseConfig `json:"-"`
-	Paths    PathsConfig    `json:"-"`
-	SSH      SSHConfig      `json:"ssh" toml:"ssh"`
-	MFA      MFAConfig      `json:"mfa" toml:"mfa"`
-	TOTP     TOTPConfig     `json:"totp" toml:"totp"`
-	Proxy    ProxyConfig    `json:"proxy" toml:"proxy"`
-	Sync     SyncConfig     `json:"sync" toml:"sync"`
-	Account  AccountConfig  `json:"account" toml:"account"`
-	DBExport DBExportConfig `json:"-"`
-	Security SecurityConfig `json:"security" toml:"security"`
+	InternalDB DatabaseConfig `json:"-"`
+	Paths      PathsConfig    `json:"-"`
+	SSH        SSHConfig      `json:"ssh" toml:"ssh"`
+	MFA        MFAConfig      `json:"mfa" toml:"mfa"`
+	TOTP       TOTPConfig     `json:"totp" toml:"totp"`
+	Proxy      ProxyConfig    `json:"proxy" toml:"proxy"`
+	Sync       SyncConfig     `json:"sync" toml:"sync"`
+	Account    AccountConfig  `json:"account" toml:"account"`
+	DBExport   DBExportConfig `json:"-"`
+	Security   SecurityConfig `json:"security" toml:"security"`
 
 	// Feature toggles. All default to enabled (true) unless noted, so existing
 	// deployments keep working until an admin turns a feature off.
-	SFTP        SFTPConfig        `json:"sftp" toml:"sftp"`
-	SCP         SCPConfig         `json:"scp" toml:"scp"`
-	RSync       RSyncConfig       `json:"rsync" toml:"rsync"`
-	Mosh        MoshConfig        `json:"mosh" toml:"mosh"`
-	Realms      RealmsConfig      `json:"realms" toml:"realms"`
-	PIV         PIVConfig         `json:"pivs" toml:"pivs"`
-	GuestAccess GuestAccessConfig `json:"guest_access" toml:"guest_access"`
-	Interactive InteractiveConfig `json:"interactive" toml:"interactive"`
+	SFTP        SFTPConfig           `json:"sftp" toml:"sftp"`
+	SCP         SCPConfig            `json:"scp" toml:"scp"`
+	RSync       RSyncConfig          `json:"rsync" toml:"rsync"`
+	Mosh        MoshConfig           `json:"mosh" toml:"mosh"`
+	Realms      RealmsConfig         `json:"realms" toml:"realms"`
+	PIV         PIVConfig            `json:"pivs" toml:"pivs"`
+	GuestAccess GuestAccessConfig    `json:"guest_access" toml:"guest_access"`
+	Database    DatabaseAccessConfig `json:"database" toml:"database"`
+	Interactive InteractiveConfig    `json:"interactive" toml:"interactive"`
 
 	// Modes (default off unless noted).
 	Readonly     ReadonlyConfig     `json:"readonly" toml:"readonly"`
@@ -93,7 +94,7 @@ type Config struct {
 	ForceOSHOnly ForceOSHOnlyConfig `json:"force_osh_only" toml:"force_osh_only"`
 
 	// Recording + session limits.
-	TTYRec  TTYRecConfig       `json:"ttyrec" toml:"ttyrec"`
+	TTYRec  TTYRecConfig        `json:"ttyrec" toml:"ttyrec"`
 	Session SessionLimitsConfig `json:"session" toml:"session"`
 
 	// Self-service / admin sub-features.
@@ -118,8 +119,8 @@ type DatabaseConfig struct {
 	// Driver and DSN are bootstrap-only (taken from env / db.conf) and must
 	// never be persisted into the bastion_instances config row. They are
 	// re-applied from the bootstrap after loading.
-	Driver string `json:"-"`
-	DSN    string `json:"-"`
+	Driver             string        `json:"-"`
+	DSN                string        `json:"-"`
 	MaxOpenConns       int           `json:"max_open_conns" toml:"max_open_conns"`
 	MaxIdleConns       int           `json:"max_idle_conns" toml:"max_idle_conns"`
 	ConnMaxLifetime    time.Duration `json:"conn_max_lifetime" toml:"conn_max_lifetime"`
@@ -142,14 +143,14 @@ type PathsConfig struct {
 }
 
 type SSHConfig struct {
-	Enabled        bool     `json:"enabled" toml:"enabled"`                                  // false = block outgoing SSH (SFTP/SCP still allowed)
+	Enabled        bool     `json:"enabled" toml:"enabled"` // false = block outgoing SSH (SFTP/SCP still allowed)
 	DefaultPort    int64    `json:"default_port" toml:"default_port"`
 	HostKeyTTL     Duration `json:"host_key_ttl" toml:"host_key_ttl"`
 	KeyscanTimeout Duration `json:"keyscan_timeout" toml:"keyscan_timeout"`
 }
 
 type MFAConfig struct {
-	MaxAttempts int     `json:"max_attempts" toml:"max_attempts"`
+	MaxAttempts int      `json:"max_attempts" toml:"max_attempts"`
 	BackoffBase Duration `json:"backoff_base" toml:"backoff_base"`
 }
 
@@ -216,6 +217,10 @@ type GuestAccessConfig struct {
 	Enabled bool `json:"enabled" toml:"enabled"`
 }
 
+type DatabaseAccessConfig struct {
+	Enabled bool `json:"enabled" toml:"enabled"`
+}
+
 type InteractiveConfig struct {
 	Allow bool `json:"allow" toml:"allow"`
 }
@@ -239,14 +244,14 @@ type ForceOSHOnlyConfig struct {
 }
 
 type TTYRecConfig struct {
-	Enabled        bool `json:"enabled" toml:"enabled"`
-	RetentionDays  int  `json:"retention_days" toml:"retention_days"` // 0 = keep forever
+	Enabled       bool `json:"enabled" toml:"enabled"`
+	RetentionDays int  `json:"retention_days" toml:"retention_days"` // 0 = keep forever
 }
 
 type SessionLimitsConfig struct {
-	IdleTimeout          Duration `json:"idle_timeout" toml:"idle_timeout"`                                       // 0 = disabled
-	MaxSessionDuration   Duration `json:"max_session_duration" toml:"max_session_duration"`                     // 0 = disabled
-	MaxConcurrentSessions int     `json:"max_concurrent_sessions" toml:"max_concurrent_sessions"`              // 0 = unlimited
+	IdleTimeout           Duration `json:"idle_timeout" toml:"idle_timeout"`                       // 0 = disabled
+	MaxSessionDuration    Duration `json:"max_session_duration" toml:"max_session_duration"`       // 0 = disabled
+	MaxConcurrentSessions int      `json:"max_concurrent_sessions" toml:"max_concurrent_sessions"` // 0 = unlimited
 }
 
 type SelfIngressConfig struct {
@@ -312,11 +317,11 @@ type Bootstrap struct {
 }
 
 var (
-	global      atomic.Pointer[Config]
-	defaults    *Config
-	globalOnce  sync.Once
-	globalBoot  atomic.Pointer[Bootstrap]
-	configMu    sync.RWMutex // protects Reload and LoadFromDB serialization
+	global     atomic.Pointer[Config]
+	defaults   *Config
+	globalOnce sync.Once
+	globalBoot atomic.Pointer[Bootstrap]
+	configMu   sync.RWMutex // protects Reload and LoadFromDB serialization
 )
 
 // defaultConfig returns the Config with all defaults matching the previous
@@ -324,7 +329,7 @@ var (
 // is provided.
 func defaultConfig() *Config {
 	return &Config{
-		Database: DatabaseConfig{
+		InternalDB: DatabaseConfig{
 			Driver:             "sqlite",
 			DSN:                "",
 			MaxOpenConns:       10,
@@ -388,12 +393,13 @@ func defaultConfig() *Config {
 		Realms:      RealmsConfig{Enabled: true},
 		PIV:         PIVConfig{Enabled: true},
 		GuestAccess: GuestAccessConfig{Enabled: true},
+		Database:    DatabaseAccessConfig{Enabled: true},
 		Interactive: InteractiveConfig{Allow: true},
 
 		// Modes (defaults: off).
-		Readonly:    ReadonlyConfig{Enabled: false, Message: "🔒 Read-only mode: modifications are disabled."},
-		Maintenance: MaintenanceConfig{Enabled: false, Message: "🚧 Bastion under maintenance: only administrators may connect."},
-		RequireMFA:  RequireMFAConfig{Enabled: false},
+		Readonly:     ReadonlyConfig{Enabled: false, Message: "🔒 Read-only mode: modifications are disabled."},
+		Maintenance:  MaintenanceConfig{Enabled: false, Message: "🚧 Bastion under maintenance: only administrators may connect."},
+		RequireMFA:   RequireMFAConfig{Enabled: false},
 		ForceOSHOnly: ForceOSHOnlyConfig{Enabled: false},
 
 		// Recording + session limits.
@@ -438,12 +444,12 @@ func Load() *Config {
 		applyEnvOverrides(cfg)
 
 		// Apply SQLite-specific defaults when driver is sqlite.
-		if cfg.Database.Driver == "sqlite" || cfg.Database.Driver == "" {
-			cfg.Database.MaxOpenConns = 1
-			cfg.Database.MaxIdleConns = 1
+		if cfg.InternalDB.Driver == "sqlite" || cfg.InternalDB.Driver == "" {
+			cfg.InternalDB.MaxOpenConns = 1
+			cfg.InternalDB.MaxIdleConns = 1
 			// Also update defaults so diff comparison is apples-to-apples.
-			defaults.Database.MaxOpenConns = 1
-			defaults.Database.MaxIdleConns = 1
+			defaults.InternalDB.MaxOpenConns = 1
+			defaults.InternalDB.MaxIdleConns = 1
 		}
 
 		global.Store(cfg)
@@ -451,8 +457,8 @@ func Load() *Config {
 		// Determine instance identity.
 		instanceID := resolveInstanceID()
 		boot := &Bootstrap{
-			DBDriver:   cfg.Database.Driver,
-			DBDSN:      cfg.Database.DSN,
+			DBDriver:   cfg.InternalDB.Driver,
+			DBDSN:      cfg.InternalDB.DSN,
 			InstanceID: instanceID,
 		}
 		globalBoot.Store(boot)
@@ -491,13 +497,13 @@ func LoadFromDB(db *gorm.DB) error {
 	}
 
 	// Re-apply bootstrap values (DB connection params are never overridden by DB).
-	cfg.Database.Driver = boot.DBDriver
-	cfg.Database.DSN = boot.DBDSN
+	cfg.InternalDB.Driver = boot.DBDriver
+	cfg.InternalDB.DSN = boot.DBDSN
 
 	// Normalize the database section in memory to the active backend. The
 	// database section is not persisted (json:"-"), so this only keeps the
 	// in-memory pool settings compatible (e.g. sqlite must stay single-connection).
-	cfg.Database = normalizeDatabaseConfig(cfg.Database.Driver, cfg.Database)
+	cfg.InternalDB = normalizeDatabaseConfig(cfg.InternalDB.Driver, cfg.InternalDB)
 
 	global.Store(cfg)
 	models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
@@ -522,7 +528,7 @@ func normalizeDatabaseConfig(driver string, db DatabaseConfig) DatabaseConfig {
 	// Server backends: sqlite's single-connection limits are a leftover from a
 	// previous backend and must be bumped back to the server defaults.
 	if db.MaxOpenConns <= 1 || db.MaxIdleConns <= 1 {
-		def := defaultConfig().Database
+		def := defaultConfig().InternalDB
 		db.MaxOpenConns = def.MaxOpenConns
 		db.MaxIdleConns = def.MaxIdleConns
 	}
@@ -546,10 +552,10 @@ func Reload(db *gorm.DB) {
 		return
 	}
 
-	cfg.Database.Driver = boot.DBDriver
-	cfg.Database.DSN = boot.DBDSN
+	cfg.InternalDB.Driver = boot.DBDriver
+	cfg.InternalDB.DSN = boot.DBDSN
 
-	cfg.Database = normalizeDatabaseConfig(cfg.Database.Driver, cfg.Database)
+	cfg.InternalDB = normalizeDatabaseConfig(cfg.InternalDB.Driver, cfg.InternalDB)
 
 	global.Store(cfg)
 	models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
@@ -689,10 +695,10 @@ func readInstanceIDFromConf() string {
 // are set. This preserves backward compatibility with existing deployments.
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("DB_DRIVER"); v != "" {
-		cfg.Database.Driver = v
+		cfg.InternalDB.Driver = v
 	}
 	if v := os.Getenv("DB_DSN"); v != "" {
-		cfg.Database.DSN = v
+		cfg.InternalDB.DSN = v
 	}
 }
 
@@ -812,6 +818,7 @@ func ConfigDiff() []ConfigEntry {
 	add("realms", "enabled", fmt.Sprintf("%t", cfg.Realms.Enabled), fmt.Sprintf("%t", def.Realms.Enabled))
 	add("pivs", "enabled", fmt.Sprintf("%t", cfg.PIV.Enabled), fmt.Sprintf("%t", def.PIV.Enabled))
 	add("guest_access", "enabled", fmt.Sprintf("%t", cfg.GuestAccess.Enabled), fmt.Sprintf("%t", def.GuestAccess.Enabled))
+	add("database", "enabled", fmt.Sprintf("%t", cfg.Database.Enabled), fmt.Sprintf("%t", def.Database.Enabled))
 	add("interactive", "allow", fmt.Sprintf("%t", cfg.Interactive.Allow), fmt.Sprintf("%t", def.Interactive.Allow))
 
 	// Modes

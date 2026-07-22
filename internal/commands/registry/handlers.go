@@ -24,14 +24,14 @@ func buildHandlers(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 	return map[string]func() error{
 		// Self: Ingress
 		"selfListIngressKeys": func() error { return cmdself.ListIngressKeys(db, user) },
-		"selfAddIngressKey":    func() error { return cmdself.AddIngressKey(db, user, args) },
-		"selfDelIngressKey":    func() error { return cmdself.DelIngressKey(db, user, args) },
+		"selfAddIngressKey":   func() error { return cmdself.AddIngressKey(db, user, args) },
+		"selfDelIngressKey":   func() error { return cmdself.DelIngressKey(db, user, args) },
 
 		// Self: Egress
-		"selfListEgressKeys":         func() error { return cmdself.ListEgressKeys(db, user) },
-		"selfGenerateEgressKey":      func() error { return cmdself.GenerateEgressKey(db, user, args) },
+		"selfListEgressKeys":           func() error { return cmdself.ListEgressKeys(db, user) },
+		"selfGenerateEgressKey":        func() error { return cmdself.GenerateEgressKey(db, user, args) },
 		"selfRemoveHostFromKnownHosts": func() error { return cmdself.RemoveHostFromKnownHosts(db, user, args) },
-		"selfReplaceKnownHost":       func() error { return cmdself.ReplaceKnownHost(db, user, args) },
+		"selfReplaceKnownHost":         func() error { return cmdself.ReplaceKnownHost(db, user, args) },
 
 		// Self: Accesses
 		"selfListAccesses": func() error { return cmdself.ListAccesses(db, user) },
@@ -121,23 +121,25 @@ func buildHandlers(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 		"selfListDBAccesses": func() error { return cmdself.ListDBAccesses(db, user) },
 		"selfAddDBAccess":    func() error { return cmdself.AddDBAccess(db, user, args) },
 		"selfDelDBAccess":    func() error { return cmdself.DelDBAccess(db, user, args) },
+		"selfListDBAliases":  func() error { return cmdself.ListDBAliases(db, user) },
+		"selfAddDBAlias":     func() error { return cmdself.AddDBAlias(db, user, args) },
+		"selfDelDBAlias":     func() error { return cmdself.DelDBAlias(db, user, args) },
 
 		// Groups: DB Accesses
 		"groupListDBAccesses": func() error { return cmdgroup.ListDBAccesses(db, user, args) },
 		"groupAddDBAccess":    func() error { return cmdgroup.AddDBAccess(db, user, args) },
 		"groupDelDBAccess":    func() error { return cmdgroup.DelDBAccess(db, user, args) },
+		"groupListDBAliases":  func() error { return cmdgroup.ListDBAliases(db, user, args) },
+		"groupAddDBAlias":     func() error { return cmdgroup.AddDBAlias(db, user, args) },
+		"groupDelDBAlias":     func() error { return cmdgroup.DelDBAlias(db, user, args) },
 
 		// Groups: Guest DB Accesses
 		"groupAddGuestDBAccess":    func() error { return cmdgroup.AddGuestDBAccess(db, user, args) },
 		"groupDelGuestDBAccess":    func() error { return cmdgroup.DelGuestDBAccess(db, user, args) },
 		"groupListGuestDBAccesses": func() error { return cmdgroup.ListGuestDBAccesses(db, user, args) },
 
-		// DB Hosts (Admin)
-		"dbListHosts":  func() error { return cmddb.ListHosts(db, user, args) },
-		"dbAddHost":    func() error { return cmddb.AddHost(db, user, args) },
-		"dbDelHost":    func() error { return cmddb.DelHost(db, user, args) },
-		"dbModifyHost": func() error { return cmddb.ModifyHost(db, user, args) },
-		"dbConnect":    func() error { return cmddb.Connect(db, user, args) },
+		// DB
+		"dbConnect": func() error { return cmddb.Connect(db, user, args) },
 
 		// TTY
 		"ttyList": func() error { return cmdtty.List(db, user, args) },

@@ -60,6 +60,18 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 		return err
 	}
 
+	var currentMembership models.UserGroup
+	if err := db.Where("user_id = ? AND group_id = ? AND deleted_at IS NULL", currentUser.ID, group.ID).First(&currentMembership).Error; err == nil {
+		if currentMembership.IsGuest() && !strings.EqualFold(account, currentUser.Username) {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "List Guest Accesses",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Guest users can only list their own guest accesses."}}},
+			})
+			return fmt.Errorf("guest user %s attempted to list accesses for %s", currentUser.Username, account)
+		}
+	}
+
 	var grants []models.GroupGuestAccess
 	if err := db.Where("group_id = ? AND user_id = ? AND deleted_at IS NULL", group.ID, targetUser.ID).Find(&grants).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

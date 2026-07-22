@@ -20,6 +20,8 @@ func newTestDB(t *testing.T) *gorm.DB {
 		&models.GroupEgressKey{}, &models.SelfAccess{}, &models.GroupAccess{},
 		&models.Group{}, &models.UserGroup{}, &models.Aliases{},
 		&models.KnownHostsEntry{}, &models.PIVTrustAnchor{},
+		&models.SelfDBAccess{}, &models.GroupDBAccess{},
+		&models.GroupGuestDBAccess{}, &models.DatabaseAlias{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
