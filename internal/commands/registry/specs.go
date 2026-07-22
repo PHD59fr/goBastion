@@ -103,6 +103,20 @@ var commandRegistry = []CommandMeta{
 	{Name: "selfShowBackupCodeCount", Description: "Show remaining backup codes count", Permission: "selfSetupTOTP",
 		Category: "MANAGE YOUR ACCOUNT", SubCategory: "MFA / TOTP / PIV"},
 
+	// --- Self: DB Accesses ---
+	{Name: "selfListDBAccesses", Description: "List your database accesses", Permission: "selfListDBAccesses",
+		Category: "MANAGE YOUR ACCOUNT", SubCategory: "Database accesses"},
+	{Name: "selfAddDBAccess", Description: "Add a personal database access", Permission: "selfAddDBAccess",
+		Category: "MANAGE YOUR ACCOUNT", SubCategory: "Database accesses", Mutating: true,
+		Args: []ArgSpec{
+			{"--host", "DatabaseHost name"}, {"--database", "Database name (optional)"},
+			{"--comment", "Comment"}, {"--from", "Allowed source CIDRs"},
+			{"--ttl", "Access expiry in days"},
+		}},
+	{Name: "selfDelDBAccess", Description: "Delete a personal database access", Permission: "selfDelDBAccess",
+		Category: "MANAGE YOUR ACCOUNT", SubCategory: "Database accesses", Mutating: true,
+		Args: []ArgSpec{{"--id", "Access ID"}}},
+
 	// --- Account ---
 	{Name: "accountList", Description: "List all accounts", Permission: "accountList",
 		Category: "MANAGE OTHER ACCOUNTS", SubCategory: "Accounts"},
@@ -297,6 +311,70 @@ var commandRegistry = []CommandMeta{
 		Category: "MANAGE GROUPS", SubCategory: "Group guest accesses",
 		Features: []string{"guest_access", "groups"},
 		Args: []ArgSpec{{"--group", "Group name"}, {"--account", "Username"}}},
+
+	// --- Groups: DB Accesses ---
+	{Name: "groupListDBAccesses", Description: "List database accesses of the group", Permission: "groupListDBAccesses",
+		Category: "MANAGE GROUPS", SubCategory: "Group database accesses", Features: []string{"groups"},
+		Args: []ArgSpec{{"--group", "Group name"}}},
+	{Name: "groupAddDBAccess", Description: "Add database access to a group", Permission: "groupAddDBAccess",
+		Category: "MANAGE GROUPS", SubCategory: "Group database accesses", Mutating: true,
+		Features: []string{"groups"},
+		Args: []ArgSpec{
+			{"--group", "Group name"}, {"--host", "DatabaseHost name"},
+			{"--database", "Database name (optional)"},
+			{"--comment", "Comment"}, {"--from", "Allowed source CIDRs"},
+			{"--ttl", "Access expiry in days"},
+		}},
+	{Name: "groupDelDBAccess", Description: "Remove database access from a group", Permission: "groupDelDBAccess",
+		Category: "MANAGE GROUPS", SubCategory: "Group database accesses", Mutating: true,
+		Features: []string{"groups"},
+		Args: []ArgSpec{{"--group", "Group name"}, {"--id", "Access ID to remove"}}},
+
+	// --- Groups: Guest DB Accesses ---
+	{Name: "groupAddGuestDBAccess", Description: "Grant guest access to a database host in a group", Permission: "groupAddGuestDBAccess",
+		Category: "MANAGE GROUPS", SubCategory: "Group guest database accesses", Mutating: true,
+		Features: []string{"guest_access", "groups"},
+		Args: []ArgSpec{
+			{"--group", "Group name"}, {"--account", "Username"},
+			{"--host", "DatabaseHost name"}, {"--database", "Database name (optional)"},
+			{"--comment", "Comment"}, {"--from", "Allowed source CIDRs"},
+			{"--ttl", "Access expiry in days"},
+		}},
+	{Name: "groupDelGuestDBAccess", Description: "Remove guest database access grant from a group", Permission: "groupDelGuestDBAccess",
+		Category: "MANAGE GROUPS", SubCategory: "Group guest database accesses", Mutating: true,
+		Features: []string{"guest_access", "groups"},
+		Args: []ArgSpec{{"--group", "Group name"}, {"--account", "Username"}, {"--grant", "Grant ID (optional)"}}},
+	{Name: "groupListGuestDBAccesses", Description: "List guest database accesses for a user in a group", Permission: "groupListGuestDBAccesses",
+		Category: "MANAGE GROUPS", SubCategory: "Group guest database accesses",
+		Features: []string{"guest_access", "groups"},
+		Args: []ArgSpec{{"--group", "Group name"}, {"--account", "Username"}}},
+
+	// --- DB Hosts (Admin) ---
+	{Name: "dbListHosts", Description: "List database hosts", Permission: "dbListHosts",
+		Category: "DATABASE HOSTS", SubCategory: "Database hosts",
+		Args: []ArgSpec{{"--protocol", "Filter by protocol (mysql/postgres/mongo/redis)"}}},
+	{Name: "dbAddHost", Description: "Add a database host with credentials", Permission: "dbAddHost",
+		Category: "DATABASE HOSTS", SubCategory: "Database hosts", Mutating: true,
+		Args: []ArgSpec{
+			{"--name", "Friendly name"}, {"--host", "Hostname/IP"}, {"--port", "Port"},
+			{"--protocol", "Protocol (mysql/postgres/mongo/redis)"},
+			{"--user", "Username"}, {"--password", "Password (encrypted, optional)"},
+			{"--comment", "Comment"},
+		}},
+	{Name: "dbDelHost", Description: "Delete a database host", Permission: "dbDelHost",
+		Category: "DATABASE HOSTS", SubCategory: "Database hosts", Mutating: true,
+		Args: []ArgSpec{{"--name", "Host name"}, {"--id", "Host ID"}}},
+	{Name: "dbModifyHost", Description: "Modify a database host", Permission: "dbModifyHost",
+		Category: "DATABASE HOSTS", SubCategory: "Database hosts", Mutating: true,
+		Args: []ArgSpec{
+			{"--name", "Host name (required)"}, {"--host", "Hostname/IP"},
+			{"--port", "Port"}, {"--protocol", "Protocol"},
+			{"--user", "Username"}, {"--password", "Password"},
+			{"--comment", "Comment"},
+		}},
+	{Name: "dbConnect", Description: "Connect to a database host you have access to", Permission: "dbConnect",
+		Category: "DATABASE HOSTS", SubCategory: "Database hosts",
+		Args: []ArgSpec{{"--host", "DatabaseHost name or alias"}}},
 
 	// --- Groups: Aliases ---
 	{Name: "groupAddAlias", Description: "Add a group alias", Permission: "groupAddAlias",

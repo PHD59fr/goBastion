@@ -435,5 +435,9 @@ func ManagedModelsInDependencyOrder() []any {
 		&models.PIVTrustAnchor{},
 		&models.Realm{},
 		&models.RestrictedCommandGrant{},
+		&models.DatabaseHost{},
+		&models.SelfDBAccess{},
+		&models.GroupDBAccess{},
+		&models.GroupGuestDBAccess{},
 	}
 }

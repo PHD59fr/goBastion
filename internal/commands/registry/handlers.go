@@ -7,6 +7,7 @@ import (
 
 	cmdaccount "goBastion/internal/commands/account"
 	cmdconfig "goBastion/internal/commands/config"
+	cmddb "goBastion/internal/commands/db"
 	cmdgroup "goBastion/internal/commands/group"
 	cmdpiv "goBastion/internal/commands/piv"
 	cmdrealm "goBastion/internal/commands/realm"
@@ -115,6 +116,28 @@ func buildHandlers(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 		"groupAddAlias":    func() error { return cmdgroup.AddAlias(db, user, args) },
 		"groupDelAlias":    func() error { return cmdgroup.DelAlias(db, user, args) },
 		"groupListAliases": func() error { return cmdgroup.ListAliases(db, user, args) },
+
+		// Self: DB Accesses
+		"selfListDBAccesses": func() error { return cmdself.ListDBAccesses(db, user) },
+		"selfAddDBAccess":    func() error { return cmdself.AddDBAccess(db, user, args) },
+		"selfDelDBAccess":    func() error { return cmdself.DelDBAccess(db, user, args) },
+
+		// Groups: DB Accesses
+		"groupListDBAccesses": func() error { return cmdgroup.ListDBAccesses(db, user, args) },
+		"groupAddDBAccess":    func() error { return cmdgroup.AddDBAccess(db, user, args) },
+		"groupDelDBAccess":    func() error { return cmdgroup.DelDBAccess(db, user, args) },
+
+		// Groups: Guest DB Accesses
+		"groupAddGuestDBAccess":    func() error { return cmdgroup.AddGuestDBAccess(db, user, args) },
+		"groupDelGuestDBAccess":    func() error { return cmdgroup.DelGuestDBAccess(db, user, args) },
+		"groupListGuestDBAccesses": func() error { return cmdgroup.ListGuestDBAccesses(db, user, args) },
+
+		// DB Hosts (Admin)
+		"dbListHosts":  func() error { return cmddb.ListHosts(db, user, args) },
+		"dbAddHost":    func() error { return cmddb.AddHost(db, user, args) },
+		"dbDelHost":    func() error { return cmddb.DelHost(db, user, args) },
+		"dbModifyHost": func() error { return cmddb.ModifyHost(db, user, args) },
+		"dbConnect":    func() error { return cmddb.Connect(db, user, args) },
 
 		// TTY
 		"ttyList": func() error { return cmdtty.List(db, user, args) },

@@ -24,6 +24,51 @@ func IsValidProtocol(p string) bool {
 	return ValidProtocols[p]
 }
 
+// ValidDBProtocols is the set of accepted database client protocols.
+var ValidDBProtocols = map[string]bool{
+	"mysql":    true,
+	"postgres": true,
+	"mongo":    true,
+	"redis":    true,
+}
+
+// IsValidDBProtocol returns true when p is one of the accepted database protocols.
+func IsValidDBProtocol(p string) bool {
+	return ValidDBProtocols[p]
+}
+
+// DBProtocolDefaultPort returns the default port for a database protocol.
+func DBProtocolDefaultPort(p string) int64 {
+	switch p {
+	case "mysql":
+		return 3306
+	case "postgres":
+		return 5432
+	case "mongo":
+		return 27017
+	case "redis":
+		return 6379
+	default:
+		return 0
+	}
+}
+
+// DBProtocolClient returns the default client binary name for a protocol.
+func DBProtocolClient(p string) string {
+	switch p {
+	case "mysql":
+		return "mysql"
+	case "postgres":
+		return "psql"
+	case "mongo":
+		return "mongosh"
+	case "redis":
+		return "redis-cli"
+	default:
+		return ""
+	}
+}
+
 // IsValidHost returns true when h is a valid hostname or IP address.
 // IPv6 addresses enclosed in square brackets (e.g. [::1]) are accepted.
 // Rejects strings containing spaces, '@', '/', or '\'.

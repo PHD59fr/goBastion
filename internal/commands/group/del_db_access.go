@@ -1,0 +1,86 @@
+package group
+
+import (
+	"bytes"
+	"flag"
+	"fmt"
+
+	"goBastion/internal/models"
+	"goBastion/internal/utils/console"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// DelDBAccess removes a database access entry from a group.
+func DelDBAccess(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupDelDBAccess", flag.ContinueOnError)
+	var groupName, accessIDStr string
+	fs.StringVar(&groupName, "group", "", "Group name")
+	fs.StringVar(&accessIDStr, "id", "", "Access ID to remove")
+	var flagOutput bytes.Buffer
+	fs.SetOutput(&flagOutput)
+
+	if err := fs.Parse(args); err != nil || groupName == "" || accessIDStr == "" {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupDelDBAccess --group <group> --id <access_id>"}}},
+		})
+		return err
+	}
+
+	if !currentUser.CanDo(db, "groupDelDBAccess", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete DB access for this group."}}},
+		})
+		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+
+	var group models.Group
+	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
+		})
+		return err
+	}
+
+	accessID, err := uuid.Parse(accessIDStr)
+	if err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Invalid ID", Body: []string{"Invalid access ID format."}}},
+		})
+		return err
+	}
+
+	result := db.Where("id = ? AND group_id = ?", accessID, group.ID).Delete(&models.GroupDBAccess{})
+	if result.Error != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error deleting group DB access."}}},
+		})
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Delete Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Access entry not found or does not belong to this group."}}},
+		})
+		return nil
+	}
+
+	console.DisplayBlock(console.ContentBlock{
+		Title:     "Delete Group DB Access",
+		BlockType: "success",
+		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("Group DB access removed for group '%s'.", groupName)}}},
+	})
+	return nil
+}
