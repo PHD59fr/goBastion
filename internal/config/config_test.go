@@ -28,14 +28,14 @@ func TestDefaultConfig(t *testing.T) {
 	if time.Duration(cfg.SSH.HostKeyTTL) != 24*time.Hour {
 		t.Errorf("HostKeyTTL = %v, want 24h", cfg.SSH.HostKeyTTL)
 	}
-	if cfg.Database.Driver != "sqlite" {
-		t.Errorf("Driver = %q, want sqlite", cfg.Database.Driver)
+	if cfg.InternalDB.Driver != "sqlite" {
+		t.Errorf("Driver = %q, want sqlite", cfg.InternalDB.Driver)
 	}
-	if cfg.Database.ConnMaxLifetime != 5*time.Minute {
-		t.Errorf("ConnMaxLifetime = %v, want 5m", cfg.Database.ConnMaxLifetime)
+	if cfg.InternalDB.ConnMaxLifetime != 5*time.Minute {
+		t.Errorf("ConnMaxLifetime = %v, want 5m", cfg.InternalDB.ConnMaxLifetime)
 	}
-	if cfg.Database.SQLite.CacheSize != 2000 {
-		t.Errorf("CacheSize = %d, want 2000", cfg.Database.SQLite.CacheSize)
+	if cfg.InternalDB.SQLite.CacheSize != 2000 {
+		t.Errorf("CacheSize = %d, want 2000", cfg.InternalDB.SQLite.CacheSize)
 	}
 	if cfg.MFA.MaxAttempts != 3 {
 		t.Errorf("MaxAttempts = %d, want 3", cfg.MFA.MaxAttempts)
@@ -66,11 +66,11 @@ func TestEnvOverrides(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.Database.Driver != "mysql" {
-		t.Errorf("Driver = %q, want mysql (env override)", cfg.Database.Driver)
+	if cfg.InternalDB.Driver != "mysql" {
+		t.Errorf("Driver = %q, want mysql (env override)", cfg.InternalDB.Driver)
 	}
-	if cfg.Database.DSN != "user:pass@tcp(host:3306)/db" {
-		t.Errorf("DSN = %q, want user:pass@tcp(host:3306)/db (env override)", cfg.Database.DSN)
+	if cfg.InternalDB.DSN != "user:pass@tcp(host:3306)/db" {
+		t.Errorf("DSN = %q, want user:pass@tcp(host:3306)/db (env override)", cfg.InternalDB.DSN)
 	}
 }
 
@@ -80,11 +80,11 @@ func TestSQLitePoolDefaults(t *testing.T) {
 	_ = os.Unsetenv("DB_DSN")
 	cfg := Load()
 
-	if cfg.Database.MaxOpenConns != 1 {
-		t.Errorf("SQLite MaxOpenConns = %d, want 1", cfg.Database.MaxOpenConns)
+	if cfg.InternalDB.MaxOpenConns != 1 {
+		t.Errorf("SQLite MaxOpenConns = %d, want 1", cfg.InternalDB.MaxOpenConns)
 	}
-	if cfg.Database.MaxIdleConns != 1 {
-		t.Errorf("SQLite MaxIdleConns = %d, want 1", cfg.Database.MaxIdleConns)
+	if cfg.InternalDB.MaxIdleConns != 1 {
+		t.Errorf("SQLite MaxIdleConns = %d, want 1", cfg.InternalDB.MaxIdleConns)
 	}
 }
 

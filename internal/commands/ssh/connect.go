@@ -840,13 +840,47 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 		return host, nil
 	}
 
-	err = db.
-		Where("LOWER(resolve_from) = ? AND group_id IN (?)", strings.ToLower(forcedHostname), groupIDs).
-		First(&host).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return host, nil
-	} else if err != nil {
+	var aliases []models.Aliases
+	err = db.Preload("Group").
+		Where("group_id IN (?)", groupIDs).
+		Find(&aliases).Error
+	if err != nil {
 		return host, validation.WrapDBError(err, "error retrieving group host")
+	}
+	if len(aliases) == 0 {
+		return host, nil
+	}
+
+	var explicitMatches []models.Aliases
+	var exactMatches []models.Aliases
+	for _, alias := range aliases {
+		if alias.Group != nil && strings.EqualFold(alias.Group.Name+"-"+alias.ResolveFrom, forcedHostname) {
+			explicitMatches = append(explicitMatches, alias)
+		}
+		if strings.EqualFold(alias.ResolveFrom, forcedHostname) {
+			exactMatches = append(exactMatches, alias)
+		}
+	}
+
+	if len(explicitMatches) == 1 {
+		return explicitMatches[0], nil
+	}
+	if len(exactMatches) == 1 {
+		return exactMatches[0], nil
+	}
+	if len(explicitMatches) > 1 || len(exactMatches) > 1 {
+		var groups []string
+		candidates := exactMatches
+		if len(explicitMatches) > 1 {
+			candidates = explicitMatches
+		}
+		for _, alias := range candidates {
+			if alias.Group != nil {
+				groups = append(groups, alias.Group.Name)
+			}
+		}
+		sort.Strings(groups)
+		return host, fmt.Errorf("alias '%s' is ambiguous across groups: %s; use <group>-%s", forcedHostname, strings.Join(groups, ", "), forcedHostname)
 	}
 
 	return host, nil

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,8 +75,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		return fmt.Errorf("access denied for user %s to play TTY sessions", u.Username)
 	}
 
-	server, validFile := recordingServer(file)
-	if !validFile {
+	if !validRecordingName(file) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
 			BlockType: "error",
@@ -86,10 +86,9 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		return nil
 	}
 
-	baseDir := filepath.Join(config.Get().Paths.TtyrecDir, strings.ToLower(strings.TrimSpace(username)), server)
-	ttyFile := filepath.Join(baseDir, file)
-
-	if _, err := os.Stat(ttyFile); os.IsNotExist(err) {
+	baseDir := filepath.Join(config.Get().Paths.TtyrecDir, strings.ToLower(strings.TrimSpace(username)))
+	ttyFile, err := findRecordingFile(baseDir, file)
+	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
 			BlockType: "error",
@@ -181,25 +180,71 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 	return nil
 }
 
-var recordingNameRegexp = regexp.MustCompile(`^[^./]+\.(?P<server>[^/]+):\d+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_cmd)?(?:_sid-[a-fA-F0-9-]+)?\.ttyrec.gz$`)
+var (
+	recordingNameRegexp = regexp.MustCompile(`^(?P<user>[^/]+)\.(?P<server>[^/]+):(?P<port>\d+)_(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})(?P<suffix>(?:_[A-Za-z0-9._-]+)*(?:_cmd)?(?:_sid-[a-fA-F0-9-]+)?)\.ttyrec.gz$`)
+	dbProtocolRegexp    = regexp.MustCompile(`^(mysql|postgres|redis)$`)
+)
 
-// recordingServer validates a recording basename and extracts its server.
-// The server component is greedy up to the mandatory :port suffix, allowing
-// IPv6 literals and hostnames containing underscores without permitting paths.
-func recordingServer(file string) (string, bool) {
-	matches := recordingNameRegexp.FindStringSubmatch(file)
-	if len(matches) < 2 || matches[1] == "." || matches[1] == ".." {
-		return "", false
+func findRecordingFile(baseDir, file string) (string, error) {
+	var found string
+	errFound := errors.New("recording found")
+
+	err := filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Base(path) != file {
+			return nil
+		}
+		found = path
+		return errFound
+	})
+	if err != nil && !errors.Is(err, errFound) {
+		return "", err
 	}
-	return matches[1], true
+	if found == "" {
+		return "", os.ErrNotExist
+	}
+	return found, nil
 }
 
 // extractDate parses the date from a ttyrec filename.
 func extractDate(fileName string) (string, bool) {
-	re := regexp.MustCompile(`_(\d{4}-\d{2}-\d{2})_`)
-	matches := re.FindStringSubmatch(fileName)
-	if len(matches) == 2 {
-		return matches[1], true
+	if !validRecordingName(fileName) {
+		return "", false
+	}
+	matches := recordingNameRegexp.FindStringSubmatch(fileName)
+	if len(matches) >= 5 {
+		return matches[4], true
 	}
 	return "", false
+}
+
+func recordingLabel(file string) string {
+	if !validRecordingName(file) {
+		return ""
+	}
+	matches := recordingNameRegexp.FindStringSubmatch(file)
+	if len(matches) < 7 {
+		return ""
+	}
+	suffix := strings.TrimPrefix(matches[6], "_")
+	if suffix == "" || suffix == "cmd" || strings.HasPrefix(suffix, "sid-") || strings.HasPrefix(suffix, "cmd_sid-") {
+		return "SSH"
+	}
+	first := suffix
+	if idx := strings.Index(first, "_"); idx >= 0 {
+		first = first[:idx]
+	}
+	if dbProtocolRegexp.MatchString(first) {
+		return "DB/" + first
+	}
+	return "SSH"
+}
+
+func validRecordingName(file string) bool {
+	return recordingNameRegexp.MatchString(file) && !strings.Contains(file, "..")
 }

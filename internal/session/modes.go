@@ -32,6 +32,7 @@ import (
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/autocomplete"
+	"goBastion/internal/utils/dbConnector"
 	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/totp"
 )
@@ -83,8 +84,15 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		if !checkMFA(db, &currentUser, log) {
 			return
 		}
+		releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
+		if err != nil {
+			log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
+			fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+			return
+		}
+		defer releaseSession()
 		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
-		runInteractiveMode(db, &currentUser, log)
+		runInteractiveMode(db, &currentUser, log, releaseSession)
 	} else {
 		cmd := os.Args[1]
 		args := os.Args[2:]
@@ -103,8 +111,15 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			if !checkMFA(db, &currentUser, log) {
 				return
 			}
+			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
+			if err != nil {
+				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
+				fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+				return
+			}
+			defer releaseSession()
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
-			runInteractiveMode(db, &currentUser, log)
+			runInteractiveMode(db, &currentUser, log, releaseSession)
 		} else {
 			// Skip TOTP for raw TCP proxy (-W) and sftp-session: no TTY, raw pipe only.
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
@@ -114,11 +129,38 @@ func Run(db *gorm.DB, log *slog.Logger) {
 					return
 				}
 			}
+			sessionKind := classifySessionKind(cmd, args)
+			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, sessionKind)
+			if err != nil {
+				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("kind", sessionKind), slog.String("error", err.Error()))
+				fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+				return
+			}
+			defer releaseSession()
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", cmd))
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session_end", slog.String("user", currentUser.Username))
 		}
 	}
+}
+
+func classifySessionKind(cmd string, args []string) string {
+	if strings.HasPrefix(strings.TrimSpace(cmd), "-osh") || cmd == "-osh" {
+		return "osh"
+	}
+	if _, ok := parseDBRequest(cmd, args); ok {
+		return "db"
+	}
+	if strings.HasPrefix(cmd, "sftp-session") {
+		return "sftp"
+	}
+	if _, _, ok := parseTCPProxyRequest(cmd, args); ok {
+		return "tcp_proxy"
+	}
+	if isMoshServerRequest(cmd, args) {
+		return "mosh"
+	}
+	return "ssh"
 }
 
 // runNonInteractiveMode executes a single bastion command passed via -osh flag.
@@ -132,7 +174,7 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		if len(args) < 1 {
 			fmt.Println("Usage: -osh <command> <args>")
 			fmt.Println("Entering interactive mode.")
-			runInteractiveMode(db, currentUser, log)
+			runInteractiveMode(db, currentUser, log, nil)
 			return
 		}
 	}
@@ -166,12 +208,41 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			fmt.Fprintln(os.Stderr, "⛔ Mosh is disabled.")
 			return
 		}
+		if !config.MoshAvailable() {
+			fmt.Fprintln(os.Stderr, "⛔ Mosh is not installed in this image. Use the full image variant.")
+			return
+		}
 		runMoshServer(command, args, log)
+	} else if dbArgs, ok := parseDBRequest(command, args); ok {
+		if len(dbArgs) < 1 {
+			fmt.Fprintln(os.Stderr, "⛔ Usage: bastion --db|-db [user@]host[:port[:protocol]] [--mysql|--pg|--redis] [--dbname name]")
+			return
+		}
+		access, err := dbConnector.ResolveTarget(db, *currentUser, dbArgs[0], dbArgs[1:]...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⛔ %v\n", err)
+			return
+		}
+		if err := dbConnector.Connect(db, *currentUser, access); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	} else {
 		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)
 		}
 	}
+}
+
+func parseDBRequest(cmd string, args []string) ([]string, bool) {
+	if cmd == "--db" || cmd == "-db" {
+		return args, true
+	}
+	for _, prefix := range []string{"--db ", "-db "} {
+		if strings.HasPrefix(cmd, prefix) {
+			return strings.Fields(strings.TrimSpace(strings.TrimPrefix(cmd, prefix))), true
+		}
+	}
+	return nil, false
 }
 
 type oshJSONMode string
@@ -331,7 +402,7 @@ func emitJSONPayload(mode oshJSONMode, payload map[string]any) {
 }
 
 // runInteractiveMode starts the interactive prompt loop for the user session.
-func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger) {
+func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, forceRelease func()) {
 	defer resetStdIn()
 	fmt.Println(utils.FgBlueB("Type 'help' to display available commands, 'tab' to autocomplete, 'exit' to quit."))
 
@@ -408,6 +479,14 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 	idleTimeout := time.Duration(config.Get().Session.IdleTimeout)
 	var idleTimer *time.Timer
 	var idleMu sync.Mutex
+	stopIdle := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+			idleTimer = nil
+		}
+	}
 	resetIdle = func() {
 		if idleTimeout <= 0 {
 			return
@@ -423,6 +502,9 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 			// Restore terminal and force-exit.
 			resetStdIn()
 			fmt.Println("\n⛔ Session timed out due to inactivity.")
+			if forceRelease != nil {
+				forceRelease()
+			}
 			os.Exit(0)
 		})
 	}
@@ -458,6 +540,9 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger)
 			tokens := strings.Fields(in)
 			if len(tokens) == 0 {
 				return
+			}
+			if tokens[0] == "ttyPlay" {
+				stopIdle()
 			}
 			err := executeCommand(db, currentUser, log, tokens[0], tokens[1:])
 			if errors.Is(err, errSessionExit) {
@@ -504,6 +589,8 @@ func featureEnabled(feat string, cfg *config.Config) bool {
 		return cfg.Realms.Enabled
 	case "guest_access":
 		return cfg.GuestAccess.Enabled
+	case "database":
+		return cfg.Database.Enabled
 	case "groups":
 		return cfg.Groups.Enabled
 	case "restricted_cmds":
@@ -514,6 +601,8 @@ func featureEnabled(feat string, cfg *config.Config) bool {
 		return cfg.TTYPlay.Enabled
 	case "alias_group":
 		return cfg.AliasGroup.Enabled
+	case "mosh":
+		return cfg.Mosh.Enabled && config.MoshAvailable()
 	}
 	return true
 }
@@ -541,6 +630,8 @@ func featureLabel(feat string) string {
 		return "Realms"
 	case "guest_access":
 		return "Guest access"
+	case "database":
+		return "Database access"
 	case "groups":
 		return "Groups"
 	case "restricted_cmds":

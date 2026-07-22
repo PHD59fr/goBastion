@@ -162,6 +162,32 @@ func TestAccessFilter_GroupExactBeforeSelfWildcard(t *testing.T) {
 	}
 }
 
+func TestResolveForcedHostErrorsOnAmbiguousGroupAlias(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "alice", models.RoleUser)
+	groupA := mustCreateGroup(t, db, "prod-a")
+	groupB := mustCreateGroup(t, db, "prod-b")
+	mustAddUserToGroup(t, db, user.ID, groupA.ID, "member")
+	mustAddUserToGroup(t, db, user.ID, groupB.ID, "member")
+
+	for _, group := range []models.Group{groupA, groupB} {
+		groupID := group.ID
+		alias := models.Aliases{
+			ResolveFrom: "prod",
+			Host:        group.Name + ".internal",
+			GroupID:     &groupID,
+		}
+		if err := db.Create(&alias).Error; err != nil {
+			t.Fatalf("create alias: %v", err)
+		}
+	}
+
+	_, err := resolveForcedHost(db, user, "prod")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous across groups") {
+		t.Fatalf("expected ambiguous alias error, got %v", err)
+	}
+}
+
 // TestAccessFilter_SelfWildcardBeforeGroupWildcard verifies self-wildcard (2) > group-wildcard (1).
 func TestAccessFilter_SelfWildcardBeforeGroupWildcard(t *testing.T) {
 	db := newTestDB(t)
@@ -323,13 +349,13 @@ func TestNormalizeWildcardUsername(t *testing.T) {
 
 func TestParseSSHCommand(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantUser   string
-		wantHost   string
-		wantPort   string
-		wantCmd    string
-		wantErr string
+		name     string
+		input    string
+		wantUser string
+		wantHost string
+		wantPort string
+		wantCmd  string
+		wantErr  string
 	}{
 		{"user@host", "deploy@myserver", "deploy", "myserver", "22", "", ""},
 		{"user@host:port", "deploy@myserver:2222", "deploy", "myserver", "2222", "", ""},

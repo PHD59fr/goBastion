@@ -48,6 +48,12 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 📋 `selfListAliases`             | List your personal SSH aliases.                                              |
 | ➕ `selfAddAlias`                 | Add a personal SSH alias.                                                    |
 | ❌ `selfDelAlias`                 | Delete a personal SSH alias.                                                 |
+| 📋 `selfListDBAccesses`          | List your personal database accesses.                                        |
+| ➕ `selfAddDBAccess`              | Add a personal database access (host, protocol, credentials, TTL, CIDR).     |
+| ❌ `selfDelDBAccess`              | Remove a personal database access.                                           |
+| 📋 `selfListDBAliases`           | List your personal database aliases.                                         |
+| ➕ `selfAddDBAlias`               | Add a personal database alias.                                               |
+| ❌ `selfDelDBAlias`               | Delete a personal database alias.                                            |
 | ❌ `selfRemoveHostFromKnownHosts` | Remove a host from your known\_hosts file.                                   |
 | 🔄 `selfReplaceKnownHost`        | Trust a new host key after it changed (TOFU reset).                          |
 | 🔐 `selfSetupTOTP`               | Enable TOTP two-factor authentication (generates QR/OTP URI).                |
@@ -123,6 +129,17 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
 | ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
 | 📋 `groupListAliases`       | List all group SSH aliases.                       |
+| 📋 `groupListDBAccesses`    | List all database accesses assigned to a group.   |
+| ➕ `groupAddDBAccess`        | Grant database access to a group.                 |
+| ❌ `groupDelDBAccess`        | Remove database access from a group.              |
+| 📋 `groupListDBAliases`     | List all group database aliases.                  |
+| ➕ `groupAddDBAlias`         | Add a group database alias.                       |
+| ❌ `groupDelDBAlias`         | Delete a group database alias.                    |
+| ➕ `groupAddGuestDBAccess`   | Grant guest database access inside a group.       |
+| ❌ `groupDelGuestDBAccess`   | Remove a guest database access grant.             |
+| 📋 `groupListGuestDBAccesses`| List guest database access grants in a group.     |
+
+> TODO: MongoDB client support is not packaged in the container yet. Current built-in database client support is `mysql`, `postgres`, and `redis`.
 
 ---
 
@@ -354,11 +371,14 @@ Keys added via PIV attestation are marked `PIV` in `selfListIngressKeys`.
 
 ### 🐚 **Mosh Support**
 
-goBastion transparently passes through `mosh-server` invocations, enabling [Mosh](https://mosh.org/)
-sessions through the bastion. No special configuration is needed on the client side.
+goBastion can transparently pass through `mosh-server` invocations, enabling [Mosh](https://mosh.org/)
+sessions through the bastion when the runtime image includes `mosh`.
+
+The default image is built **without** `mosh` to keep it smaller.
+Use the full image variant if you need Mosh support.
 
 ```bash
-# Standard mosh usage - works through the bastion
+# Standard mosh usage through the full image variant
 mosh --ssh="ssh -J user@bastion:2222" user@my-server
 ```
 
@@ -371,8 +391,8 @@ UDP ports 60001-61000 must be open on the **target server** (not the bastion) fo
 
 | Command      | Description                                                                |
 |--------------|-----------------------------------------------------------------------------|
-| 📋 `ttyList` | List recorded SSH sessions. |
-| ▶️ `ttyPlay` | Replay a recorded SSH session.                                              |
+| 📋 `ttyList` | List recorded interactive SSH/DB sessions. |
+| ▶️ `ttyPlay` | Replay a recorded interactive SSH/DB session.                                              |
 
 ---
 
@@ -691,34 +711,47 @@ The following commands require admin or superowner by default, but can be grante
 
 ### 👥 **Group Permissions**
 
-| Permission               | Owner | ACLKeeper | GateKeeper | Member |
-| ------------------------ | :---: | :-------: | :--------: | :----: |
-| `groupAddAccess`         | ✅    | ✅        | ✅         |        |
-| `groupDelAccess`         | ✅    | ✅        | ✅         |        |
-| `groupSetMFA`            | ✅    |           |            |        |
-| `groupAddGuestAccess`    | ✅    | ✅        | ✅         |        |
-| `groupDelGuestAccess`    | ✅    | ✅        | ✅         |        |
-| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅ (siens)
-| `groupAddMember`         | ✅    | ✅        |            |        |
-| `groupDelMember`         | ✅    | ✅        |            |        |
-| `groupGenerateEgressKey` | ✅    |           |            |        |
-| `groupAddAlias`          | ✅    | ✅        | ✅         |        |
-| `groupDelAlias`          | ✅    | ✅        | ✅         |        |
-| `groupInfo`              | ✅    | ✅        | ✅         | ✅     |
-| `groupList`              | ✅    | ✅        | ✅         | ✅     |
-| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     |
-| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     |
-| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     |
+| Permission               | Owner | ACLKeeper | GateKeeper | Member | Guest |
+| ------------------------ | :---: | :-------: | :--------: | :----: | :---: |
+| `groupAddAccess`         | ✅    | ✅        | ✅         |        |       |
+| `groupDelAccess`         | ✅    | ✅        | ✅         |        |       |
+| `groupAddDBAccess`       | ✅    | ✅        | ✅         |        |       |
+| `groupDelDBAccess`       | ✅    | ✅        | ✅         |        |       |
+| `groupSetMFA`            | ✅    |           |            |        |       |
+| `groupAddGuestAccess`    | ✅    | ✅        | ✅         |        |       |
+| `groupDelGuestAccess`    | ✅    | ✅        | ✅         |        |       |
+| `groupAddGuestDBAccess`  | ✅    | ✅        | ✅         |        |       |
+| `groupDelGuestDBAccess`  | ✅    | ✅        | ✅         |        |       |
+| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅ (own only) |
+| `groupListGuestDBAccesses` | ✅  | ✅        | ✅         | ✅     | ✅ (own only) |
+| `groupAddMember`         | ✅    | ✅        |            |        |       |
+| `groupDelMember`         | ✅    | ✅        |            |        |       |
+| `groupGenerateEgressKey` | ✅    |           |            |        |       |
+| `groupAddAlias`          | ✅    | ✅        | ✅         |        |       |
+| `groupDelAlias`          | ✅    | ✅        | ✅         |        |       |
+| `groupAddDBAlias`        | ✅    | ✅        | ✅         |        |       |
+| `groupDelDBAlias`        | ✅    | ✅        | ✅         |        |       |
+| `groupInfo`              | ✅    | ✅        | ✅         | ✅     | ✅    |
+| `groupList`              | ✅    | ✅        | ✅         | ✅     | ✅    |
+| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListDBAccesses`    | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListDBAliases`     | ✅    | ✅        | ✅         | ✅     |       |
+| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     | ✅    |
 
 ### 👤 **Self Permissions**
 
 - `selfAddAccess`
 - `selfAddAlias`
+- `selfAddDBAccess`
+- `selfAddDBAlias`
 - `selfAddIngressKey`
 - `selfAddIngressKeyPIV`
 - `selfChangePassword`
 - `selfDelAccess`
 - `selfDelAlias`
+- `selfDelDBAccess`
+- `selfDelDBAlias`
 - `selfDelIngressKey`
 - `selfDisablePassword`
 - `selfDisableTOTP`
@@ -726,6 +759,8 @@ The following commands require admin or superowner by default, but can be grante
 - `selfGenerateEgressKey`
 - `selfListAccesses`
 - `selfListAliases`
+- `selfListDBAccesses`
+- `selfListDBAliases`
 - `selfListEgressKeys`
 - `selfListIngressKeys`
 - `selfRemoveHostFromKnownHosts`
@@ -738,6 +773,12 @@ The following commands require admin or superowner by default, but can be grante
 
 ⚠ **Alias Priority Warning**:
 If an alias is defined by the user (`selfAddAlias`) and the group defines an alias with the same name (`groupAddAlias`), **the user-defined alias always takes precedence**
+
+The same precedence rule applies to database aliases: `selfAddDBAlias` overrides `groupAddDBAlias` when the alias name is identical.
+
+If the same group alias name exists in multiple groups you belong to, the short alias becomes ambiguous. In that case, use the explicit form `<group>-<alias>` to disambiguate.
+
+The same explicit disambiguation rule applies to database aliases when multiple groups define the same DB alias.
 
 ### 📜 **Misc Permissions**
 
@@ -760,6 +801,12 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 
    ```sh
    docker build -t gobastion .
+   ```
+
+   Build the full image variant with Mosh support:
+
+   ```sh
+   docker build --target final-full -t gobastion:full .
    ```
 
 3. Run the Docker container:
@@ -834,7 +881,7 @@ If an alias is defined by the user (`selfAddAlias`) and the group defines an ali
 |-----------------|---------|-------------|
 | `DB_DRIVER`     | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
 | `DB_DSN`        | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
-| `EGRESS_ENC_KEY`| *(none)* | AES key for encrypting egress private keys at rest. See [Egress Key Encryption](#-egress-key-encryption). |
+| `EGRESS_ENC_KEY`| *(none)* | AES key for encrypting egress private keys and stored database passwords at rest. See [Egress Key Encryption](#-egress-key-encryption). |
 | `INSTANCE_ID`   | *(hostname)* | Unique identifier for this bastion instance. Used to distinguish master/slave instances and to store per-instance config in the database. Falls back to hostname, then to `"master"` if unset. |
 | `LOG_FORMAT`    | `json`   | Log output format: `json` (structured JSON, compatible with log aggregators) or `plain` (human-readable text for local debugging). |
 
@@ -906,7 +953,23 @@ In **goBastion**, the configuration is stored in the database (table `bastion_in
 | `DB_DSN` | Database connection string |
 | `INSTANCE_ID` | Instance identifier (defaults to hostname, then `"master"`) |
 
-Everything else (sync interval, account policies, system config...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.
+Everything else (sync interval, account policies, feature toggles, session limits...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.
+
+`bastionConfig` provides an admin-facing configuration menu organized by functional areas such as:
+- `Access & Login`
+- `Connectivity`
+- `Features`
+- `Modes`
+- `Recording`
+- `Sessions`
+- `Connection Policy`
+
+In practice:
+- bootstrap-only parameters such as `DB_DRIVER` and `DB_DSN` are not part of the interactive config menu
+- session settings are scoped to the current bastion instance
+- `max_concurrent_sessions` limits concurrent authenticated sessions on that instance
+- `idle_timeout` and `max_session_duration` accept `0` to disable the limit, or a duration of at least `30s`
+- `ttyrec.retention_days=0` keeps recordings indefinitely
 
 **How it works:**
 1. At startup, goBastion reads `DB_DRIVER`, `DB_DSN`, and `INSTANCE_ID` from environment variables.
@@ -919,7 +982,7 @@ Everything else (sync interval, account policies, system config...) is managed v
 
 ### 🔐 Egress Key Encryption
 
-By default, egress private keys are stored in the database in **plaintext**. To encrypt them at rest, set the `EGRESS_ENC_KEY` environment variable:
+By default, egress private keys and stored database passwords are kept in the database in **plaintext**. To encrypt them at rest, set the `EGRESS_ENC_KEY` environment variable:
 
 ```bash
 # Generate a 32-byte AES-256 key
@@ -932,8 +995,8 @@ export EGRESS_ENC_KEY=$(cat egress_key.txt)
 - 32-byte raw passphrase
 
 **Migration behavior:**
-- If `EGRESS_ENC_KEY` is set **after** keys were already stored in plaintext, existing keys are automatically re-encrypted on next use (transparent migration).
-- If `EGRESS_ENC_KEY` is **not set**, keys remain in plaintext (backward-compatible).
+- If `EGRESS_ENC_KEY` is set **after** keys or database passwords were already stored in plaintext, existing values are automatically re-encrypted on next use (transparent migration).
+- If `EGRESS_ENC_KEY` is **not set**, keys and stored database passwords remain in plaintext (backward-compatible).
 
 ```sh
 docker run --name gobastion --hostname goBastion -it -p 2222:22 \

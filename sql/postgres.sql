@@ -20,6 +20,21 @@ CREATE TABLE IF NOT EXISTS bastion_instances (
     updated_at  timestamptz
 );
 
+-- ── active_sessions ──────────────────────────────────────────────────────────
+-- Tracks authenticated sessions currently running on this bastion instance.
+-- Used for instance-wide max_concurrent_sessions enforcement.
+CREATE TABLE IF NOT EXISTS active_sessions (
+    session_id  text PRIMARY KEY,
+    instance_id text NOT NULL,
+    username    text NOT NULL,
+    pid         bigint NOT NULL,
+    kind        text NOT NULL,
+    created_at  timestamptz,
+    updated_at  timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_active_sessions_instance_id ON active_sessions (instance_id);
+CREATE INDEX IF NOT EXISTS idx_active_sessions_username ON active_sessions (username);
+
 -- ── users ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id              uuid PRIMARY KEY,
@@ -195,6 +210,97 @@ CREATE TABLE IF NOT EXISTS aliases (
 CREATE INDEX IF NOT EXISTS idx_aliases_user_id ON aliases (user_id);
 CREATE INDEX IF NOT EXISTS idx_aliases_group_id ON aliases (group_id);
 CREATE INDEX IF NOT EXISTS idx_aliases_deleted_at ON aliases (deleted_at);
+
+-- ── self_db_accesses ─────────────────────────────────────────────────────────
+-- Supported protocols in the bundled container image: mysql, postgres, redis.
+-- Passwords are encrypted when EGRESS_ENC_KEY is configured; otherwise they are stored as plaintext.
+CREATE TABLE IF NOT EXISTS self_db_accesses (
+    id              uuid PRIMARY KEY,
+    user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    host            text NOT NULL,
+    port            bigint NOT NULL,
+    protocol        text NOT NULL,
+    username        text NOT NULL,
+    password        text,
+    "database"      text,
+    comment         text,
+    allowed_from    text,
+    expires_at      timestamptz,
+    last_connection timestamptz,
+    created_at      timestamptz,
+    updated_at      timestamptz,
+    deleted_at      timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_self_db_accesses_user_id ON self_db_accesses (user_id);
+CREATE INDEX IF NOT EXISTS idx_self_db_accesses_deleted_at ON self_db_accesses (deleted_at);
+CREATE INDEX IF NOT EXISTS idx_self_db_access_lookup ON self_db_accesses (user_id, host, port, username, protocol) WHERE deleted_at IS NULL;
+
+-- ── group_db_accesses ────────────────────────────────────────────────────────
+-- Supported protocols in the bundled container image: mysql, postgres, redis.
+-- Passwords are encrypted when EGRESS_ENC_KEY is configured; otherwise they are stored as plaintext.
+CREATE TABLE IF NOT EXISTS group_db_accesses (
+    id              uuid PRIMARY KEY,
+    group_id        uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    host            text NOT NULL,
+    port            bigint NOT NULL,
+    protocol        text NOT NULL,
+    username        text NOT NULL,
+    password        text,
+    "database"      text,
+    comment         text,
+    allowed_from    text,
+    expires_at      timestamptz,
+    last_connection timestamptz,
+    created_at      timestamptz,
+    updated_at      timestamptz,
+    deleted_at      timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_group_db_accesses_group_id ON group_db_accesses (group_id);
+CREATE INDEX IF NOT EXISTS idx_group_db_accesses_deleted_at ON group_db_accesses (deleted_at);
+CREATE INDEX IF NOT EXISTS idx_group_db_access_lookup ON group_db_accesses (group_id, host, port, username, protocol) WHERE deleted_at IS NULL;
+
+-- ── group_guest_db_accesses ──────────────────────────────────────────────────
+-- Granular per-user, per-database guest access grants.
+-- A guest-role user can only connect to database targets listed in their grants.
+-- Supported protocols in the bundled container image: mysql, postgres, redis.
+-- Passwords are encrypted when EGRESS_ENC_KEY is configured; otherwise they are stored as plaintext.
+CREATE TABLE IF NOT EXISTS group_guest_db_accesses (
+    id           uuid PRIMARY KEY,
+    group_id     uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    host         text NOT NULL,
+    port         bigint NOT NULL,
+    protocol     text NOT NULL,
+    username     text NOT NULL,
+    password     text,
+    "database"   text,
+    comment      text,
+    allowed_from text,
+    expires_at   timestamptz,
+    created_at   timestamptz,
+    updated_at   timestamptz,
+    deleted_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_group_guest_db_accesses_group_id ON group_guest_db_accesses (group_id);
+CREATE INDEX IF NOT EXISTS idx_group_guest_db_accesses_user_id ON group_guest_db_accesses (user_id);
+CREATE INDEX IF NOT EXISTS idx_group_guest_db_accesses_deleted_at ON group_guest_db_accesses (deleted_at);
+
+-- ── database_aliases ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS database_aliases (
+    id           uuid PRIMARY KEY,
+    resolve_from text NOT NULL,
+    host         text NOT NULL,
+    port         bigint NOT NULL,
+    protocol     text NOT NULL,
+    user_id      uuid REFERENCES users(id) ON DELETE CASCADE,
+    group_id     uuid REFERENCES groups(id) ON DELETE CASCADE,
+    created_at   timestamptz,
+    updated_at   timestamptz,
+    deleted_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_database_aliases_user_id ON database_aliases (user_id);
+CREATE INDEX IF NOT EXISTS idx_database_aliases_group_id ON database_aliases (group_id);
+CREATE INDEX IF NOT EXISTS idx_database_aliases_deleted_at ON database_aliases (deleted_at);
 
 -- ── ssh_host_keys ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ssh_host_keys (

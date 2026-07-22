@@ -132,6 +132,99 @@ func GroupAccessToRow(a models.GroupAccess) AccessRow {
 	}
 }
 
+// DBAccessRow is a display-friendly representation of a SelfDBAccess or GroupDBAccess.
+type DBAccessRow struct {
+	ID             uuid.UUID
+	Username       string
+	Host           string
+	Port           int64
+	Protocol       string
+	Database       string
+	Comment        string
+	AllowedFrom    string
+	ExpiresAt      *time.Time
+	LastConnection time.Time
+	CreatedAt      time.Time
+}
+
+// SelfDBAccessToRow converts a models.SelfDBAccess to a DBAccessRow.
+func SelfDBAccessToRow(a models.SelfDBAccess) DBAccessRow {
+	return DBAccessRow{
+		ID:             a.ID,
+		Username:       a.Username,
+		Host:           a.Host,
+		Port:           a.Port,
+		Protocol:       a.Protocol,
+		Database:       a.Database,
+		Comment:        a.Comment,
+		AllowedFrom:    a.AllowedFrom,
+		ExpiresAt:      a.ExpiresAt,
+		LastConnection: a.LastConnection,
+		CreatedAt:      a.CreatedAt,
+	}
+}
+
+// GroupDBAccessToRow converts a models.GroupDBAccess to a DBAccessRow.
+func GroupDBAccessToRow(a models.GroupDBAccess) DBAccessRow {
+	return DBAccessRow{
+		ID:             a.ID,
+		Username:       a.Username,
+		Host:           a.Host,
+		Port:           a.Port,
+		Protocol:       a.Protocol,
+		Database:       a.Database,
+		Comment:        a.Comment,
+		AllowedFrom:    a.AllowedFrom,
+		ExpiresAt:      a.ExpiresAt,
+		LastConnection: a.LastConnection,
+		CreatedAt:      a.CreatedAt,
+	}
+}
+
+// RenderDBAccessTable renders a formatted table of DBAccessRow entries and returns body lines.
+func RenderDBAccessTable(rows []DBAccessRow) []string {
+	var buf bytes.Buffer
+	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tUsername\tHost\tPort\tProtocol\tDatabase\tComment\tFrom\tExpires\tLast Used\tCreated At")
+	for _, row := range rows {
+		lastUsed := "Never"
+		if !row.LastConnection.IsZero() {
+			lastUsed = row.LastConnection.Format("2006-01-02 15:04:05")
+		}
+		expires := "Never"
+		if row.ExpiresAt != nil {
+			if row.ExpiresAt.Before(time.Now()) {
+				expires = "EXPIRED(" + row.ExpiresAt.Format("2006-01-02") + ")"
+			} else {
+				expires = row.ExpiresAt.Format("2006-01-02")
+			}
+		}
+		allowedFrom := row.AllowedFrom
+		if allowedFrom == "" {
+			allowedFrom = "*"
+		}
+		database := row.Database
+		if database == "" {
+			database = "*"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			row.ID.String(),
+			row.Username,
+			row.Host,
+			row.Port,
+			row.Protocol,
+			database,
+			row.Comment,
+			allowedFrom,
+			expires,
+			lastUsed,
+			row.CreatedAt.Format("2006-01-02 15:04:05"),
+		)
+	}
+	_ = w.Flush()
+	return strings.Split(strings.TrimSpace(buf.String()), "\n")
+}
+
 // RenderAccessTable renders a formatted table of AccessRow entries and returns body lines.
 func RenderAccessTable(rows []AccessRow) []string {
 	var buf bytes.Buffer

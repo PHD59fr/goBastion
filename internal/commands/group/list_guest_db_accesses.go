@@ -13,29 +13,29 @@ import (
 	"gorm.io/gorm"
 )
 
-// ListGuestAccesses lists guest access grants for a user in a group.
-func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) error {
-	fs := flag.NewFlagSet("groupListGuestAccesses", flag.ContinueOnError)
+// ListGuestDBAccesses lists guest database access grants for a user in a group.
+func ListGuestDBAccesses(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupListGuestDBAccesses", flag.ContinueOnError)
 	var groupName, account string
 	fs.StringVar(&groupName, "group", "", "Group name")
-	fs.StringVar(&account, "account", "", "Username to list guest accesses for")
+	fs.StringVar(&account, "account", "", "Username to list guest DB accesses for")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
 	if err := fs.Parse(args); err != nil || strings.TrimSpace(groupName) == "" || strings.TrimSpace(account) == "" {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Guest Accesses",
+			Title:     "List Guest DB Accesses",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListGuestAccesses --group <group> --account <user>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListGuestDBAccesses --group <group> --account <user>"}}},
 		})
 		return err
 	}
 
-	if !currentUser.CanDo(db, "groupListGuestAccesses", groupName) {
+	if !currentUser.CanDo(db, "groupListGuestDBAccesses", groupName) {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Guest Accesses",
+			Title:     "List Guest DB Accesses",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list guest accesses for this group."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list guest DB accesses for this group."}}},
 		})
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
@@ -43,7 +43,7 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Guest Accesses",
+			Title:     "List Guest DB Accesses",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found.", groupName)}}},
 		})
@@ -53,7 +53,7 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 	var targetUser models.User
 	if err := db.Where("username = ?", account).First(&targetUser).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Guest Accesses",
+			Title:     "List Guest DB Accesses",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found.", account)}}},
 		})
@@ -64,29 +64,29 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 	if err := db.Where("user_id = ? AND group_id = ? AND deleted_at IS NULL", currentUser.ID, group.ID).First(&currentMembership).Error; err == nil {
 		if currentMembership.IsGuest() && !strings.EqualFold(account, currentUser.Username) {
 			console.DisplayBlock(console.ContentBlock{
-				Title:     "List Guest Accesses",
+				Title:     "List Guest DB Accesses",
 				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Guest users can only list their own guest accesses."}}},
+				Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Guest users can only list their own guest database accesses."}}},
 			})
-			return fmt.Errorf("guest user %s attempted to list accesses for %s", currentUser.Username, account)
+			return fmt.Errorf("guest user %s attempted to list db accesses for %s", currentUser.Username, account)
 		}
 	}
 
-	var grants []models.GroupGuestAccess
+	var grants []models.GroupGuestDBAccess
 	if err := db.Where("group_id = ? AND user_id = ? AND deleted_at IS NULL", group.ID, targetUser.ID).Find(&grants).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Guest Accesses",
+			Title:     "List Guest DB Accesses",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error fetching guest accesses."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error fetching guest DB accesses."}}},
 		})
 		return err
 	}
 
 	if len(grants) == 0 {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "List Guest Accesses",
+			Title:     "List Guest DB Accesses",
 			BlockType: "info",
-			Sections:  []console.SectionContent{{SubTitle: "No Guest Access", Body: []string{fmt.Sprintf("No guest access grants found for '%s' in group '%s'.", account, groupName)}}},
+			Sections:  []console.SectionContent{{SubTitle: "No Guest DB Access", Body: []string{fmt.Sprintf("No guest DB access grants found for '%s' in group '%s'.", account, groupName)}}},
 		})
 		return nil
 	}
@@ -102,16 +102,16 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 				expires = g.ExpiresAt.Format("2006-01-02")
 			}
 		}
-		proto := g.Protocol
-		if proto == "" {
-			proto = "ssh"
+		dbName := g.Database
+		if dbName == "" {
+			dbName = "*"
 		}
 		allowedFrom := g.AllowedFrom
 		if allowedFrom == "" {
 			allowedFrom = "*"
 		}
-		line := fmt.Sprintf("  %s  %s@%s:%d  proto=%s  from=%s  expires=%s",
-			g.ID.String()[:8], g.Username, g.Server, g.Port, proto, allowedFrom, expires)
+		line := fmt.Sprintf("  %s  %s@%s:%d  proto=%s  db=%s  from=%s  expires=%s",
+			g.ID.String()[:8], g.Username, g.Host, g.Port, g.Protocol, dbName, allowedFrom, expires)
 		if g.Comment != "" {
 			line += "  (" + g.Comment + ")"
 		}
@@ -119,10 +119,10 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 	}
 
 	console.DisplayBlock(console.ContentBlock{
-		Title:     "List Guest Accesses",
+		Title:     "List Guest DB Accesses",
 		BlockType: "success",
 		Sections: []console.SectionContent{{
-			SubTitle: fmt.Sprintf("Guest accesses for '%s' in group '%s'", account, groupName),
+			SubTitle: fmt.Sprintf("Guest DB accesses for '%s' in group '%s'", account, groupName),
 			Body:     bodyLines,
 		}},
 	})

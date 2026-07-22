@@ -2,8 +2,10 @@ package tty
 
 import (
 	"bytes"
+	"compress/gzip"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -102,6 +104,13 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 			if err != nil {
 				return nil
 			}
+			if err := normalizeLegacyTTYRecs(path, files); err != nil {
+				return err
+			}
+			files, err = os.ReadDir(path)
+			if err != nil {
+				return nil
+			}
 			// Build a set of gz filenames to deduplicate uncompressed counterparts
 			gzSet := make(map[string]bool)
 			for _, file := range files {
@@ -169,6 +178,11 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 					if isLastFile {
 						filePrefix = nextPrefix + "└── "
 					}
+					label := recordingLabel(file)
+					if label != "" {
+						output = append(output, filePrefix+fmt.Sprintf("[%s] %s", label, file))
+						continue
+					}
 					output = append(output, filePrefix+file)
 				}
 			}
@@ -184,4 +198,70 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 		},
 	})
 	return err
+}
+
+func normalizeLegacyTTYRecs(dir string, files []os.DirEntry) error {
+	gzSet := make(map[string]bool)
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".ttyrec.gz") {
+			gzSet[file.Name()] = true
+		}
+	}
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		name := file.Name()
+		if !strings.HasSuffix(name, ".ttyrec") || strings.HasSuffix(name, ".ttyrec.gz") {
+			continue
+		}
+		gzName := name + ".gz"
+		rawPath := filepath.Join(dir, name)
+		gzPath := filepath.Join(dir, gzName)
+		if gzSet[gzName] {
+			if err := os.Remove(rawPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove legacy ttyrec %s: %w", rawPath, err)
+			}
+			continue
+		}
+		if err := compressTTYRec(rawPath, gzPath); err != nil {
+			return err
+		}
+		gzSet[gzName] = true
+	}
+	return nil
+}
+
+func compressTTYRec(rawPath, gzPath string) error {
+	in, err := os.Open(rawPath)
+	if err != nil {
+		return fmt.Errorf("open legacy ttyrec %s: %w", rawPath, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.Create(gzPath)
+	if err != nil {
+		return fmt.Errorf("create gzip ttyrec %s: %w", gzPath, err)
+	}
+	gzw := gzip.NewWriter(out)
+	if _, err := io.Copy(gzw, in); err != nil {
+		_ = gzw.Close()
+		_ = out.Close()
+		_ = os.Remove(gzPath)
+		return fmt.Errorf("compress legacy ttyrec %s: %w", rawPath, err)
+	}
+	if err := gzw.Close(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(gzPath)
+		return fmt.Errorf("finalize gzip ttyrec %s: %w", gzPath, err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(gzPath)
+		return fmt.Errorf("close gzip ttyrec %s: %w", gzPath, err)
+	}
+	if err := os.Remove(rawPath); err != nil {
+		_ = os.Remove(gzPath)
+		return fmt.Errorf("remove legacy ttyrec %s: %w", rawPath, err)
+	}
+	return nil
 }

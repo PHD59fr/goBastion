@@ -13,28 +13,31 @@ import (
 	"gorm.io/gorm"
 )
 
-// AddAlias creates an alias for a group access target.
-func AddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
-	fs := flag.NewFlagSet("groupAddAlias", flag.ContinueOnError)
-	var groupName, alias, hostname string
+// AddDBAlias creates a database alias for a group.
+func AddDBAlias(db *gorm.DB, currentUser *models.User, args []string) error {
+	fs := flag.NewFlagSet("groupAddDBAlias", flag.ContinueOnError)
+	var groupName, alias, host, protocol string
+	var port int
 	fs.StringVar(&groupName, "group", "", "Group name")
 	fs.StringVar(&alias, "alias", "", "Alias")
-	fs.StringVar(&hostname, "hostname", "", "Host name")
+	fs.StringVar(&host, "host", "", "Host")
+	fs.IntVar(&port, "port", 0, "Port")
+	fs.StringVar(&protocol, "protocol", "", "Protocol")
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
-	if err := fs.Parse(args); err != nil || strings.TrimSpace(groupName) == "" || strings.TrimSpace(alias) == "" || strings.TrimSpace(hostname) == "" {
+	if err := fs.Parse(args); err != nil || strings.TrimSpace(groupName) == "" || strings.TrimSpace(alias) == "" || strings.TrimSpace(host) == "" || port == 0 || strings.TrimSpace(protocol) == "" {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
+			Title:     "Add Group DB Alias",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddAlias --group <group_name> --alias <alias> --hostname <host_name>"}}},
+			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddDBAlias --group <group_name> --alias <alias> --host <host> --port <port> --protocol <protocol>"}}},
 		})
 		return err
 	}
 
-	if !currentUser.CanDo(db, "groupAddAlias", groupName) {
+	if !currentUser.CanDo(db, "groupAddDBAlias", groupName) {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
+			Title:     "Add Group DB Alias",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add aliases for this group."}}},
 		})
@@ -44,41 +47,43 @@ func AddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	var group models.Group
 	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
+			Title:     "Add Group DB Alias",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 		})
 		return err
 	}
 
-	if !validation.IsValidHost(hostname) {
+	if !validation.IsValidDBProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
+			Title:     "Add Group DB Alias",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Invalid Hostname", Body: []string{"Hostname contains invalid characters."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol contains invalid characters."}}},
 		})
 		return nil
 	}
-	var existing models.Aliases
+	var existing models.DatabaseAlias
 	if err := db.Where("LOWER(resolve_from) = ? AND group_id = ? AND deleted_at IS NULL", strings.ToLower(alias), group.ID).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
+			Title:     "Add Group DB Alias",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Duplicate", Body: []string{"An alias with this name already exists for this group."}}},
 		})
 		return nil
 	}
 
-	newHost := models.Aliases{
+	newAlias := models.DatabaseAlias{
 		ResolveFrom: alias,
-		Host:        hostname,
+		Host:        host,
+		Port:        int64(port),
+		Protocol:    protocol,
 		GroupID:     &group.ID,
 		UserID:      nil,
 	}
 
-	if err := db.Create(&newHost).Error; err != nil {
+	if err := db.Create(&newAlias).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Alias",
+			Title:     "Add Group DB Alias",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error adding alias."}}},
 		})
@@ -86,7 +91,7 @@ func AddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 	}
 
 	console.DisplayBlock(console.ContentBlock{
-		Title:     "Add Group Alias",
+		Title:     "Add Group DB Alias",
 		BlockType: "success",
 		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{"Alias added successfully."}}},
 	})

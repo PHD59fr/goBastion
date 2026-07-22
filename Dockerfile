@@ -24,7 +24,7 @@ FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc
 
 ARG TTYREC_REF=a1da2fe7c8f33748770768533a33ee7a9988e92c
 
-RUN apk add --no-cache build-base autoconf automake libtool git
+RUN apk add --no-cache build-base autoconf automake libtool git upx
 
 RUN git init /tmp/ovh-ttyrec && \
     cd /tmp/ovh-ttyrec && \
@@ -32,13 +32,32 @@ RUN git init /tmp/ovh-ttyrec && \
     git fetch --depth 1 origin "$TTYREC_REF" && \
     git checkout --detach FETCH_HEAD && \
     ./configure && \
-    make && make install
+    make && make install && \
+    strip /usr/local/bin/ttyrec /usr/local/bin/ttyplay && \
+    (upx --best --lzma /usr/local/bin/ttyrec /usr/local/bin/ttyplay || \
+     upx --best /usr/local/bin/ttyrec /usr/local/bin/ttyplay || \
+     upx /usr/local/bin/ttyrec /usr/local/bin/ttyplay || true)
 
-# ── Final image ──────────────────────────────────────────────────────────────
-FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+# ── Runtime common image ─────────────────────────────────────────────────────
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runtime-common
 
-RUN apk add --no-cache bash gzip openssh sudo jq mosh su-exec && \
-    addgroup -S gobastion
+RUN apk add --no-cache \
+      bash \
+      gzip \
+      jq \
+      mariadb-client \
+      openssh \
+      postgresql-client \
+      redis \
+      su-exec \
+      sudo && \
+    addgroup -S gobastion && \
+    if ! command -v mysql >/dev/null 2>&1 && command -v mariadb >/dev/null 2>&1; then \
+      ln -s /usr/bin/mariadb /usr/bin/mysql; \
+    fi && \
+    command -v mysql >/dev/null 2>&1 && \
+    command -v psql >/dev/null 2>&1 && \
+    command -v redis-cli >/dev/null 2>&1
 
 RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
@@ -80,3 +99,11 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 22
 
 CMD ["/entrypoint.sh"]
+
+# ── Full image (includes mosh) ───────────────────────────────────────────────
+FROM runtime-common AS final-full
+
+RUN apk add --no-cache mosh && command -v mosh-server >/dev/null 2>&1
+
+# ── Default image (lean, no mosh) ────────────────────────────────────────────
+FROM runtime-common AS final

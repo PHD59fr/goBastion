@@ -11,46 +11,49 @@ import (
 	"gorm.io/gorm"
 )
 
-// AddAlias creates an alias for a personal access target.
-func AddAlias(db *gorm.DB, user *models.User, args []string) error {
-	fs := flag.NewFlagSet("selfAddAlias", flag.ContinueOnError)
-	var alias, hostname string
+// AddDBAlias creates a personal database alias.
+func AddDBAlias(db *gorm.DB, user *models.User, args []string) error {
+	fs := flag.NewFlagSet("selfAddDBAlias", flag.ContinueOnError)
+	var alias, host, protocol string
+	var port int
 	fs.StringVar(&alias, "alias", "", "Alias")
-	fs.StringVar(&hostname, "hostname", "", "Host name")
+	fs.StringVar(&host, "host", "", "Host")
+	fs.IntVar(&port, "port", 0, "Port")
+	fs.StringVar(&protocol, "protocol", "", "Protocol")
 	if err := fs.Parse(args); err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Personal Alias",
+			Title:     "Add Personal DB Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfAddAlias --alias <alias> --hostname <host_name>"}},
+				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfAddDBAlias --alias <alias> --host <host> --port <port> --protocol <protocol>"}},
 			},
 		})
 		return err
 	}
-	if strings.TrimSpace(alias) == "" || strings.TrimSpace(hostname) == "" {
+	if strings.TrimSpace(alias) == "" || strings.TrimSpace(host) == "" || port == 0 || strings.TrimSpace(protocol) == "" {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Personal Alias",
+			Title:     "Add Personal DB Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"selfAddAlias --alias <alias> --hostname <host_name>"}},
+				{SubTitle: "Usage", Body: []string{"selfAddDBAlias --alias <alias> --host <host> --port <port> --protocol <protocol>"}},
 			},
 		})
 		return nil
 	}
-	if !validation.IsValidHost(hostname) {
+	if !validation.IsValidDBProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Personal Alias",
+			Title:     "Add Personal DB Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Invalid Hostname", Body: []string{"Hostname contains invalid characters."}},
+				{SubTitle: "Invalid Protocol", Body: []string{"Protocol contains invalid characters."}},
 			},
 		})
 		return nil
 	}
-	var existing models.Aliases
+	var existing models.DatabaseAlias
 	if err := db.Where("LOWER(resolve_from) = ? AND user_id = ? AND deleted_at IS NULL", strings.ToLower(alias), user.ID).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Personal Alias",
+			Title:     "Add Personal DB Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
 				{SubTitle: "Duplicate", Body: []string{"An alias with this name already exists."}},
@@ -58,15 +61,16 @@ func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return nil
 	}
-	newHost := models.Aliases{
+	newAlias := models.DatabaseAlias{
 		ResolveFrom: alias,
-		Host:        hostname,
+		Host:        host,
+		Port:        int64(port),
+		Protocol:    protocol,
 		UserID:      &user.ID,
-		GroupID:     nil,
 	}
-	if err := db.Create(&newHost).Error; err != nil {
+	if err := db.Create(&newAlias).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Personal Alias",
+			Title:     "Add Personal DB Alias",
 			BlockType: "error",
 			Sections: []console.SectionContent{
 				{SubTitle: "Error", Body: []string{"Failed to add alias. Please contact admin."}},
@@ -75,7 +79,7 @@ func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 		return err
 	}
 	console.DisplayBlock(console.ContentBlock{
-		Title:     "Add Personal Alias",
+		Title:     "Add Personal DB Alias",
 		BlockType: "success",
 		Sections: []console.SectionContent{
 			{SubTitle: "Success", Body: []string{"Alias added successfully."}},

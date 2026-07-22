@@ -3,6 +3,7 @@ package sshConnector
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -105,6 +106,9 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		sshCmd.Stdout = os.Stdout
 		sshCmd.Stderr = os.Stderr
 		if cmdErr := sshCmd.Run(); cmdErr != nil {
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
+			}
 			switch cmdErr.Error() {
 			case "exit status 100", "exit status 130", "signal: interrupt":
 				return nil
@@ -122,6 +126,9 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		sshCmd.Stdout = os.Stdout
 		sshCmd.Stderr = os.Stderr
 		if cmdErr := sshCmd.Run(); cmdErr != nil {
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
+			}
 			switch cmdErr.Error() {
 			case "exit status 100", "exit status 130", "signal: interrupt":
 				return nil
@@ -276,6 +283,9 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	tmpGzPath = ""
 
 	if cmdErr != nil {
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("⛔ Session ended: maximum session duration reached")
+		}
 		switch cmdErr.Error() {
 		case "exit status 100", "exit status 130", "signal: interrupt":
 			return nil

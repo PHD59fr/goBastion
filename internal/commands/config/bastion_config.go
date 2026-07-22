@@ -23,15 +23,15 @@ import (
 // than the real terminal makes the full-width borders wrap and scramble.
 const (
 	uiWidth  = 62
-	contentW = uiWidth - 2     // 60: space inside the left border
-	scrollW  = 1               // scrollbar column
+	contentW = uiWidth - 2        // 60: space inside the left border
+	scrollW  = 1                  // scrollbar column
 	textW    = contentW - scrollW // 59: text area reserved for content
 )
 
 // ANSI colors.
 const (
-	cFrame = "\033[36m"
-	cReset = "\033[0m"
+	cFrame  = "\033[36m"
+	cReset  = "\033[0m"
 	cYellow = "\033[33m"
 	cWhite  = "\033[37m"
 	cGreen  = "\033[32m"
@@ -48,11 +48,12 @@ type category struct {
 }
 
 var categories = []category{
-	{"Core", []string{"ssh", "mfa", "totp", "proxy", "sync", "account", "db_export", "security"}},
-	{"Transports", []string{"sftp", "scp", "rsync", "mosh", "realms", "pivs", "guest_access", "interactive"}},
+	{"Access & Login", []string{"ssh", "mfa", "totp", "account", "security"}},
+	{"Connectivity", []string{"proxy", "interactive", "sftp", "scp", "rsync", "mosh", "realms"}},
+	{"Features", []string{"database", "guest_access", "pivs", "groups", "alias_self", "alias_group", "self_ingress", "egress_key", "known_hosts", "self_mfa", "self_password", "backup_codes", "tty_play", "restricted_grants", "restricted_cmds"}},
 	{"Modes", []string{"readonly", "maintenance", "require_mfa", "force_osh_only"}},
-	{"Recording & Sessions", []string{"ttyrec", "session"}},
-	{"Features", []string{"self_ingress", "egress_key", "tty_play", "alias_self", "alias_group", "groups", "restricted_grants", "restricted_cmds", "known_hosts", "self_mfa", "self_password", "backup_codes"}},
+	{"Recording", []string{"ttyrec"}},
+	{"Sessions", []string{"session"}},
 	{"Connection Policy", []string{"deny_root_target"}},
 }
 
@@ -254,7 +255,7 @@ func buildDisplayEntries(cat string) []displayEntry {
 		if e.Section != currentSection {
 			result = append(result, displayEntry{
 				section:   e.Section,
-				label:     fmt.Sprintf("[%s]", e.Section),
+				label:     displaySectionLabel(e.Section),
 				isSection: true,
 			})
 			currentSection = e.Section
@@ -270,6 +271,71 @@ func buildDisplayEntries(cat string) []displayEntry {
 		})
 	}
 	return result
+}
+
+func displaySectionLabel(section string) string {
+	switch section {
+	case "ssh":
+		return "[ssh egress]"
+	case "mfa":
+		return "[login MFA policy]"
+	case "totp":
+		return "[TOTP settings]"
+	case "account":
+		return "[account lifecycle]"
+	case "security":
+		return "[security defaults]"
+	case "proxy":
+		return "[network timeouts]"
+	case "interactive":
+		return "[interactive shell]"
+	case "sftp":
+		return "[SFTP]"
+	case "scp":
+		return "[SCP]"
+	case "rsync":
+		return "[rsync]"
+	case "mosh":
+		return "[mosh]"
+	case "realms":
+		return "[trusted realms]"
+	case "database":
+		return "[database access]"
+	case "guest_access":
+		return "[guest access]"
+	case "pivs":
+		return "[PIV / hardware keys]"
+	case "groups":
+		return "[group management]"
+	case "alias_self":
+		return "[personal aliases]"
+	case "alias_group":
+		return "[group aliases]"
+	case "self_ingress":
+		return "[self-service ingress]"
+	case "egress_key":
+		return "[egress keys]"
+	case "known_hosts":
+		return "[known hosts]"
+	case "self_mfa":
+		return "[self-service MFA]"
+	case "self_password":
+		return "[password second factor]"
+	case "backup_codes":
+		return "[backup codes]"
+	case "tty_play":
+		return "[TTY playback]"
+	case "restricted_grants":
+		return "[restricted grants]"
+	case "restricted_cmds":
+		return "[restricted commands]"
+	case "ttyrec":
+		return "[TTY recording]"
+	case "session":
+		return "[session] (instance-wide)"
+	default:
+		return fmt.Sprintf("[%s]", section)
+	}
 }
 
 // modifiedInCategory counts entries marked as modified within a category.
@@ -692,10 +758,19 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 		return fmt.Errorf("invalid value: %v", err)
 	}
 
-	// Guard: idle_timeout must be at least 30s (0 disables it).
-	if key == "session.idle_timeout" {
+	// Guard: session time limits must be at least 30s (0 disables/unlimits them).
+	switch key {
+	case "session.idle_timeout":
 		if d, perr := parseDurationInput(newValue); perr == nil && d > 0 && d < 30*time.Second {
 			return fmt.Errorf("idle_timeout must be at least 30s (use 0 to disable)")
+		}
+	case "session.max_session_duration":
+		if d, perr := parseDurationInput(newValue); perr == nil && d > 0 && d < 30*time.Second {
+			return fmt.Errorf("max_session_duration must be at least 30s (use 0 for unlimited)")
+		}
+	case "ttyrec.retention_days":
+		if n, perr := strconv.ParseInt(strings.TrimSpace(newValue), 10, 64); perr == nil && n < 0 {
+			return fmt.Errorf("retention_days must be 0 or greater (use 0 to keep forever)")
 		}
 	}
 
@@ -712,8 +787,8 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 	if err := json.Unmarshal(patchedJSON, patchedCfg); err != nil {
 		return err
 	}
-	patchedCfg.Database.Driver = cfg.Database.Driver
-	patchedCfg.Database.DSN = cfg.Database.DSN
+	patchedCfg.InternalDB.Driver = cfg.InternalDB.Driver
+	patchedCfg.InternalDB.DSN = cfg.InternalDB.DSN
 
 	return config.SaveConfig(db, patchedCfg)
 }
@@ -850,7 +925,7 @@ func showNonInteractive(db *gorm.DB) error {
 				if currentSection != "" {
 					lines = append(lines, "")
 				}
-				lines = append(lines, fmt.Sprintf("  [%s]", e.section))
+				lines = append(lines, fmt.Sprintf("  %s", e.label))
 				currentSection = e.section
 				continue
 			}

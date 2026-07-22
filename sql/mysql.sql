@@ -17,6 +17,21 @@ CREATE TABLE IF NOT EXISTS bastion_instances (
     updated_at  datetime
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ── active_sessions ──────────────────────────────────────────────────────────
+-- Tracks authenticated sessions currently running on this bastion instance.
+-- Used for instance-wide max_concurrent_sessions enforcement.
+CREATE TABLE IF NOT EXISTS active_sessions (
+    session_id  varchar(36) NOT NULL PRIMARY KEY,
+    instance_id varchar(191) NOT NULL,
+    username    longtext NOT NULL,
+    pid         bigint NOT NULL,
+    kind        longtext NOT NULL,
+    created_at  datetime,
+    updated_at  datetime,
+    KEY idx_active_sessions_instance_id (instance_id),
+    KEY idx_active_sessions_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ── users ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id              varchar(36) NOT NULL PRIMARY KEY,
@@ -202,6 +217,103 @@ CREATE TABLE IF NOT EXISTS aliases (
     KEY idx_aliases_deleted_at (deleted_at),
     CONSTRAINT fk_aliases_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_aliases_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── self_db_accesses ─────────────────────────────────────────────────────────
+-- Supported protocols in the bundled container image: mysql, postgres, redis.
+-- Passwords are encrypted when EGRESS_ENC_KEY is configured; otherwise they are stored as plaintext.
+CREATE TABLE IF NOT EXISTS self_db_accesses (
+    id              varchar(36) NOT NULL PRIMARY KEY,
+    user_id         varchar(36) NOT NULL,
+    host            longtext NOT NULL,
+    port            bigint NOT NULL,
+    protocol        longtext NOT NULL,
+    username        longtext NOT NULL,
+    password        longtext,
+    `database`      longtext,
+    comment         longtext,
+    allowed_from    longtext,
+    expires_at      datetime,
+    last_connection datetime,
+    created_at      datetime,
+    updated_at      datetime,
+    deleted_at      datetime,
+    KEY idx_self_db_accesses_user_id (user_id),
+    KEY idx_self_db_accesses_deleted_at (deleted_at),
+    KEY idx_self_db_access_lookup (user_id),
+    CONSTRAINT fk_self_db_accesses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── group_db_accesses ────────────────────────────────────────────────────────
+-- Supported protocols in the bundled container image: mysql, postgres, redis.
+-- Passwords are encrypted when EGRESS_ENC_KEY is configured; otherwise they are stored as plaintext.
+CREATE TABLE IF NOT EXISTS group_db_accesses (
+    id              varchar(36) NOT NULL PRIMARY KEY,
+    group_id        varchar(36) NOT NULL,
+    host            longtext NOT NULL,
+    port            bigint NOT NULL,
+    protocol        longtext NOT NULL,
+    username        longtext NOT NULL,
+    password        longtext,
+    `database`      longtext,
+    comment         longtext,
+    allowed_from    longtext,
+    expires_at      datetime,
+    last_connection datetime,
+    created_at      datetime,
+    updated_at      datetime,
+    deleted_at      datetime,
+    KEY idx_group_db_accesses_group_id (group_id),
+    KEY idx_group_db_accesses_deleted_at (deleted_at),
+    KEY idx_group_db_access_lookup (group_id),
+    CONSTRAINT fk_group_db_accesses_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── group_guest_db_accesses ──────────────────────────────────────────────────
+-- Granular per-user, per-database guest access grants.
+-- A guest-role user can only connect to database targets listed in their grants.
+-- Supported protocols in the bundled container image: mysql, postgres, redis.
+-- Passwords are encrypted when EGRESS_ENC_KEY is configured; otherwise they are stored as plaintext.
+CREATE TABLE IF NOT EXISTS group_guest_db_accesses (
+    id           varchar(36) NOT NULL PRIMARY KEY,
+    group_id     varchar(36) NOT NULL,
+    user_id      varchar(36) NOT NULL,
+    host         longtext NOT NULL,
+    port         bigint NOT NULL,
+    protocol     longtext NOT NULL,
+    username     longtext NOT NULL,
+    password     longtext,
+    `database`   longtext,
+    comment      longtext,
+    allowed_from longtext,
+    expires_at   datetime,
+    created_at   datetime,
+    updated_at   datetime,
+    deleted_at   datetime,
+    KEY idx_group_guest_db_accesses_group_id (group_id),
+    KEY idx_group_guest_db_accesses_user_id (user_id),
+    KEY idx_group_guest_db_accesses_deleted_at (deleted_at),
+    CONSTRAINT fk_group_guest_db_accesses_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
+    CONSTRAINT fk_group_guest_db_accesses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── database_aliases ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS database_aliases (
+    id           varchar(36) NOT NULL PRIMARY KEY,
+    resolve_from longtext NOT NULL,
+    host         longtext NOT NULL,
+    port         bigint NOT NULL,
+    protocol     longtext NOT NULL,
+    user_id      varchar(36),
+    group_id     varchar(36),
+    created_at   datetime,
+    updated_at   datetime,
+    deleted_at   datetime,
+    KEY idx_database_aliases_user_id (user_id),
+    KEY idx_database_aliases_group_id (group_id),
+    KEY idx_database_aliases_deleted_at (deleted_at),
+    CONSTRAINT fk_database_aliases_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_database_aliases_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ── ssh_host_keys ────────────────────────────────────────────────────────────
