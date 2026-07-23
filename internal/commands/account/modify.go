@@ -40,7 +40,7 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountModify --user <username> [--sysrole <admin|user>] [--oshOnly <true|false>] [--superOwner <true|false>]"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "accountModify", username) {
@@ -49,7 +49,7 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to modify this account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	newRole = strings.ToLower(strings.TrimSpace(newRole))
@@ -59,7 +59,7 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid System Role", Body: []string{"System role must be 'admin' or 'user'."}}},
 		})
-		return nil
+		return fmt.Errorf("invalid system role: %s", newRole)
 	}
 
 	var u models.User
@@ -100,7 +100,7 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 				BlockType: "error",
 				Sections:  []console.SectionContent{{SubTitle: "Invalid oshOnly", Body: []string{"--oshOnly must be true or false"}}},
 			})
-			return nil
+			return err
 		}
 		u.OSHOnly = v
 	}
@@ -112,7 +112,7 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 				BlockType: "error",
 				Sections:  []console.SectionContent{{SubTitle: "Invalid superOwner", Body: []string{"--superOwner must be true or false"}}},
 			})
-			return nil
+			return err
 		}
 		u.SuperOwner = v
 	}

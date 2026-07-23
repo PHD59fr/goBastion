@@ -30,11 +30,11 @@ func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
-	if !currentUser.CanDo(db, "groupInfo", "") {
+	if !currentUser.CanDo(db, "groupInfo", groupName) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Group Info",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view group information."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: models.DescribeVisibilityDenial(models.VisibilityDeniedGroupPolicy, groupName, "")}},
 		})
 		return fmt.Errorf("access denied for user %s", currentUser.Username)
 	}

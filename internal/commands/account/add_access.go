@@ -46,7 +46,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountAddAccess --user <username> --server <host> --username <user> --port <port> [--comment <comment>] [--from <CIDRs>] [--ttl <days>] [--protocol ssh|scpupload|scpdownload|sftp|rsync]"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "accountAddAccess", targetUser) {
@@ -55,7 +55,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add personal access for this user."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	if !validation.IsValidProtocol(protocol) {
@@ -64,7 +64,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid protocol: %s", protocol)
 	}
 	if !validation.IsValidPort(port) {
 		console.DisplayBlock(console.ContentBlock{
@@ -72,7 +72,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Port", Body: []string{"Port must be between 1 and 65535"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid port: %d", port)
 	}
 	if !validation.IsValidCIDRs(allowedFrom) {
 		console.DisplayBlock(console.ContentBlock{
@@ -80,7 +80,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDR notation (e.g. 10.0.0.0/8,192.168.1.0/24)"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid CIDRs: %s", allowedFrom)
 	}
 
 	var user models.User

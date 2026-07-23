@@ -2,7 +2,10 @@ package db
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
+
+	"goBastion/internal/config"
 )
 
 func TestInit_SQLite_InMemory(t *testing.T) {
@@ -60,5 +63,27 @@ func TestInit_Postgres_MissingDSN(t *testing.T) {
 	_, err := Init(nil, true)
 	if err == nil {
 		t.Error("expected error when DB_DRIVER=postgres and DB_DSN is empty")
+	}
+}
+
+func TestResolveDBConfig_UsesDBConfForMissingDSN(t *testing.T) {
+	t.Setenv("DB_DRIVER", "postgres")
+	_ = os.Unsetenv("DB_DSN")
+
+	tmpDir := t.TempDir()
+	dbConf := filepath.Join(tmpDir, "db.conf")
+	if err := os.WriteFile(dbConf, []byte("DB_DRIVER=mysql\nDB_DSN=host=db.example user=test\n"), 0600); err != nil {
+		t.Fatalf("write db.conf: %v", err)
+	}
+
+	cfg := config.Get()
+	cfg.Paths.DbConfFile = dbConf
+
+	driver, dsn := resolveDBConfig()
+	if driver != "postgres" {
+		t.Fatalf("driver = %q, want postgres", driver)
+	}
+	if dsn != "host=db.example user=test" {
+		t.Fatalf("dsn = %q, want fallback from db.conf", dsn)
 	}
 }

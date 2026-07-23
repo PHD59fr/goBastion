@@ -169,7 +169,7 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 					log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
 					return fmt.Errorf("⛔ MFA required but no TOTP secret configured")
 				}
-				if !promptTOTP(user, log) {
+				if !promptTOTP(db, &user, log) {
 					return fmt.Errorf("⛔ MFA validation failed")
 				}
 			}
@@ -256,7 +256,7 @@ func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (s
 func resolveAccessUsername(username string) (string, bool) {
 	switch {
 	case username == "*":
-		return "root", true
+		return config.Get().Security.DefaultWildcardUsername, true
 	case username != "":
 		return username, true
 	default:
@@ -581,11 +581,11 @@ func detectProtocol(remoteCmd string) string {
 	}
 }
 
-// promptTOTP reads a TOTP code from stdin and verifies it.
+// promptTOTP reads a TOTP code or backup code from stdin and verifies it.
 // Used for JIT MFA enforcement at connection time.
-func promptTOTP(user models.User, log *slog.Logger) bool {
+func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
-		fmt.Printf("🔐 This group requires MFA. Enter TOTP code [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
+		fmt.Printf("🔐 This group requires MFA. Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
 		reader := bufio.NewReader(os.Stdin)
 		code, err := reader.ReadString('\n')
 		if err != nil {
@@ -593,17 +593,33 @@ func promptTOTP(user models.User, log *slog.Logger) bool {
 			fmt.Fprintln(os.Stderr, "⛔ Could not read TOTP code.")
 			return false
 		}
-		if totpUtil.Verify(user.TOTPSecret, strings.TrimSpace(code)) {
+		code = strings.TrimSpace(code)
+		if totpUtil.Verify(user.TOTPSecret, code) {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
 			return true
 		}
+		if user.BackupCodes != "" {
+			matched, updatedJSON, err := totpUtil.VerifyAndConsumeBackupCode(code, user.BackupCodes)
+			if err != nil {
+				log.Warn("mfa_error", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("error", err.Error()))
+			} else if matched {
+				if dbErr := db.Model(user).Update("backup_codes", updatedJSON).Error; dbErr != nil {
+					log.Error("mfa_backup_code_db_error", slog.String("user", user.Username), slog.String("error", dbErr.Error()))
+					fmt.Println("⛔ Internal error saving backup code. Contact your admin.")
+					return false
+				}
+				user.BackupCodes = updatedJSON
+				log.Info("mfa_success", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username))
+				return true
+			}
+		}
 		if attempt < config.Get().MFA.MaxAttempts {
-			fmt.Println("⛔ Invalid TOTP code. Try again.")
+			fmt.Println("⛔ Invalid TOTP or backup code. Try again.")
 			time.Sleep(time.Duration(attempt) * time.Duration(config.Get().MFA.BackoffBase)) // linear backoff
 		}
 	}
 	log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
-	fmt.Println("⛔ Invalid TOTP code. Access denied.")
+	fmt.Println("⛔ Invalid TOTP or backup code. Access denied.")
 	return false
 }
 
@@ -924,15 +940,11 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 		return err
 	}
 
-	// JIT MFA enforcement for passthrough flows when the selected group policy requires it.
-	if access.MFARequired && !user.TOTPEnabled {
-		if user.TOTPSecret == "" {
-			log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
-			return fmt.Errorf("⛔ This access requires MFA but no TOTP secret is configured. Run selfSetupTOTP first")
-		}
-		if !promptTOTP(user, log) {
-			return fmt.Errorf("⛔ Access denied: MFA validation failed")
-		}
+	// Raw TCP proxy is an opaque byte stream; it cannot safely carry an MFA
+	// prompt without corrupting the protocol spoken by the client.
+	if access.MFARequired {
+		log.Warn("mfa_unavailable", slog.String("event", "mfa_totp"), slog.String("reason", "tcp_proxy_jit_mfa"), slog.String("to", access.Source))
+		return fmt.Errorf("⛔ TCP proxy (-W) is unavailable when this access requires JIT MFA. Use an interactive SSH/SFTP flow instead")
 	}
 
 	log.Info("tcp_proxy")
@@ -949,14 +961,9 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 // proxying the sftp subsystem — no client key on the target needed.
 //
 // Invoked when SSH_ORIGINAL_COMMAND = "sftp-session user@host:port".
-// Client config example:
-//
-// Host myserver
-//
-//	User root
-//	ProxyCommand ssh -p 2222 -- user@bastion "sftp-session root@%h:%p"
-//	StrictHostKeyChecking no
-//	UserKnownHostsFile /dev/null
+// The client must pin the stable SFTP proxy host key in known_hosts for the
+// SSH host alias used on the client side (e.g. "my-server"), not for the
+// bastion hostname used inside ProxyCommand.
 func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
 	sshUser, sshHost, sshPort, _, err := parseSSHCommand(params)
 	if err != nil {
@@ -1004,7 +1011,7 @@ func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 			log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
 			return fmt.Errorf("⛔ This access requires MFA but no TOTP secret is configured. Run selfSetupTOTP first")
 		}
-		if !promptTOTP(user, log) {
+		if !promptTOTP(db, &user, log) {
 			return fmt.Errorf("⛔ Access denied: MFA validation failed")
 		}
 	}
@@ -1015,7 +1022,7 @@ func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 	}
 
 	log.Info("sftp_session", slog.String("to", access.Source))
-	if err = sftpProxy.Proxy(access); err != nil {
+	if err = sftpProxy.Proxy(db, access); err != nil {
 		log.Error("sftp_session", slog.String("error", err.Error()))
 		return err
 	}

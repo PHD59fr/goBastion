@@ -30,7 +30,10 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 			Title: "Set Account Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Usage", Body: []string{"accountSetPassword --user <username> [--clear]"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "accountSetPassword", targetUser) {
@@ -38,7 +41,7 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 			Title: "Set Account Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Only admins can set password MFA for other users."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var user models.User
@@ -77,7 +80,7 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 			Title: "Set Account Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
 		})
-		return nil
+		return fmt.Errorf("password must be at least 8 characters")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

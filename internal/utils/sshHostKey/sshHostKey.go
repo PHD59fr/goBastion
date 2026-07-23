@@ -1,8 +1,13 @@
 package sshHostKey
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"os"
 	"os/exec"
@@ -10,8 +15,11 @@ import (
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 
+	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 )
+
+const sftpProxyHostKeyType = "sftp-proxy-ed25519"
 
 // sshKeysExist returns true if the SSH host key files are present on disk.
 func sshKeysExist() bool {
@@ -47,6 +55,71 @@ func GenerateSSHHostKeys(db *gorm.DB, force bool) error {
 	}
 
 	return saveSSHHostKeys(db)
+}
+
+// EnsureSFTPProxyHostKey creates or loads the stable host key used by the
+// in-band sftp-session proxy server. The key is persisted in the same table as
+// the bastion SSH host keys, but under a dedicated type.
+func EnsureSFTPProxyHostKey(db *gorm.DB, force bool) (ssh.Signer, string, string, error) {
+	key, err := loadOrCreateSFTPProxyHostKey(db, force)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	signer, err := ssh.ParsePrivateKey(key.PrivateKey)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse persisted SFTP proxy host key: %w", err)
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(key.PublicKey)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse persisted SFTP proxy public key: %w", err)
+	}
+	publicKey := strings.TrimSpace(string(key.PublicKey))
+	fingerprint := ssh.FingerprintSHA256(pub)
+	return signer, publicKey, fingerprint, nil
+}
+
+func loadOrCreateSFTPProxyHostKey(db *gorm.DB, force bool) (*models.SshHostKey, error) {
+	var key models.SshHostKey
+	err := db.Where("type = ?", sftpProxyHostKeyType).First(&key).Error
+	switch {
+	case err == nil && !force:
+		return &key, nil
+	case err != nil && err != gorm.ErrRecordNotFound:
+		return nil, fmt.Errorf("load SFTP proxy host key: %w", err)
+	}
+
+	pub, priv, err := generateSFTPProxyHostKeyMaterial()
+	if err != nil {
+		return nil, err
+	}
+	key = models.SshHostKey{
+		Type:       sftpProxyHostKeyType,
+		PrivateKey: priv,
+		PublicKey:  pub,
+	}
+	if err := db.Save(&key).Error; err != nil {
+		return nil, fmt.Errorf("save SFTP proxy host key: %w", err)
+	}
+	return &key, nil
+}
+
+func generateSFTPProxyHostKeyMaterial() ([]byte, []byte, error) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate ed25519 host key: %w", err)
+	}
+
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal private host key: %w", err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})
+	pub, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal public host key: %w", err)
+	}
+	return ssh.MarshalAuthorizedKey(pub), privatePEM, nil
 }
 
 // saveSSHHostKeys reads generated key files and stores them in the database.
@@ -101,7 +174,7 @@ func removeSSHHostKeys() error {
 // RestoreSSHHostKeys writes SSH host keys from the database back to disk.
 func RestoreSSHHostKeys(db *gorm.DB) error {
 	var keys []models.SshHostKey
-	result := db.Find(&keys)
+	result := db.Where("type != ?", sftpProxyHostKeyType).Find(&keys)
 
 	if result.Error != nil {
 		return result.Error

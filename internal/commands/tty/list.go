@@ -81,12 +81,12 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session List",
-			BlockType: "error",
+			BlockType: "info",
 			Sections: []console.SectionContent{
 				{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User %s hasn't recorded any sessions.", username)}},
 			},
 		})
-		return err
+		return nil
 	}
 
 	var output []string
@@ -101,13 +101,6 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 			}
 			filesByDate := make(map[string][]string)
 			files, err := os.ReadDir(path)
-			if err != nil {
-				return nil
-			}
-			if err := normalizeLegacyTTYRecs(path, files); err != nil {
-				return err
-			}
-			files, err = os.ReadDir(path)
 			if err != nil {
 				return nil
 			}

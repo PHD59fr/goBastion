@@ -35,9 +35,17 @@ func ListGuestDBAccesses(db *gorm.DB, currentUser *models.User, args []string) e
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "List Guest DB Accesses",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list guest DB accesses for this group."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: models.DescribeVisibilityDenial(models.VisibilityDeniedGroupPolicy, groupName, "")}},
 		})
 		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+	if !currentUser.CanInspectGuestGrantTarget(db, groupName, account) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "List Guest DB Accesses",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: models.DescribeVisibilityDenial(models.VisibilityDeniedGuestOwnOnly, groupName, account)}},
+		})
+		return fmt.Errorf("access denied for %s on guest db grants of %s in group %s", currentUser.Username, account, groupName)
 	}
 
 	var group models.Group
@@ -58,18 +66,6 @@ func ListGuestDBAccesses(db *gorm.DB, currentUser *models.User, args []string) e
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found.", account)}}},
 		})
 		return err
-	}
-
-	var currentMembership models.UserGroup
-	if err := db.Where("user_id = ? AND group_id = ? AND deleted_at IS NULL", currentUser.ID, group.ID).First(&currentMembership).Error; err == nil {
-		if currentMembership.IsGuest() && !strings.EqualFold(account, currentUser.Username) {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "List Guest DB Accesses",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Guest users can only list their own guest database accesses."}}},
-			})
-			return fmt.Errorf("guest user %s attempted to list db accesses for %s", currentUser.Username, account)
-		}
 	}
 
 	var grants []models.GroupGuestDBAccess

@@ -11,7 +11,7 @@
 -- (everything except bootstrap DB connection params).
 CREATE TABLE IF NOT EXISTS bastion_instances (
     instance_id varchar(191) NOT NULL PRIMARY KEY,
-    role        longtext NOT NULL,        -- 'master' or 'slave'
+    role        varchar(32) NOT NULL DEFAULT 'master', -- 'master' or 'slave'
     config      longtext,                 -- JSON-encoded config
     created_at  datetime,
     updated_at  datetime
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
     KEY idx_user_groups_user_id (user_id),
     KEY idx_user_groups_group_id (group_id),
     KEY idx_user_groups_deleted_at (deleted_at),
-    KEY idx_user_group_lookup (user_id),
+    KEY idx_user_group_lookup (user_id, group_id),
     CONSTRAINT fk_user_groups_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_user_groups_group FOREIGN KEY (group_id) REFERENCES `groups`(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS self_accesses (
     deleted_at      datetime,
     KEY idx_self_accesses_user_id (user_id),
     KEY idx_self_accesses_deleted_at (deleted_at),
-    KEY idx_self_access_lookup (user_id),
+    KEY idx_self_access_lookup (user_id, server(191), port, username(191), protocol(32)),
     CONSTRAINT fk_self_accesses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     deleted_at      datetime,
     KEY idx_group_accesses_group_id (group_id),
     KEY idx_group_accesses_deleted_at (deleted_at),
-    KEY idx_group_access_lookup (group_id),
+    KEY idx_group_access_lookup (group_id, server(191), port, username(191), protocol(32)),
     CONSTRAINT fk_group_accesses_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS self_db_accesses (
     deleted_at      datetime,
     KEY idx_self_db_accesses_user_id (user_id),
     KEY idx_self_db_accesses_deleted_at (deleted_at),
-    KEY idx_self_db_access_lookup (user_id),
+    KEY idx_self_db_access_lookup (user_id, host(191), port, username(191), protocol(32)),
     CONSTRAINT fk_self_db_accesses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -265,7 +265,7 @@ CREATE TABLE IF NOT EXISTS group_db_accesses (
     deleted_at      datetime,
     KEY idx_group_db_accesses_group_id (group_id),
     KEY idx_group_db_accesses_deleted_at (deleted_at),
-    KEY idx_group_db_access_lookup (group_id),
+    KEY idx_group_db_access_lookup (group_id, host(191), port, username(191), protocol(32)),
     CONSTRAINT fk_group_db_accesses_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

@@ -25,7 +25,10 @@ func Delete(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: realmDelete --realm <name>"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "realmDelete", "") {
@@ -47,7 +50,7 @@ func Delete(db *gorm.DB, currentUser *models.User, args []string) error {
 		if res.Error != nil {
 			return res.Error
 		}
-		return nil
+		return fmt.Errorf("realm %q not found", strings.ToLower(strings.TrimSpace(realmName)))
 	}
 
 	console.DisplayBlock(console.ContentBlock{

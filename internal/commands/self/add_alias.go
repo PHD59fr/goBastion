@@ -2,6 +2,7 @@ package self
 
 import (
 	"flag"
+	"fmt"
 	"strings"
 
 	"goBastion/internal/models"
@@ -35,7 +36,7 @@ func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Usage", Body: []string{"selfAddAlias --alias <alias> --hostname <host_name>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 	if !validation.IsValidHost(hostname) {
 		console.DisplayBlock(console.ContentBlock{
@@ -45,7 +46,7 @@ func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Invalid Hostname", Body: []string{"Hostname contains invalid characters."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("invalid hostname: %s", hostname)
 	}
 	var existing models.Aliases
 	if err := db.Where("LOWER(resolve_from) = ? AND user_id = ? AND deleted_at IS NULL", strings.ToLower(alias), user.ID).First(&existing).Error; err == nil {
@@ -56,7 +57,7 @@ func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Duplicate", Body: []string{"An alias with this name already exists."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("personal alias %q already exists", alias)
 	}
 	newHost := models.Aliases{
 		ResolveFrom: alias,

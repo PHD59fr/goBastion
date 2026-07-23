@@ -147,6 +147,7 @@ func buildHandlers(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 		"exit": nil,
 
 		// Bastion Config
-		"bastionConfig": func() error { return cmdconfig.BastionConfig(db, user) },
+		"bastionConfig":          func() error { return cmdconfig.BastionConfig(db, user) },
+		"bastionShowSFTPHostKey": func() error { return cmdconfig.ShowSFTPProxyHostKey(db, user) },
 	}
 }

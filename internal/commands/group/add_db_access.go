@@ -128,10 +128,10 @@ func AddDBAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	if err := db.Where("group_id = ? AND host = ? AND port = ? AND protocol = ?", group.ID, host, port, protocol).First(&existingAccess).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group DB Access",
-			BlockType: "info",
-			Sections:  []console.SectionContent{{SubTitle: "Info", Body: []string{"Access already exists for this group with the given host, port, and protocol."}}},
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Access already exists for this group with the given host, port, and protocol."}}},
 		})
-		return nil
+		return fmt.Errorf("group DB access already exists for %s:%d/%s in group %q", host, port, protocol, groupName)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group DB Access",

@@ -36,7 +36,7 @@ func Unexpire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountUnexpire --user <username>"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "accountUnexpire", username) {
@@ -45,7 +45,7 @@ func Unexpire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to re-enable this account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var u models.User
@@ -64,12 +64,12 @@ func Unexpire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "warning",
 			Sections:  []console.SectionContent{{SubTitle: "Already Active", Body: []string{fmt.Sprintf("User '%s' is already enabled.", username)}}},
 		})
-		return nil
+		return fmt.Errorf("user %q is already enabled", username)
 	}
 
 	if err := db.Model(&u).Updates(map[string]any{
-		"enabled":        true,
-		"last_login_at":  time.Time{},
+		"enabled":         true,
+		"last_login_at":   time.Time{},
 		"last_login_from": "",
 	}).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

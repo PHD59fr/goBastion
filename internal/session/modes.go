@@ -77,6 +77,10 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
 			return
 		}
+		if !config.Get().Interactive.Allow {
+			fmt.Println("⛔ Interactive shell is disabled by configuration.")
+			return
+		}
 		if config.Get().ForceOSHOnly.Enabled {
 			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
 			return
@@ -108,6 +112,10 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			return
 		}
 		if isInteractive {
+			if !config.Get().Interactive.Allow {
+				fmt.Println("⛔ Interactive shell is disabled by configuration.")
+				return
+			}
 			if !checkMFA(db, &currentUser, log) {
 				return
 			}
@@ -121,10 +129,17 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 			runInteractiveMode(db, &currentUser, log, releaseSession)
 		} else {
-			// Skip TOTP for raw TCP proxy (-W) and sftp-session: no TTY, raw pipe only.
+			// sftp-session is handled separately. Raw TCP proxy (-W) cannot safely
+			// carry an MFA prompt on its byte stream, so fail closed when account
+			// MFA would otherwise be required.
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
 			isSftpSession := strings.HasPrefix(cmd, "sftp-session")
-			if !isTCPProxy && !isSftpSession {
+			if isTCPProxy {
+				if msg := tcpProxyMFABlockMessage(currentUser); msg != "" {
+					fmt.Println(msg)
+					return
+				}
+			} else if !isSftpSession {
 				if !checkMFA(db, &currentUser, log) {
 					return
 				}
@@ -141,6 +156,19 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session_end", slog.String("user", currentUser.Username))
 		}
+	}
+}
+
+func tcpProxyMFABlockMessage(user models.User) string {
+	switch {
+	case user.PasswordHash != "":
+		return "⛔ TCP proxy (-W) is unavailable when password MFA is enabled on your account."
+	case user.TOTPEnabled && user.TOTPSecret != "":
+		return "⛔ TCP proxy (-W) is unavailable when TOTP MFA is enabled on your account."
+	case config.Get().RequireMFA.Enabled:
+		return "⛔ TCP proxy (-W) is unavailable while global MFA enforcement is enabled."
+	default:
+		return ""
 	}
 }
 

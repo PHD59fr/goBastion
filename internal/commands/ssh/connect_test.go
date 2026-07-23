@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 )
 
@@ -323,6 +325,11 @@ func TestInferSSHUsername_ExactBeforeWildcard(t *testing.T) {
 // --- normalizeWildcardUsername tests ---
 
 func TestNormalizeWildcardUsername(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.Load()
+	cfg.Security.DefaultWildcardUsername = "operator"
+
 	tests := []struct {
 		name      string
 		stored    string
@@ -330,7 +337,7 @@ func TestNormalizeWildcardUsername(t *testing.T) {
 		want      string
 	}{
 		{"wildcard with requested username", "*", "deploy", "deploy"},
-		{"wildcard without requested username defaults to root", "*", "", "root"},
+		{"wildcard without requested username uses configured default", "*", "", "operator"},
 		{"exact stored is never overridden", "admin", "deploy", "admin"},
 		{"exact stored with empty requested", "operator", "", "operator"},
 	}
@@ -342,6 +349,42 @@ func TestNormalizeWildcardUsername(t *testing.T) {
 					tc.stored, tc.requested, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveAccessUsername_UsesConfiguredDefault(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.Load()
+	cfg.Security.DefaultWildcardUsername = "svc-default"
+
+	got, ok := resolveAccessUsername("*")
+	if !ok {
+		t.Fatal("expected wildcard username to resolve")
+	}
+	if got != "svc-default" {
+		t.Fatalf("resolveAccessUsername(*) = %q, want %q", got, "svc-default")
+	}
+}
+
+func TestTCPProxyRejectsJITMFAProtectedAccess(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "alice", models.RoleUser)
+	group := mustCreateGroup(t, db, "prod")
+	group.MFARequired = true
+	if err := db.Save(&group).Error; err != nil {
+		t.Fatalf("save group: %v", err)
+	}
+	mustAddUserToGroup(t, db, user.ID, group.ID, "member")
+	mustCreateGroupAccess(t, db, group.ID, "deploy", "myserver", 22)
+	mustCreateGroupEgressKey(t, db, group.ID)
+
+	err := TCPProxy(db, user, *slog.Default(), "myserver", "22")
+	if err == nil {
+		t.Fatal("expected TCPProxy to reject JIT MFA protected access")
+	}
+	if !strings.Contains(err.Error(), "requires JIT MFA") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

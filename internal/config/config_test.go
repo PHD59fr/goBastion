@@ -52,6 +52,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Security.DefaultWildcardUsername != "root" {
 		t.Errorf("DefaultWildcardUsername = %q, want root", cfg.Security.DefaultWildcardUsername)
 	}
+	if cfg.Security.GroupVisibility.Mode != "open" {
+		t.Errorf("GroupVisibility.Mode = %q, want open", cfg.Security.GroupVisibility.Mode)
+	}
+	if cfg.Security.EgressKeyVisibility.Mode != "discoverable" {
+		t.Errorf("EgressKeyVisibility.Mode = %q, want discoverable", cfg.Security.EgressKeyVisibility.Mode)
+	}
 	if cfg.Account.MaxInactiveDays != 0 {
 		t.Errorf("MaxInactiveDays = %d, want 0", cfg.Account.MaxInactiveDays)
 	}
@@ -131,6 +137,8 @@ func TestJSONRoundTrip(t *testing.T) {
 	cfg.Account.MaxInactiveDays = 30
 	cfg.SSH.DefaultPort = 2222
 	cfg.MFA.MaxAttempts = 5
+	cfg.Security.GroupVisibility.Mode = "members"
+	cfg.Security.EgressKeyVisibility.Mode = "managers"
 
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -150,6 +158,32 @@ func TestJSONRoundTrip(t *testing.T) {
 	}
 	if restored.MFA.MaxAttempts != 5 {
 		t.Errorf("MaxAttempts = %d, want 5", restored.MFA.MaxAttempts)
+	}
+	if restored.Security.GroupVisibility.Mode != "members" {
+		t.Errorf("GroupVisibility.Mode = %q, want members", restored.Security.GroupVisibility.Mode)
+	}
+	if restored.Security.EgressKeyVisibility.Mode != "managers" {
+		t.Errorf("EgressKeyVisibility.Mode = %q, want managers", restored.Security.EgressKeyVisibility.Mode)
+	}
+}
+
+func TestDurationUnmarshalJSON_IntegerMeansSeconds(t *testing.T) {
+	var d Duration
+	if err := json.Unmarshal([]byte("5"), &d); err != nil {
+		t.Fatalf("unmarshal integer duration: %v", err)
+	}
+	if time.Duration(d) != 5*time.Second {
+		t.Fatalf("duration = %v, want 5s", time.Duration(d))
+	}
+}
+
+func TestDurationUnmarshalJSON_StringIntegerMeansSeconds(t *testing.T) {
+	var d Duration
+	if err := json.Unmarshal([]byte(`"5"`), &d); err != nil {
+		t.Fatalf("unmarshal quoted integer duration: %v", err)
+	}
+	if time.Duration(d) != 5*time.Second {
+		t.Fatalf("duration = %v, want 5s", time.Duration(d))
 	}
 }
 

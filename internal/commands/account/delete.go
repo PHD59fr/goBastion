@@ -36,7 +36,7 @@ func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete this account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	if err := DeleteUser(db, adapter, username); err != nil {

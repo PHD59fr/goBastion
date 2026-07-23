@@ -3,7 +3,9 @@ package models
 import (
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 func newUser(role string, enabled bool) *User {
@@ -162,4 +164,207 @@ func TestUserGroup_RoleMethods(t *testing.T) {
 			t.Errorf("role=%q: IsGuest()=%v, want %v", tc.role, ug.IsGuest(), tc.isGuest)
 		}
 	}
+}
+
+func TestVisibilityPolicies_GroupInfoAndListAll(t *testing.T) {
+	defer SetGroupVisibilityMode("open")
+	db := newRightsTestDB(t)
+	owner, member, outsider, admin, groupName := seedVisibilityTestData(t, db)
+	groupViewCmds := []string{
+		"groupInfo",
+		"groupListAccesses",
+		"groupListAliases",
+		"groupListDBAccesses",
+		"groupListDBAliases",
+	}
+
+	SetGroupVisibilityMode("open")
+	for _, cmd := range groupViewCmds {
+		if !outsider.CanDo(db, cmd, groupName) {
+			t.Fatalf("open mode should allow outsider %s", cmd)
+		}
+	}
+	if !outsider.CanListAllGroups(db) {
+		t.Fatal("open mode should allow outsider groupList --all")
+	}
+
+	SetGroupVisibilityMode("members")
+	for _, cmd := range groupViewCmds {
+		if outsider.CanDo(db, cmd, groupName) {
+			t.Fatalf("members mode should block outsider %s", cmd)
+		}
+		if !member.CanDo(db, cmd, groupName) {
+			t.Fatalf("members mode should allow member %s", cmd)
+		}
+	}
+	if outsider.CanListAllGroups(db) {
+		t.Fatal("members mode should block outsider groupList --all")
+	}
+
+	SetGroupVisibilityMode("managers")
+	for _, cmd := range groupViewCmds {
+		if member.CanDo(db, cmd, groupName) {
+			t.Fatalf("managers mode should block plain member %s", cmd)
+		}
+		if !owner.CanDo(db, cmd, groupName) {
+			t.Fatalf("managers mode should allow owner %s", cmd)
+		}
+	}
+
+	SetGroupVisibilityMode("private")
+	for _, cmd := range groupViewCmds {
+		if outsider.CanDo(db, cmd, groupName) {
+			t.Fatalf("private mode should block outsider %s", cmd)
+		}
+		if !member.CanDo(db, cmd, groupName) {
+			t.Fatalf("private mode should still allow direct member %s", cmd)
+		}
+		if !admin.CanDo(db, cmd, groupName) {
+			t.Fatalf("private mode should allow admin %s", cmd)
+		}
+	}
+}
+
+func TestVisibilityPolicies_GroupEgressKeys(t *testing.T) {
+	defer SetEgressKeyVisibilityMode("discoverable")
+	db := newRightsTestDB(t)
+	owner, member, outsider, admin, groupName := seedVisibilityTestData(t, db)
+
+	SetEgressKeyVisibilityMode("discoverable")
+	if !outsider.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("discoverable mode should allow outsider egress key listing")
+	}
+
+	SetEgressKeyVisibilityMode("members")
+	if outsider.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("members mode should block outsider egress key listing")
+	}
+	if !member.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("members mode should allow member egress key listing")
+	}
+
+	SetEgressKeyVisibilityMode("managers")
+	if member.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("managers mode should block plain member egress key listing")
+	}
+	if !owner.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("managers mode should allow owner egress key listing")
+	}
+
+	SetEgressKeyVisibilityMode("private")
+	if member.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("private mode should block plain member egress key listing")
+	}
+	if !owner.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("private mode should allow owner egress key listing")
+	}
+	if !admin.CanDo(db, "groupListEgressKeys", groupName) {
+		t.Fatal("private mode should allow admin egress key listing")
+	}
+}
+
+func TestVisibilityPolicies_GuestGrantLists(t *testing.T) {
+	defer SetGroupVisibilityMode("open")
+	db := newRightsTestDB(t)
+	owner, member, outsider, admin, groupName := seedVisibilityTestData(t, db)
+	guest := &User{Username: "guest", Role: RoleUser, Enabled: true}
+	if err := db.Create(guest).Error; err != nil {
+		t.Fatalf("create guest: %v", err)
+	}
+	membership := UserGroup{UserID: guest.ID, GroupID: mustGroupID(t, db, groupName), Role: GroupRoleGuest}
+	if err := db.Create(&membership).Error; err != nil {
+		t.Fatalf("create guest membership: %v", err)
+	}
+
+	cmds := []string{"groupListGuestAccesses", "groupListGuestDBAccesses"}
+
+	SetGroupVisibilityMode("open")
+	for _, cmd := range cmds {
+		if !outsider.CanDo(db, cmd, groupName) {
+			t.Fatalf("open mode should allow outsider %s", cmd)
+		}
+		if !guest.CanInspectGuestGrantTarget(db, groupName, guest.Username) {
+			t.Fatalf("guest should be able to inspect own target for %s", cmd)
+		}
+		if guest.CanInspectGuestGrantTarget(db, groupName, member.Username) {
+			t.Fatalf("guest should not be able to inspect another account for %s", cmd)
+		}
+	}
+
+	SetGroupVisibilityMode("members")
+	for _, cmd := range cmds {
+		if outsider.CanDo(db, cmd, groupName) {
+			t.Fatalf("members mode should block outsider %s", cmd)
+		}
+		if !member.CanDo(db, cmd, groupName) {
+			t.Fatalf("members mode should allow member %s", cmd)
+		}
+		if !owner.CanDo(db, cmd, groupName) || !admin.CanDo(db, cmd, groupName) {
+			t.Fatalf("members mode should allow owner/admin %s", cmd)
+		}
+	}
+
+	SetGroupVisibilityMode("managers")
+	for _, cmd := range cmds {
+		if member.CanDo(db, cmd, groupName) {
+			t.Fatalf("managers mode should block plain member %s", cmd)
+		}
+		if guest.CanDo(db, cmd, groupName) {
+			t.Fatalf("managers mode should block guest %s", cmd)
+		}
+		if !owner.CanDo(db, cmd, groupName) {
+			t.Fatalf("managers mode should allow owner %s", cmd)
+		}
+	}
+}
+
+func mustGroupID(t *testing.T, db *gorm.DB, groupName string) uuid.UUID {
+	t.Helper()
+	var group Group
+	if err := db.Where("name = ?", groupName).First(&group).Error; err != nil {
+		t.Fatalf("find group %s: %v", groupName, err)
+	}
+	return group.ID
+}
+
+func newRightsTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test DB: %v", err)
+	}
+	if err := db.AutoMigrate(&User{}, &Group{}, &UserGroup{}); err != nil {
+		t.Fatalf("migrate rights test DB: %v", err)
+	}
+	return db
+}
+
+func seedVisibilityTestData(t *testing.T, db *gorm.DB) (*User, *User, *User, *User, string) {
+	t.Helper()
+	group := Group{Name: "infra"}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	owner := &User{Username: "owner", Role: RoleUser, Enabled: true}
+	member := &User{Username: "member", Role: RoleUser, Enabled: true}
+	outsider := &User{Username: "outsider", Role: RoleUser, Enabled: true}
+	admin := &User{Username: "admin", Role: RoleAdmin, Enabled: true}
+	for _, u := range []*User{owner, member, outsider, admin} {
+		if err := db.Create(u).Error; err != nil {
+			t.Fatalf("create user %s: %v", u.Username, err)
+		}
+	}
+
+	memberships := []UserGroup{
+		{UserID: owner.ID, GroupID: group.ID, Role: GroupRoleOwner},
+		{UserID: member.ID, GroupID: group.ID, Role: GroupRoleMember},
+	}
+	for _, membership := range memberships {
+		if err := db.Create(&membership).Error; err != nil {
+			t.Fatalf("create membership: %v", err)
+		}
+	}
+
+	return owner, member, outsider, admin, group.Name
 }

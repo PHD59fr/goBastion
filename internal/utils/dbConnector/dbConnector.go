@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -89,6 +90,9 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	dir := fmt.Sprintf("%s/%s/%s/", config.Get().Paths.TtyrecDir, safeUser, safeHost)
 	if err := os.MkdirAll(dir, 02770); err != nil {
 		return fmt.Errorf("error creating ttyrec dir: %w", err)
+	}
+	if chmodErr := os.Chmod(dir, 02770); chmodErr != nil {
+		slog.Warn("ttyrec dir chmod failed", "dir", dir, "err", chmodErr)
 	}
 
 	filenameSuffix := ""

@@ -100,6 +100,78 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 	}
 }
 
+func TestConnectFixesTTYRecDirPermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	ttyrecDir := filepath.Join(tmpDir, "ttyrec")
+	ttyrecLog := filepath.Join(tmpDir, "ttyrec.args")
+	clientLog := filepath.Join(tmpDir, "client.args")
+	targetDir := filepath.Join(ttyrecDir, "alice", "db.example.internal")
+
+	for _, dir := range []string{binDir, ttyrecDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.MkdirAll(targetDir, 0o750); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+
+	ttyrecScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"" + ttyrecLog + "\"\n" +
+		"file=''\n" +
+		"if [ \"$1\" = '-f' ]; then\n" +
+		"  file=\"$2\"\n" +
+		"  shift 2\n" +
+		"fi\n" +
+		"if [ \"$1\" = '--' ]; then\n" +
+		"  shift\n" +
+		"fi\n" +
+		"printf 'ttyrec output' > \"$file\"\n" +
+		"exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ttyrec"), []byte(ttyrecScript), 0o755); err != nil {
+		t.Fatalf("write ttyrec stub: %v", err)
+	}
+
+	clientScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"" + clientLog + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "mariadb"), []byte(clientScript), 0o755); err != nil {
+		t.Fatalf("write mariadb stub: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+":"+origPath)
+
+	cfg := config.DefaultConfig()
+	cfg.TTYRec.Enabled = true
+	cfg.Paths.TtyrecDir = ttyrecDir
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	defer config.ResetForTesting()
+
+	access := models.DBAccessRight{
+		Host:     "db.example.internal",
+		Port:     3306,
+		Protocol: "mysql",
+		Username: "dbuser",
+		Password: "secret",
+		Database: "appdb",
+	}
+	user := models.User{Username: "alice"}
+
+	if err := Connect(nil, user, access); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		t.Fatalf("stat target dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o770 {
+		t.Fatalf("unexpected ttyrec dir mode: got %o want 770", got)
+	}
+}
+
 func TestResolveDBAliasErrorsOnAmbiguousGroupAlias(t *testing.T) {
 	db := newAliasTestDB(t)
 	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}

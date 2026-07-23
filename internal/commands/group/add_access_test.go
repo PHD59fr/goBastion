@@ -32,3 +32,34 @@ func TestAddAccess_Success(t *testing.T) {
 		t.Fatalf("expected 1 group access entry, got %d", count)
 	}
 }
+
+func TestAddAccess_DuplicateReturnsError(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+
+	g := models.Group{Name: "mygroup"}
+	if err := db.Create(&g).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	if err := AddAccess(db, admin, []string{
+		"--group", "mygroup",
+		"--server", "10.0.0.1",
+		"--username", "deploy",
+		"--port", "22",
+		"--force",
+	}); err != nil {
+		t.Fatalf("seed group access: %v", err)
+	}
+
+	err := AddAccess(db, admin, []string{
+		"--group", "mygroup",
+		"--server", "10.0.0.1",
+		"--username", "deploy",
+		"--port", "22",
+		"--force",
+	})
+	if err == nil {
+		t.Fatal("expected duplicate group access error")
+	}
+}

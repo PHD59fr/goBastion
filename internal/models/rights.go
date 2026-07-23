@@ -118,17 +118,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListAccesses":
-		if u.IsAdmin() {
-			return true
-		}
-		if u.IsSuperOwner() {
-			return true
-		}
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-		return u.canDoInGroup(userGroups, target, isManagerOrMember)
+		return u.CanViewGroupInfo(db, target)
 
 	case "groupAddAlias", "groupDelAlias":
 		if u.IsAdmin() {
@@ -144,17 +134,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListAliases":
-		if u.IsAdmin() {
-			return true
-		}
-		if u.IsSuperOwner() {
-			return true
-		}
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-		return u.canDoInGroup(userGroups, target, isManagerOrMember)
+		return u.CanViewGroupInfo(db, target)
 
 	case "groupSetMFA":
 		if u.IsAdmin() {
@@ -196,17 +176,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListGuestAccesses":
-		if u.IsAdmin() {
-			return true
-		}
-		if u.IsSuperOwner() {
-			return true
-		}
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-		return u.canDoInGroup(userGroups, target, isManagerOrMemberOrGuest)
+		return u.CanViewGuestGrantList(db, target)
 
 	// Group: DB Accesses
 	case "groupAddDBAccess", "groupDelDBAccess":
@@ -223,17 +193,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListDBAccesses":
-		if u.IsAdmin() {
-			return true
-		}
-		if u.IsSuperOwner() {
-			return true
-		}
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-		return u.canDoInGroup(userGroups, target, isManagerOrMember)
+		return u.CanViewGroupInfo(db, target)
 
 	// Group: Guest DB Accesses
 	case "groupAddGuestDBAccess", "groupDelGuestDBAccess":
@@ -250,17 +210,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListGuestDBAccesses":
-		if u.IsAdmin() {
-			return true
-		}
-		if u.IsSuperOwner() {
-			return true
-		}
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-		return u.canDoInGroup(userGroups, target, isManagerOrMemberOrGuest)
+		return u.CanViewGuestGrantList(db, target)
 
 	// Group: DB Aliases
 	case "groupAddDBAlias", "groupDelDBAlias":
@@ -277,17 +227,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return u.canDoInGroup(userGroups, target, isManagerOrAbove)
 
 	case "groupListDBAliases":
-		if u.IsAdmin() {
-			return true
-		}
-		if u.IsSuperOwner() {
-			return true
-		}
-		userGroups, err := u.getGroups(db)
-		if err != nil {
-			return false
-		}
-		return u.canDoInGroup(userGroups, target, isManagerOrMember)
+		return u.CanViewGroupInfo(db, target)
 
 	case "groupCreate", "groupDelete":
 		return u.IsAdmin()
@@ -305,11 +245,14 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		}
 		return u.canDoInGroup(userGroups, target, func(ug *UserGroup) bool { return ug.IsOwner() })
 
-	case "groupInfo", "groupList":
+	case "groupInfo":
+		return u.CanViewGroupInfo(db, target)
+
+	case "groupList":
 		return true
 
 	case "groupListEgressKeys":
-		return true
+		return u.CanViewGroupEgressKeys(db, target)
 
 	// Self
 	case "selfAddAccess":

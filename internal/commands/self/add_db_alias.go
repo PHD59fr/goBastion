@@ -2,6 +2,7 @@ package self
 
 import (
 	"flag"
+	"fmt"
 	"strings"
 
 	"goBastion/internal/models"
@@ -38,7 +39,7 @@ func AddDBAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Usage", Body: []string{"selfAddDBAlias --alias <alias> --host <host> --port <port> --protocol <protocol>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 	if !validation.IsValidDBProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
@@ -48,7 +49,7 @@ func AddDBAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Invalid Protocol", Body: []string{"Protocol contains invalid characters."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("invalid protocol: %s", protocol)
 	}
 	var existing models.DatabaseAlias
 	if err := db.Where("LOWER(resolve_from) = ? AND user_id = ? AND deleted_at IS NULL", strings.ToLower(alias), user.ID).First(&existing).Error; err == nil {
@@ -59,7 +60,7 @@ func AddDBAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Duplicate", Body: []string{"An alias with this name already exists."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("personal DB alias %q already exists", alias)
 	}
 	newAlias := models.DatabaseAlias{
 		ResolveFrom: alias,
