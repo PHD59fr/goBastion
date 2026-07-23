@@ -34,7 +34,7 @@ func ListDBAliases(db *gorm.DB, currentUser *models.User, args []string) error {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "List Group DB Aliases",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to list aliases for this group."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: models.DescribeVisibilityDenial(models.VisibilityDeniedGroupPolicy, groupName, "")}},
 		})
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}

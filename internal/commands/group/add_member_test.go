@@ -44,11 +44,35 @@ func TestAddMember_InvalidRole(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 
-	// The function accepts any non-empty role string; "invalidrole" creates the row
-	// but we verify it does not panic.
-	_ = AddMember(db, admin, []string{
+	err := AddMember(db, admin, []string{
 		"--group", "mygroup",
 		"--user", "alice",
 		"--role", "invalidrole",
 	})
+	if err == nil {
+		t.Fatal("expected invalid role error")
+	}
+}
+
+func TestAddMember_DuplicateReturnsError(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	alice := newRegularUser(t, db, "alice")
+
+	g := models.Group{Name: "mygroup"}
+	if err := db.Create(&g).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := db.Create(&models.UserGroup{UserID: alice.ID, GroupID: g.ID, Role: models.GroupRoleMember}).Error; err != nil {
+		t.Fatalf("seed membership: %v", err)
+	}
+
+	err := AddMember(db, admin, []string{
+		"--group", "mygroup",
+		"--user", "alice",
+		"--role", "member",
+	})
+	if err == nil {
+		t.Fatal("expected duplicate member error")
+	}
 }

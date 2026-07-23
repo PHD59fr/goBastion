@@ -34,11 +34,14 @@ func TestAddAccess_MissingServer(t *testing.T) {
 	newRegularUser(t, db, "alice")
 
 	// Missing --server; should not panic, should not create DB entry
-	_ = AddAccess(db, admin, []string{
+	err := AddAccess(db, admin, []string{
 		"--user", "alice",
 		"--username", "root",
 		"--port", "22",
 	})
+	if err == nil {
+		t.Fatal("expected missing required arguments error")
+	}
 
 	var count int64
 	db.Model(&models.SelfAccess{}).Count(&count)

@@ -31,7 +31,10 @@ func GrantAdd(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: restrictedGrantAdd --user <username> --command <command>"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	var user models.User
@@ -55,7 +58,7 @@ func GrantAdd(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to add grant (it may already exist)."}}},
 		})
-		return nil
+		return err
 	}
 
 	console.DisplayBlock(console.ContentBlock{
@@ -80,7 +83,10 @@ func GrantDel(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: restrictedGrantDel --user <username> --command <command>"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	var user models.User
@@ -103,7 +109,7 @@ func GrantDel(db *gorm.DB, currentUser *models.User, args []string) error {
 		if res.Error != nil {
 			return res.Error
 		}
-		return nil
+		return fmt.Errorf("restricted grant not found")
 	}
 
 	console.DisplayBlock(console.ContentBlock{
@@ -127,7 +133,7 @@ func GrantList(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: restrictedGrantList [--user <username>]"}}},
 		})
-		return nil
+		return err
 	}
 
 	query := db.Preload("User").Preload("GrantedBy").Order("created_at desc")

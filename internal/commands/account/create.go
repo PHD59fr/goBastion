@@ -37,7 +37,10 @@ func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountCreate --user <username> [--osh-only] [--superowner]"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "accountCreate", username) {
@@ -46,7 +49,7 @@ func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to create an account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	reader := bufio.NewReader(os.Stdin)

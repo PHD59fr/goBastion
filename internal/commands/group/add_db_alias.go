@@ -32,7 +32,10 @@ func AddDBAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddDBAlias --group <group_name> --alias <alias> --host <host> --port <port> --protocol <protocol>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupAddDBAlias", groupName) {
@@ -60,7 +63,7 @@ func AddDBAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol contains invalid characters."}}},
 		})
-		return nil
+		return fmt.Errorf("invalid protocol: %s", protocol)
 	}
 	var existing models.DatabaseAlias
 	if err := db.Where("LOWER(resolve_from) = ? AND group_id = ? AND deleted_at IS NULL", strings.ToLower(alias), group.ID).First(&existing).Error; err == nil {
@@ -69,7 +72,7 @@ func AddDBAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Duplicate", Body: []string{"An alias with this name already exists for this group."}}},
 		})
-		return nil
+		return fmt.Errorf("group DB alias %q already exists in group %q", alias, groupName)
 	}
 
 	newAlias := models.DatabaseAlias{

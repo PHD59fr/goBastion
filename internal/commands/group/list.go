@@ -37,6 +37,14 @@ func List(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return fmt.Errorf("access denied for %s", user.Username)
 	}
+	if *all && !user.CanListAllGroups(db) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Group List",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: models.DescribeVisibilityDenial(models.VisibilityDeniedGlobalGroupList, "", "")}},
+		})
+		return fmt.Errorf("access denied for %s", user.Username)
+	}
 
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)

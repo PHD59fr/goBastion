@@ -90,6 +90,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 📋 `pivListTrustAnchors`    | List all registered PIV trust anchor CAs.                                    |
 | ❌ `pivRemoveTrustAnchor`   | Remove a PIV trust anchor CA.                                                |
 | ⚙️ `bastionConfig`         | Interactive configuration manager (view/edit bastion config stored in DB).    |
+| 🔐 `bastionShowSFTPHostKey` | Show the stable public host key used by `sftp-session` for client distribution. |
 
 ---
 
@@ -111,15 +112,15 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 
 | Command                     | Description                                       |
 |-----------------------------|---------------------------------------------------|
-| ℹ️ `groupInfo`              | Show detailed information about a group.          |
-| 📋 `groupList`              | List all groups.                                  |
+| ℹ️ `groupInfo`              | Show detailed information about a group (subject to `security.group_visibility.mode`). |
+| 📋 `groupList`              | List groups. `--all` availability depends on `security.group_visibility.mode`. |
 | ➕ `groupCreate`             | Create a new group.                               |
 | ❌ `groupDelete`             | Delete a group.                                   |
 | ➕ `groupAddMember`          | Add a user to a group.                            |
 | ❌ `groupDelMember`          | Remove a user from a group.                       |
 | 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group.      |
-| 🔑 `groupListEgressKeys`    | List all egress SSH keys associated with a group. |
-| 📋 `groupListAccesses`      | List all accesses assigned to a group.            |
+| 🔑 `groupListEgressKeys`    | List group egress SSH public keys (subject to `security.egress_key_visibility.mode`). |
+| 📋 `groupListAccesses`      | List all accesses assigned to a group (subject to `security.group_visibility.mode`). |
 | ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction and optional `--guest` scope). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
 | ❌ `groupDelAccess`          | Remove access from a group.                       |
 | 🔐 `groupSetMFA`            | Enable or disable JIT MFA requirement for a group (owner/admin only).       |
@@ -128,11 +129,11 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 📋 `groupListGuestAccesses`| List guest access grants for a user in a group.                              |
 | ➕ `groupAddAlias`           | Add a group SSH alias.                            |
 | ❌ `groupDelAlias`           | Delete a group SSH alias.                         |
-| 📋 `groupListAliases`       | List all group SSH aliases.                       |
-| 📋 `groupListDBAccesses`    | List all database accesses assigned to a group.   |
+| 📋 `groupListAliases`       | List all group SSH aliases (subject to `security.group_visibility.mode`). |
+| 📋 `groupListDBAccesses`    | List all database accesses assigned to a group (subject to `security.group_visibility.mode`). |
 | ➕ `groupAddDBAccess`        | Grant database access to a group.                 |
 | ❌ `groupDelDBAccess`        | Remove database access from a group.              |
-| 📋 `groupListDBAliases`     | List all group database aliases.                  |
+| 📋 `groupListDBAliases`     | List all group database aliases (subject to `security.group_visibility.mode`). |
 | ➕ `groupAddDBAlias`         | Add a group database alias.                       |
 | ❌ `groupDelDBAlias`         | Delete a group database alias.                    |
 | ➕ `groupAddGuestDBAccess`   | Grant guest database access inside a group.       |
@@ -180,6 +181,8 @@ groupDelGuestAccess --group infra --account bob --grant <grant_id>
 ```
 
 > **Key difference from members:** Members can connect to ALL servers in the group. Guests can only connect to servers explicitly listed in their grants.
+>
+> **Visibility note:** listing guest grants is also affected by `security.group_visibility.mode`. Even when the group itself is visible, a guest user may inspect only their own grants.
 
 ---
 
@@ -238,21 +241,65 @@ goBastion supports two passthrough modes depending on whether you need to use th
 
 goBastion acts as a minimal SSH server and connects to the target with its own egress key. **Your local key does not need to be on the target server.**
 
+This mode now uses a **stable per-instance SSH host key** for the fake in-band SFTP server. Administrators should distribute that public key to client teams exactly like any other SSH host key.
+
+##### Admin workflow
+
+1. Display the stable SFTP proxy host key from the bastion:
+
+```sh
+ssh -tp 2222 admin@bastion -- bastionShowSFTPHostKey
+```
+
+2. Copy the displayed public key (or fingerprint) into your internal client documentation / configuration management.
+
+3. Ask client teams to pin that key in `known_hosts` for the **SSH host alias they invoke in their local client config**.
+This is usually the final `Host my-server` alias used with `sftp my-server`, not the bastion hostname inside `ProxyCommand`.
+
+4. If you need to rotate the key, regenerate it explicitly:
+
+```sh
+docker exec -it goBastion /app/goBastion --regenerateSFTPProxyHostKey
+```
+
+After rotation, redistribute the new public key before asking clients to reconnect.
+
+##### Client-side `known_hosts`
+
+If clients run `sftp my-server`, they should usually pin the key under `my-server`:
+
+```known_hosts
+my-server ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+```
+
+If they instead connect through another client-side alias, they should pin the key under that alias:
+
+```known_hosts
+my-server-prod ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+```
+
+##### Client-side `ssh_config`
+
 ```ssh-config
 Host my-server
     HostName 192.168.1.10
     User myuser
-    ProxyCommand ssh -p 2222 -- bastion_user@bastion "sftp-session myuser@%h:%p"
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
+    ProxyCommand ssh -p 2222 -- bastion_user@bastion.example.com "sftp-session myuser@%h:%p"
 ```
 
-> `StrictHostKeyChecking no` is required because goBastion generates an ephemeral host key for the fake SSH server on each connection.
+Then use SFTP normally:
 
-Then use sftp normally:
 ```sh
 sftp my-server
 ```
+
+##### Operational notes
+
+- The bastion user in `ProxyCommand` is the **ingress account on goBastion**.
+- The `myuser@%h:%p` part is the **target account on the destination server**.
+- The host key presented by `sftp-session` is verified against the **client-side SSH host alias** being opened by the SFTP client.
+- Because the SFTP proxy host key is now stable, you should **not** use `StrictHostKeyChecking no` or `UserKnownHostsFile /dev/null` anymore.
+- Rotating the SFTP proxy host key invalidates the previously pinned client entry. Treat it like any other SSH host key rotation.
 
 #### Mode 2 — TCP proxy (requires your key on the target)
 
@@ -273,6 +320,10 @@ This enables:
 - `scp file.txt user@my-server:/path/`
 - `sftp user@my-server`
 - `rsync -avz ./dir/ user@my-server:/path/`
+
+Operational notes:
+- This mode requires the client's own SSH key to be trusted directly on the target host.
+- This mode is **not suitable when account-level MFA must prompt interactively**. If password MFA, TOTP MFA, or global `require_mfa` are enabled on the bastion account, prefer `sftp-session`.
 
 All passthrough connections are subject to the same access control rules as interactive SSH sessions.
 
@@ -731,13 +782,13 @@ The following commands require admin or superowner by default, but can be grante
 | `groupDelAlias`          | ✅    | ✅        | ✅         |        |       |
 | `groupAddDBAlias`        | ✅    | ✅        | ✅         |        |       |
 | `groupDelDBAlias`        | ✅    | ✅        | ✅         |        |       |
-| `groupInfo`              | ✅    | ✅        | ✅         | ✅     | ✅    |
-| `groupList`              | ✅    | ✅        | ✅         | ✅     | ✅    |
-| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     |       |
-| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     |       |
-| `groupListDBAccesses`    | ✅    | ✅        | ✅         | ✅     |       |
-| `groupListDBAliases`     | ✅    | ✅        | ✅         | ✅     |       |
-| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     | ✅    |
+| `groupInfo`              | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
+| `groupList`              | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
+| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
+| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
+| `groupListDBAccesses`    | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
+| `groupListDBAliases`     | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
+| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     | ✅ (`security.egress_key_visibility.mode`) |
 
 ### 👤 **Self Permissions**
 
@@ -970,6 +1021,75 @@ In practice:
 - `max_concurrent_sessions` limits concurrent authenticated sessions on that instance
 - `idle_timeout` and `max_session_duration` accept `0` to disable the limit, or a duration of at least `30s`
 - `ttyrec.retention_days=0` keeps recordings indefinitely
+- group discovery and group egress-key discovery are controlled by `security.group_visibility.mode` and `security.egress_key_visibility.mode`
+
+**Visibility policies:**
+
+```yaml
+security:
+  group_visibility:
+    mode: open
+  egress_key_visibility:
+    mode: discoverable
+```
+
+- `security.group_visibility.mode`
+  - `open`: every authenticated user can use `groupList --all` and `groupInfo` on any group
+  - `members`: only members of a group can view its details and list its shared resources (`groupInfo`, `groupListAccesses`, `groupListAliases`, `groupListDBAccesses`, `groupListDBAliases`); `groupList --all` becomes admin/superowner only
+  - `managers`: only owners, aclkeepers and gatekeepers can view group details and list its shared resources; `groupList --all` becomes admin/superowner only
+  - `private`: only direct group members can view their own groups and list their shared resources; admins and superowners can still view any group; `groupList --all` becomes admin/superowner only
+
+Commands affected by `security.group_visibility.mode`:
+- `groupInfo`
+- `groupList --all`
+- `groupListAccesses`
+- `groupListAliases`
+- `groupListDBAccesses`
+- `groupListDBAliases`
+- `groupListGuestAccesses`
+- `groupListGuestDBAccesses`
+
+- `security.egress_key_visibility.mode`
+  - `discoverable`: any authenticated user can list the public egress keys of a group
+  - `members`: only group members, admins and superowners can list them
+  - `managers`: only owners, aclkeepers, gatekeepers, admins and superowners can list them
+  - `private`: only group owners, admins and superowners can list them
+
+**Examples of operator-facing denial messages:**
+
+- `groupList --all` when global group listing is blocked:
+
+```text
+Access Denied
+- You do not have permission to list all groups under the current visibility policy.
+- Current policy: security.group_visibility.mode=members
+```
+
+- `groupInfo --group infra` when only managers may inspect a group:
+
+```text
+Access Denied
+- You do not have permission to view group 'infra' under the current visibility policy.
+- Current policy: security.group_visibility.mode=managers
+- Required: owner, aclkeeper, gatekeeper, admin, or superowner in the target group.
+```
+
+- `groupListEgressKeys --group infra` when egress keys are private:
+
+```text
+Access Denied
+- You do not have permission to list egress keys for group 'infra'.
+- Current policy: security.egress_key_visibility.mode=private
+- Required: group owner, admin, or superowner.
+```
+
+- `groupListGuestAccesses --group infra --account bob` as a guest user inspecting another account:
+
+```text
+Access Denied
+- Guest users can only view their own grants in this group.
+- Requested account: bob
+```
 
 **How it works:**
 1. At startup, goBastion reads `DB_DRIVER`, `DB_DSN`, and `INSTANCE_ID` from environment variables.
@@ -1014,10 +1134,11 @@ These flags are only available when running as `root` outside an SSH session:
 |------|---------|----------------------------------------------------------------------------------------------------------|
 | `--firstInstall` | `docker exec -it goBastion /app/goBastion --firstInstall` | Manually bootstrap the first admin user (interactive)                                                    |
 | `--regenerateSSHHostKeys` | `docker exec -it goBastion /app/goBastion --regenerateSSHHostKeys` | Force-regenerate the bastion's SSH host keys                                                             |
+| `--regenerateSFTPProxyHostKey` | `docker exec -it goBastion /app/goBastion --regenerateSFTPProxyHostKey` | Force-regenerate the stable host key presented to `sftp-session` clients                                 |
 | `--sync` | `docker exec goBastion /app/goBastion --sync` | Enforce DB state onto the OS immediately (DB is source of truth); also runs automatically every 5 minutes |
 | `--dbExport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbExport > dump` | Dump the database as encrypted file to stdout                                                            |
 | `--dbImport` | `docker exec -i -e DB_EXPORT_KEY="$DB_EXPORT_KEY" goBastion /app/goBastion --dbImport < dump` | Restore the database from encrypted file on stdin                                                        |
-| `--disableTOTP` | `docker exec -it goBastion /app/goBastion --disableTOTP <user>` | Disable TOTP, password MFA, and backup codes for a user (recovery)                                       |
+| `--disableTOTP` | `docker exec -it goBastion /app/goBastion --disableTOTP <user>` | Disable TOTP and backup codes for a user (recovery)                                                      |
 
 ### 🔐 Database Export / Import
 

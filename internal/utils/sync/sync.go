@@ -70,6 +70,7 @@ func (s *Syncer) CreateUsersFromDB() error {
 		return fmt.Errorf("error reading HOME directory: %w", err)
 	}
 	if len(homeFiles) > 0 {
+		s.log.Info("skip_initial_user_sync", slog.String("reason", "home directory is not empty"), slog.String("path", config.Get().Paths.HomeBaseDir), slog.Int("entries", len(homeFiles)))
 		return nil
 	}
 

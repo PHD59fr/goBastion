@@ -11,6 +11,7 @@ import (
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/validation"
 
+	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 )
 
@@ -39,7 +40,10 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: realmCreate --realm <name> --bastion <host> [--port <22>] --from <cidrs> --public-key <ssh-pubkey>"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	realmName = strings.ToLower(strings.TrimSpace(realmName))
@@ -76,13 +80,14 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return nil
 	}
-	if !strings.HasPrefix(strings.TrimSpace(publicKey), "ssh-") {
+	publicKey = strings.TrimSpace(publicKey)
+	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(publicKey)); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Realm Create",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Key", Body: []string{"--public-key must be an SSH public key"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid realm public key: %w", err)
 	}
 
 	var existing models.Realm
@@ -100,7 +105,7 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 		BastionHost: bastionHost,
 		BastionPort: bastionPort,
 		AllowedFrom: strings.TrimSpace(allowedFrom),
-		PublicKey:   strings.TrimSpace(publicKey),
+		PublicKey:   publicKey,
 		Enabled:     true,
 		CreatedByID: currentUser.ID,
 	}

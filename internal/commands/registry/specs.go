@@ -428,4 +428,6 @@ var commandRegistry = []CommandMeta{
 	// --- Bastion Config ---
 	{Name: "bastionConfig", Description: "Interactive bastion configuration manager", Permission: "bastionConfig",
 		Category: "BASTION CONFIG", SubCategory: "Configuration"},
+	{Name: "bastionShowSFTPHostKey", Description: "Show the stable SFTP proxy host key for client distribution", Permission: "bastionConfig",
+		Category: "BASTION CONFIG", SubCategory: "Configuration"},
 }

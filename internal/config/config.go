@@ -50,7 +50,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &n); err != nil {
 		return fmt.Errorf("duration must be a string or number: %w", err)
 	}
-	*d = Duration(n)
+	*d = Duration(time.Duration(n) * time.Second)
 	return nil
 }
 
@@ -183,7 +183,17 @@ type DBExportConfig struct {
 }
 
 type SecurityConfig struct {
-	DefaultWildcardUsername string `json:"default_wildcard_username" toml:"default_wildcard_username"`
+	DefaultWildcardUsername string                    `json:"default_wildcard_username" toml:"default_wildcard_username"`
+	GroupVisibility         GroupVisibilityConfig     `json:"group_visibility" toml:"group_visibility"`
+	EgressKeyVisibility     EgressKeyVisibilityConfig `json:"egress_key_visibility" toml:"egress_key_visibility"`
+}
+
+type GroupVisibilityConfig struct {
+	Mode string `json:"mode" toml:"mode"`
+}
+
+type EgressKeyVisibilityConfig struct {
+	Mode string `json:"mode" toml:"mode"`
 }
 
 // The following structs are simple feature toggles. Enabled defaults to true
@@ -385,6 +395,8 @@ func defaultConfig() *Config {
 		},
 		Security: SecurityConfig{
 			DefaultWildcardUsername: "root",
+			GroupVisibility:         GroupVisibilityConfig{Mode: "open"},
+			EgressKeyVisibility:     EgressKeyVisibilityConfig{Mode: "discoverable"},
 		},
 
 		// Feature toggles (defaults: on).
@@ -455,6 +467,9 @@ func Load() *Config {
 		}
 
 		global.Store(cfg)
+		models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
+		models.SetGroupVisibilityMode(cfg.Security.GroupVisibility.Mode)
+		models.SetEgressKeyVisibilityMode(cfg.Security.EgressKeyVisibility.Mode)
 
 		// Determine instance identity.
 		instanceID := resolveInstanceID()
@@ -509,6 +524,8 @@ func LoadFromDB(db *gorm.DB) error {
 
 	global.Store(cfg)
 	models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
+	models.SetGroupVisibilityMode(cfg.Security.GroupVisibility.Mode)
+	models.SetEgressKeyVisibilityMode(cfg.Security.EgressKeyVisibility.Mode)
 	slog.Info("config_loaded_from_db", slog.String("instance_id", boot.InstanceID))
 	return nil
 }
@@ -561,6 +578,8 @@ func Reload(db *gorm.DB) {
 
 	global.Store(cfg)
 	models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
+	models.SetGroupVisibilityMode(cfg.Security.GroupVisibility.Mode)
+	models.SetEgressKeyVisibilityMode(cfg.Security.EgressKeyVisibility.Mode)
 	slog.Debug("config_reloaded", slog.String("instance_id", boot.InstanceID))
 }
 
@@ -804,6 +823,8 @@ func ConfigDiff() []ConfigEntry {
 
 	// Security
 	add("security", "default_wildcard_username", cfg.Security.DefaultWildcardUsername, def.Security.DefaultWildcardUsername)
+	add("security", "group_visibility.mode", cfg.Security.GroupVisibility.Mode, def.Security.GroupVisibility.Mode)
+	add("security", "egress_key_visibility.mode", cfg.Security.EgressKeyVisibility.Mode, def.Security.EgressKeyVisibility.Mode)
 
 	// Feature toggles
 	add("sftp", "enabled", fmt.Sprintf("%t", cfg.SFTP.Enabled), fmt.Sprintf("%t", def.SFTP.Enabled))
@@ -856,6 +877,9 @@ func ConfigDiff() []ConfigEntry {
 // SetForTesting replaces the global config. Only for use in tests.
 func SetForTesting(cfg *Config) {
 	global.Store(cfg)
+	models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
+	models.SetGroupVisibilityMode(cfg.Security.GroupVisibility.Mode)
+	models.SetEgressKeyVisibilityMode(cfg.Security.EgressKeyVisibility.Mode)
 }
 
 // idleResetFn is set by the session package so that long-running interactive
@@ -888,4 +912,7 @@ func ResetForTesting() {
 	global.Store(nil)
 	defaults = nil
 	globalOnce = sync.Once{}
+	models.SetRestrictedCmdsEnabled(true)
+	models.SetGroupVisibilityMode("open")
+	models.SetEgressKeyVisibilityMode("discoverable")
 }

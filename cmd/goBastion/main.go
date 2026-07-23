@@ -41,6 +41,14 @@ func hasArg(name string) bool {
 	return false
 }
 
+func shouldRunMigrate() bool {
+	return os.Getuid() == 0 && !hasArg("--sync") && !hasArg("--syncUser")
+}
+
+func shouldBootstrapInstanceConfig() bool {
+	return !hasArg("--dbImport")
+}
+
 func main() {
 	tStart := time.Now()
 
@@ -58,7 +66,7 @@ func main() {
 	// Only root (master process) runs schema migration; ForceCommand sessions
 	// and --sync invocations connect to the same DB but skip the expensive
 	// AutoMigrate — the master process already ran it at startup.
-	runMigrate := os.Getuid() == 0 && !hasArg("--sync") && !hasArg("--syncUser")
+	runMigrate := shouldRunMigrate()
 	db, err := internalDB.Init(log, runMigrate)
 	if err != nil {
 		log.Error("Failed to initialize database",
@@ -71,22 +79,24 @@ func main() {
 	// Phase 3: Check whether this instance's config row is present, then load
 	// it. Only create the row (EnsureInstance) if it is missing — never the
 	// other way around.
-	tCfg := time.Now()
-	if err := config.LoadFromDB(db); err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Error("config_load_from_db_failed", slog.Any("error", err))
-			os.Exit(1)
-		}
-		if err := config.EnsureInstance(db); err != nil {
-			log.Error("config_ensure_instance_failed", slog.Any("error", err))
-			os.Exit(1)
-		}
+	if shouldBootstrapInstanceConfig() {
+		tCfg := time.Now()
 		if err := config.LoadFromDB(db); err != nil {
-			log.Error("config_load_from_db_failed", slog.Any("error", err))
-			os.Exit(1)
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				log.Error("config_load_from_db_failed", slog.Any("error", err))
+				os.Exit(1)
+			}
+			if err := config.EnsureInstance(db); err != nil {
+				log.Error("config_ensure_instance_failed", slog.Any("error", err))
+				os.Exit(1)
+			}
+			if err := config.LoadFromDB(db); err != nil {
+				log.Error("config_load_from_db_failed", slog.Any("error", err))
+				os.Exit(1)
+			}
 		}
+		log.Info("config_loaded", slog.Duration("took", time.Since(tCfg)))
 	}
-	log.Info("config_loaded", slog.Duration("took", time.Since(tCfg)))
 
 	adapter := osadapter.NewLinuxAdapter()
 

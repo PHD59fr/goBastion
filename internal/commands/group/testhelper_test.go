@@ -1,6 +1,9 @@
 package group
 
 import (
+	"bytes"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -44,4 +47,25 @@ func newRegularUser(t *testing.T, db *gorm.DB, username string) *models.User {
 		t.Fatalf("create regular user: %v", err)
 	}
 	return &u
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdout: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	fn()
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("copy stdout: %v", err)
+	}
+	_ = r.Close()
+	return buf.String()
 }

@@ -77,6 +77,10 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
 			return
 		}
+		if !config.Get().Interactive.Allow {
+			fmt.Println("⛔ Interactive shell is disabled by configuration.")
+			return
+		}
 		if config.Get().ForceOSHOnly.Enabled {
 			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
 			return
@@ -108,6 +112,10 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			return
 		}
 		if isInteractive {
+			if !config.Get().Interactive.Allow {
+				fmt.Println("⛔ Interactive shell is disabled by configuration.")
+				return
+			}
 			if !checkMFA(db, &currentUser, log) {
 				return
 			}
@@ -121,10 +129,17 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 			runInteractiveMode(db, &currentUser, log, releaseSession)
 		} else {
-			// Skip TOTP for raw TCP proxy (-W) and sftp-session: no TTY, raw pipe only.
+			// sftp-session is handled separately. Raw TCP proxy (-W) cannot safely
+			// carry an MFA prompt on its byte stream, so fail closed when account
+			// MFA would otherwise be required.
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
 			isSftpSession := strings.HasPrefix(cmd, "sftp-session")
-			if !isTCPProxy && !isSftpSession {
+			if isTCPProxy {
+				if msg := tcpProxyMFABlockMessage(currentUser); msg != "" {
+					fmt.Println(msg)
+					return
+				}
+			} else if !isSftpSession {
 				if !checkMFA(db, &currentUser, log) {
 					return
 				}
@@ -141,6 +156,19 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session_end", slog.String("user", currentUser.Username))
 		}
+	}
+}
+
+func tcpProxyMFABlockMessage(user models.User) string {
+	switch {
+	case user.PasswordHash != "":
+		return "⛔ TCP proxy (-W) is unavailable when password MFA is enabled on your account."
+	case user.TOTPEnabled && user.TOTPSecret != "":
+		return "⛔ TCP proxy (-W) is unavailable when TOTP MFA is enabled on your account."
+	case config.Get().RequireMFA.Enabled:
+		return "⛔ TCP proxy (-W) is unavailable while global MFA enforcement is enabled."
+	default:
+		return ""
 	}
 }
 
@@ -218,14 +246,46 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			fmt.Fprintln(os.Stderr, "⛔ Usage: bastion --db|-db [user@]host[:port[:protocol]] [--mysql|--pg|--redis] [--dbname name]")
 			return
 		}
-		access, err := dbConnector.ResolveTarget(db, *currentUser, dbArgs[0], dbArgs[1:]...)
+		requestedTarget := dbArgs[0]
+		access, details, err := dbConnector.ResolveTargetDetailed(db, *currentUser, requestedTarget, dbArgs[1:]...)
+		dbLog := log.With(
+			slog.String("requested_target", requestedTarget),
+			slog.String("requested_target_user", details.RequestedUser),
+			slog.String("requested_target_host", details.RequestedHost),
+			slog.Int64("requested_target_port", details.RequestedPort),
+			slog.String("requested_target_protocol", details.RequestedProtocol),
+			slog.String("requested_database", details.RequestedDatabase),
+		)
+		dbLog.Info("db_request")
 		if err != nil {
+			dbLog.Warn("db_target_resolve_failed", slog.String("error", err.Error()))
 			fmt.Fprintf(os.Stderr, "⛔ %v\n", err)
 			return
 		}
-		if err := dbConnector.Connect(db, *currentUser, access); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		if details.AliasResolved {
+			dbLog.Info("db_alias_resolved",
+				slog.String("alias", details.AliasName),
+				slog.String("target_host", details.AliasHost),
+				slog.Int64("target_port", details.AliasPort),
+				slog.String("target_protocol", details.AliasProtocol),
+			)
 		}
+		dbLog = dbLog.With(
+			slog.String("target_user", details.EffectiveUser),
+			slog.String("target_host", details.EffectiveHost),
+			slog.Int64("target_port", details.EffectivePort),
+			slog.String("target_protocol", details.EffectiveProtocol),
+			slog.String("target_database", details.EffectiveDatabase),
+			slog.String("access_source", details.AccessSource),
+		)
+		dbLog.Info("db_target_resolved")
+		dbLog.Info("db_session_start")
+		if err := dbConnector.Connect(db, *currentUser, access); err != nil {
+			dbLog.Warn("db_session_failed", slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		dbLog.Info("db_session_end")
 	} else {
 		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
 			fmt.Println(err)

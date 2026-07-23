@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -39,6 +40,29 @@ type dbCandidate struct {
 	access  models.DBAccessRight
 	score   int
 	expired bool
+}
+
+type ResolutionDetails struct {
+	RequestedTarget   string
+	RequestedUser     string
+	RequestedHost     string
+	RequestedPort     int64
+	RequestedProtocol string
+	RequestedDatabase string
+
+	AliasResolved bool
+	AliasName     string
+	AliasHost     string
+	AliasPort     int64
+	AliasProtocol string
+
+	EffectiveUser     string
+	EffectiveHost     string
+	EffectivePort     int64
+	EffectiveProtocol string
+	EffectiveDatabase string
+
+	AccessSource string
 }
 
 // Connect launches a database client wrapped in ttyrec for session recording.
@@ -89,6 +113,9 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	dir := fmt.Sprintf("%s/%s/%s/", config.Get().Paths.TtyrecDir, safeUser, safeHost)
 	if err := os.MkdirAll(dir, 02770); err != nil {
 		return fmt.Errorf("error creating ttyrec dir: %w", err)
+	}
+	if chmodErr := os.Chmod(dir, 02770); chmodErr != nil {
+		slog.Warn("ttyrec dir chmod failed", "dir", dir, "err", chmodErr)
 	}
 
 	filenameSuffix := ""
@@ -259,12 +286,25 @@ func connectionMessage(user models.User, access models.DBAccessRight) string {
 // Flags: --mysql, --pg, --redis, --dbname <name>
 // Disambiguates when multiple matches exist.
 func ResolveTarget(db *gorm.DB, user models.User, target string, extraArgs ...string) (models.DBAccessRight, error) {
+	access, _, err := ResolveTargetDetailed(db, user, target, extraArgs...)
+	return access, err
+}
+
+func ResolveTargetDetailed(db *gorm.DB, user models.User, target string, extraArgs ...string) (models.DBAccessRight, ResolutionDetails, error) {
+	details := ResolutionDetails{RequestedTarget: target}
+	details.RequestedUser, details.RequestedHost, details.RequestedPort, details.RequestedProtocol, details.RequestedDatabase = parseDBTarget(target, extraArgs)
+
 	if shouldResolveDBAliasFirst(target) {
 		alias, err := resolveDBAlias(db, user, target)
 		if err != nil {
-			return models.DBAccessRight{}, err
+			return models.DBAccessRight{}, details, err
 		}
 		if alias.ID != uuid.Nil {
+			details.AliasResolved = true
+			details.AliasName = target
+			details.AliasHost = alias.Host
+			details.AliasPort = alias.Port
+			details.AliasProtocol = alias.Protocol
 			target = alias.Host
 			if alias.Port > 0 {
 				target = fmt.Sprintf("%s:%d", target, alias.Port)
@@ -281,9 +321,14 @@ func ResolveTarget(db *gorm.DB, user models.User, target string, extraArgs ...st
 	if host == "" {
 		alias, err := resolveDBAlias(db, user, target)
 		if err != nil {
-			return models.DBAccessRight{}, err
+			return models.DBAccessRight{}, details, err
 		}
 		if alias.ID != uuid.Nil {
+			details.AliasResolved = true
+			details.AliasName = target
+			details.AliasHost = alias.Host
+			details.AliasPort = alias.Port
+			details.AliasProtocol = alias.Protocol
 			host = alias.Host
 			port = alias.Port
 			protocol = alias.Protocol
@@ -291,15 +336,15 @@ func ResolveTarget(db *gorm.DB, user models.User, target string, extraArgs ...st
 	}
 
 	if host == "" {
-		return models.DBAccessRight{}, fmt.Errorf("no database access found for '%s'", target)
+		return models.DBAccessRight{}, details, fmt.Errorf("no database access found for '%s'", target)
 	}
 
 	accesses, err := dbAccessFilter(db, user, host, port, protocol)
 	if err != nil {
-		return models.DBAccessRight{}, err
+		return models.DBAccessRight{}, details, err
 	}
 	if len(accesses) == 0 {
-		return models.DBAccessRight{}, fmt.Errorf("no database access found for '%s'", target)
+		return models.DBAccessRight{}, details, fmt.Errorf("no database access found for '%s'", target)
 	}
 
 	// Filter by database name if specified
@@ -311,7 +356,7 @@ func ResolveTarget(db *gorm.DB, user models.User, target string, extraArgs ...st
 			}
 		}
 		if len(filtered) == 0 {
-			return models.DBAccessRight{}, fmt.Errorf("no database '%s' found on '%s'", database, target)
+			return models.DBAccessRight{}, details, fmt.Errorf("no database '%s' found on '%s'", database, target)
 		}
 		accesses = filtered
 	}
@@ -325,17 +370,33 @@ func ResolveTarget(db *gorm.DB, user models.User, target string, extraArgs ...st
 			}
 		}
 		if len(filtered) == 0 {
-			return models.DBAccessRight{}, fmt.Errorf("no database access with user '%s' on '%s'", dbUser, target)
+			return models.DBAccessRight{}, details, fmt.Errorf("no database access with user '%s' on '%s'", dbUser, target)
 		}
 		accesses = filtered
 	}
 
 	if len(accesses) == 1 {
-		return accesses[0], nil
+		details.EffectiveUser = accesses[0].Username
+		details.EffectiveHost = accesses[0].Host
+		details.EffectivePort = accesses[0].Port
+		details.EffectiveProtocol = accesses[0].Protocol
+		details.EffectiveDatabase = accesses[0].Database
+		details.AccessSource = accesses[0].Source
+		return accesses[0], details, nil
 	}
 
 	// Multiple matches remain — disambiguate
-	return disambiguateDBAccess(target, accesses, protocol, dbUser, database)
+	access, err := disambiguateDBAccess(target, accesses, protocol, dbUser, database)
+	if err != nil {
+		return models.DBAccessRight{}, details, err
+	}
+	details.EffectiveUser = access.Username
+	details.EffectiveHost = access.Host
+	details.EffectivePort = access.Port
+	details.EffectiveProtocol = access.Protocol
+	details.EffectiveDatabase = access.Database
+	details.AccessSource = access.Source
+	return access, details, nil
 }
 
 func shouldResolveDBAliasFirst(target string) bool {

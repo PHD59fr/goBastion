@@ -37,7 +37,7 @@ func DelDBAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Usage", Body: []string{"selfDelDBAlias --id <alias_id>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 	parsedID, err := uuid.Parse(aliasID)
 	if err != nil {
@@ -60,7 +60,7 @@ func DelDBAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"No alias found for the current user with the given ID."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("personal DB alias not found for id %s", aliasID)
 	} else if result.Error != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Personal DB Alias",

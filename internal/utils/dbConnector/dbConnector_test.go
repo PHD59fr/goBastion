@@ -100,6 +100,78 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 	}
 }
 
+func TestConnectFixesTTYRecDirPermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	ttyrecDir := filepath.Join(tmpDir, "ttyrec")
+	ttyrecLog := filepath.Join(tmpDir, "ttyrec.args")
+	clientLog := filepath.Join(tmpDir, "client.args")
+	targetDir := filepath.Join(ttyrecDir, "alice", "db.example.internal")
+
+	for _, dir := range []string{binDir, ttyrecDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.MkdirAll(targetDir, 0o750); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+
+	ttyrecScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"" + ttyrecLog + "\"\n" +
+		"file=''\n" +
+		"if [ \"$1\" = '-f' ]; then\n" +
+		"  file=\"$2\"\n" +
+		"  shift 2\n" +
+		"fi\n" +
+		"if [ \"$1\" = '--' ]; then\n" +
+		"  shift\n" +
+		"fi\n" +
+		"printf 'ttyrec output' > \"$file\"\n" +
+		"exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ttyrec"), []byte(ttyrecScript), 0o755); err != nil {
+		t.Fatalf("write ttyrec stub: %v", err)
+	}
+
+	clientScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"" + clientLog + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "mariadb"), []byte(clientScript), 0o755); err != nil {
+		t.Fatalf("write mariadb stub: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+":"+origPath)
+
+	cfg := config.DefaultConfig()
+	cfg.TTYRec.Enabled = true
+	cfg.Paths.TtyrecDir = ttyrecDir
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	defer config.ResetForTesting()
+
+	access := models.DBAccessRight{
+		Host:     "db.example.internal",
+		Port:     3306,
+		Protocol: "mysql",
+		Username: "dbuser",
+		Password: "secret",
+		Database: "appdb",
+	}
+	user := models.User{Username: "alice"}
+
+	if err := Connect(nil, user, access); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		t.Fatalf("stat target dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o770 {
+		t.Fatalf("unexpected ttyrec dir mode: got %o want 770", got)
+	}
+}
+
 func TestResolveDBAliasErrorsOnAmbiguousGroupAlias(t *testing.T) {
 	db := newAliasTestDB(t)
 	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
@@ -275,6 +347,66 @@ func TestResolveTargetResolvesBareDatabaseAliasBeforeHostParsing(t *testing.T) {
 	}
 	if got.Host != access.Host || got.Port != access.Port || got.Protocol != access.Protocol {
 		t.Fatalf("unexpected resolved access from alias: %+v", got)
+	}
+}
+
+func TestResolveTargetDetailedReportsRequestedAndEffectiveTargets(t *testing.T) {
+	db := newAliasTestDB(t)
+
+	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	group := models.Group{Name: "group-main"}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	membership := models.UserGroup{UserID: user.ID, GroupID: group.ID, Role: models.GroupRoleOwner}
+	if err := db.Create(&membership).Error; err != nil {
+		t.Fatalf("create membership: %v", err)
+	}
+
+	access := models.GroupDBAccess{
+		GroupID:  group.ID,
+		Host:     "db-main.internal",
+		Port:     3306,
+		Protocol: "mysql",
+		Username: "dbuser",
+		Database: "appdb",
+	}
+	if err := db.Create(&access).Error; err != nil {
+		t.Fatalf("create group db access: %v", err)
+	}
+
+	alias := models.DatabaseAlias{
+		ResolveFrom: "APPDB",
+		Host:        access.Host,
+		Port:        access.Port,
+		Protocol:    access.Protocol,
+		GroupID:     &group.ID,
+	}
+	if err := db.Create(&alias).Error; err != nil {
+		t.Fatalf("create group db alias: %v", err)
+	}
+
+	got, details, err := ResolveTargetDetailed(db, user, "APPDB")
+	if err != nil {
+		t.Fatalf("ResolveTargetDetailed returned error: %v", err)
+	}
+	if got.Host != access.Host || got.Username != access.Username {
+		t.Fatalf("unexpected resolved access: %+v", got)
+	}
+	if details.RequestedTarget != "APPDB" {
+		t.Fatalf("RequestedTarget = %q, want APPDB", details.RequestedTarget)
+	}
+	if !details.AliasResolved || details.AliasName != "APPDB" {
+		t.Fatalf("expected alias resolution details, got %+v", details)
+	}
+	if details.EffectiveHost != access.Host || details.EffectiveUser != access.Username {
+		t.Fatalf("unexpected effective details: %+v", details)
+	}
+	if details.AccessSource != "group-"+group.Name {
+		t.Fatalf("AccessSource = %q, want group-%s", details.AccessSource, group.Name)
 	}
 }
 

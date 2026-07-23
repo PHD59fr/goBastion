@@ -33,7 +33,7 @@ func resolveDBConfig() (driver, dsn string) {
 	dsn = os.Getenv("DB_DSN")
 
 	// 2. Fallback to the config file written by entrypoint.sh.
-	if driver == "" {
+	if driver == "" || dsn == "" {
 		if f, err := os.Open(config.Get().Paths.DbConfFile); err == nil {
 			scanner := bufio.NewScanner(f)
 			for scanner.Scan() {
@@ -289,6 +289,22 @@ func migrate(db *gorm.DB, driver string) error {
 		`).Error; err != nil {
 			return fmt.Errorf("failed to create idx_group_access_lookup: %w", err)
 		}
+		// Composite index for self DB access lookups.
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_self_db_access_lookup
+			ON self_db_accesses(user_id, host, port, username, protocol)
+			WHERE deleted_at IS NULL;
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_self_db_access_lookup: %w", err)
+		}
+		// Composite index for group DB access lookups.
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_group_db_access_lookup
+			ON group_db_accesses(group_id, host, port, username, protocol)
+			WHERE deleted_at IS NULL;
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_group_db_access_lookup: %w", err)
+		}
 		// Composite index for user-group membership lookups.
 		if err := db.Exec(`
 			CREATE INDEX IF NOT EXISTS idx_user_group_lookup
@@ -312,6 +328,18 @@ func migrate(db *gorm.DB, driver string) error {
 			ON group_accesses(group_id, server, port, username, protocol);
 		`).Error; err != nil {
 			return fmt.Errorf("failed to create idx_group_access_lookup: %w", err)
+		}
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_self_db_access_lookup
+			ON self_db_accesses(user_id, host(191), port, username(191), protocol(32));
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_self_db_access_lookup: %w", err)
+		}
+		if err := db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_group_db_access_lookup
+			ON group_db_accesses(group_id, host(191), port, username(191), protocol(32));
+		`).Error; err != nil {
+			return fmt.Errorf("failed to create idx_group_db_access_lookup: %w", err)
 		}
 		if err := db.Exec(`
 			CREATE INDEX IF NOT EXISTS idx_user_group_lookup

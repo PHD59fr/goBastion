@@ -125,7 +125,7 @@ func AddDBAccess(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Access already exists for this host, port, and protocol."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("personal DB access already exists for %s:%d/%s", host, port, protocol)
 	} else if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal DB Access",

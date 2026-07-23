@@ -43,7 +43,10 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 				"Usage: groupAddGuestAccess --group <group> --account <user> --host <server> --user <remote_user> [--port <port>] [--protocol <proto>] [--ttl <days>] [--comment <text>] [--from <CIDRs>]",
 			}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupAddGuestAccess", groupName) {
@@ -61,7 +64,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Server", Body: []string{"Server hostname/IP contains invalid characters."}}},
 		})
-		return nil
+		return fmt.Errorf("invalid server: %s", server)
 	}
 	if !validation.IsValidPort(port) {
 		console.DisplayBlock(console.ContentBlock{
@@ -69,7 +72,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Port", Body: []string{"Port must be between 1 and 65535"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid port: %d", port)
 	}
 	if !validation.IsValidProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
@@ -77,7 +80,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid protocol: %s", protocol)
 	}
 	if !validation.IsValidCIDRs(allowedFrom) {
 		console.DisplayBlock(console.ContentBlock{
@@ -85,7 +88,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDRs"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid CIDRs: %s", allowedFrom)
 	}
 	if ttlDays < 0 {
 		console.DisplayBlock(console.ContentBlock{
@@ -93,7 +96,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid TTL", Body: []string{"TTL must be zero (never) or positive"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid TTL: %d", ttlDays)
 	}
 
 	// TCP connectivity check (private targets only).
@@ -150,7 +153,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Wrong Role", Body: []string{fmt.Sprintf("User '%s' has role '%s' in group '%s', not 'guest'. Guest access grants only apply to guest-role users.", account, ug.Role, groupName)}}},
 		})
-		return nil
+		return fmt.Errorf("user %q has role %q in group %q, expected guest", account, ug.Role, groupName)
 	}
 
 	// Check for duplicate.
@@ -159,10 +162,10 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 		group.ID, targetUser.ID, server, port, remoteUser).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest Access",
-			BlockType: "info",
-			Sections:  []console.SectionContent{{SubTitle: "Already Exists", Body: []string{"This guest access grant already exists."}}},
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"This guest access grant already exists."}}},
 		})
-		return nil
+		return fmt.Errorf("guest access already exists for %s -> %s@%s:%d in group %q", account, remoteUser, server, port, groupName)
 	}
 
 	guestAccess := models.GroupGuestAccess{

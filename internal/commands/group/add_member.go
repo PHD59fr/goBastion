@@ -67,7 +67,7 @@ func AddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Already Exists", Body: []string{fmt.Sprintf("User '%s' is already in group '%s'.", username, groupName)}}},
 		})
-		return nil
+		return fmt.Errorf("user %q is already a member of group %q", username, groupName)
 	}
 
 	validRoles := map[string]bool{
@@ -83,7 +83,7 @@ func AddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Role", Body: []string{"Role must be one of: owner, aclkeeper, gatekeeper, member, guest"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid group role: %s", role)
 	}
 
 	newUG := models.UserGroup{UserID: u.ID, GroupID: g.ID, Role: role}

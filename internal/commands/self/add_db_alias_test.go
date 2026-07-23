@@ -15,8 +15,8 @@ func TestAddDBAliasRejectsCaseInsensitiveDuplicateInSelfScope(t *testing.T) {
 		t.Fatalf("seed db alias: %v", err)
 	}
 
-	if err := AddDBAlias(db, user, []string{"--alias", "proddb", "--host", "db2", "--port", "5432", "--protocol", "postgres"}); err != nil {
-		t.Fatalf("AddDBAlias returned error: %v", err)
+	if err := AddDBAlias(db, user, []string{"--alias", "proddb", "--host", "db2", "--port", "5432", "--protocol", "postgres"}); err == nil {
+		t.Fatal("expected duplicate db alias error")
 	}
 
 	var count int64

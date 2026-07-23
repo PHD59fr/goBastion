@@ -42,6 +42,15 @@ func Completion(d prompt.Document, user *models.User, db *gorm.DB) []prompt.Sugg
 			if (cmd == "ttyList" || cmd == "ttyPlay") && user.IsAdmin() {
 				args = append(args, prompt.Suggest{Text: "--user", Description: "Username (Admin only)"})
 			}
+			if cmd == "groupList" && !user.CanListAllGroups(db) {
+				var filtered []prompt.Suggest
+				for _, arg := range args {
+					if arg.Text != "--all" {
+						filtered = append(filtered, arg)
+					}
+				}
+				args = filtered
+			}
 			return prompt.FilterHasPrefix(filterAlreadyUsed(args), d.GetWordBeforeCursor(), true)
 		}
 	}

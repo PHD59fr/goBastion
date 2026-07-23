@@ -25,6 +25,7 @@ import (
 // Returns an exit code: 0 = success, 1 = fatal error, 2 = usage error, 3 = no admin configured.
 func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) int {
 	regenerateSSHHostKeysFlag := flag.Bool("regenerateSSHHostKeys", false, "Force-regenerate SSH host keys")
+	regenerateSFTPProxyHostKeyFlag := flag.Bool("regenerateSFTPProxyHostKey", false, "Force-regenerate the stable SFTP proxy host key")
 	firstInstallFlag := flag.Bool("firstInstall", false, "Bootstrap first admin user")
 	syncFlag := flag.Bool("sync", false, "Sync DB state to OS (DB is source of truth)")
 	dbExportFlag := flag.Bool("dbExport", false, "Export the database as an encrypted JSON envelope to stdout")
@@ -40,7 +41,15 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) int {
 	case *regenerateSSHHostKeysFlag:
 		if err := sshHostKey.GenerateSSHHostKeys(db, true); err != nil {
 			log.Error("startup_failed", slog.String("reason", "regenerate_ssh_host_keys"), slog.Any("error", err))
+			return 1
 		}
+
+	case *regenerateSFTPProxyHostKeyFlag:
+		if _, _, _, err := sshHostKey.EnsureSFTPProxyHostKey(db, true); err != nil {
+			log.Error("startup_failed", slog.String("reason", "regenerate_sftp_proxy_host_key"), slog.Any("error", err))
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "✅ SFTP proxy host key regenerated.")
 
 	case *firstInstallFlag:
 		if err := createFirstAdminUser(db, log, syncer, adapter); err != nil {
@@ -246,14 +255,13 @@ func runDisableTOTP(db *gorm.DB, log *slog.Logger, username string) int {
 		return 1
 	}
 
-	if !u.TOTPEnabled && u.PasswordHash == "" && u.BackupCodes == "" {
-		fmt.Fprintf(os.Stderr, "User '%s' has no MFA configured. Nothing to do.\n", username)
+	if !u.TOTPEnabled && u.TOTPSecret == "" && u.BackupCodes == "" {
+		fmt.Fprintf(os.Stderr, "User '%s' has no TOTP or backup codes configured. Nothing to do.\n", username)
 		return 0
 	}
 
 	u.TOTPSecret = ""
 	u.TOTPEnabled = false
-	u.PasswordHash = ""
 	u.BackupCodes = ""
 	if err := db.Save(&u).Error; err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to update user: %v\n", err)

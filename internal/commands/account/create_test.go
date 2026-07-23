@@ -79,6 +79,7 @@ func TestCreate_MissingArgs(t *testing.T) {
 	db := newTestDB(t)
 	mock := osadapter.NewMockAdapter()
 	admin := newAdminUser(t, db, "admin")
-	// Should not panic; missing --user arg
-	_ = Create(db, mock, admin, []string{})
+	if err := Create(db, mock, admin, []string{}); err == nil {
+		t.Fatal("expected missing required arguments error")
+	}
 }

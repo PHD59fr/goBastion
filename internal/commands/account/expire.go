@@ -37,7 +37,7 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountExpire --user <username>"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required arguments")
 	}
 
 	if !currentUser.CanDo(db, "accountExpire", username) {
@@ -46,7 +46,7 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to lock this account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var u models.User
@@ -65,7 +65,7 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "warning",
 			Sections:  []console.SectionContent{{SubTitle: "Already Locked", Body: []string{fmt.Sprintf("User '%s' is already disabled.", username)}}},
 		})
-		return nil
+		return fmt.Errorf("user %q is already disabled", username)
 	}
 
 	// Prevent admins from locking themselves out.
@@ -75,7 +75,7 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"You cannot lock your own account."}}},
 		})
-		return nil
+		return fmt.Errorf("cannot lock your own account")
 	}
 
 	// Prevent locking the last remaining admin.
@@ -95,7 +95,7 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 				BlockType: "error",
 				Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"Cannot lock the last remaining admin account."}}},
 			})
-			return nil
+			return fmt.Errorf("cannot lock the last remaining admin account")
 		}
 	}
 

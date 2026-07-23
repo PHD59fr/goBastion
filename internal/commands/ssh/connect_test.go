@@ -1,7 +1,10 @@
 package ssh
 
 import (
+	"bytes"
+	"encoding/json"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 )
 
@@ -106,6 +110,44 @@ func mustCreateRestrictedSelfAccess(t *testing.T, db *gorm.DB, userID uuid.UUID,
 	if err := db.Create(&sa).Error; err != nil {
 		t.Fatalf("create restricted self access: %v", err)
 	}
+}
+
+func mustCreateAlias(t *testing.T, db *gorm.DB, userID uuid.UUID, aliasName, host string) {
+	t.Helper()
+	alias := models.Aliases{ResolveFrom: aliasName, Host: host, UserID: &userID}
+	if err := db.Create(&alias).Error; err != nil {
+		t.Fatalf("create alias: %v", err)
+	}
+}
+
+func parseJSONLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var out []map[string]any
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("unmarshal log line %q: %v", line, err)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func findLogEntry(entries []map[string]any, msg string, match func(map[string]any) bool) map[string]any {
+	for _, entry := range entries {
+		if entry["msg"] != msg {
+			continue
+		}
+		if match == nil || match(entry) {
+			return entry
+		}
+	}
+	return nil
 }
 
 // --- accessFilter priority tests ---
@@ -323,6 +365,11 @@ func TestInferSSHUsername_ExactBeforeWildcard(t *testing.T) {
 // --- normalizeWildcardUsername tests ---
 
 func TestNormalizeWildcardUsername(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.Load()
+	cfg.Security.DefaultWildcardUsername = "operator"
+
 	tests := []struct {
 		name      string
 		stored    string
@@ -330,7 +377,7 @@ func TestNormalizeWildcardUsername(t *testing.T) {
 		want      string
 	}{
 		{"wildcard with requested username", "*", "deploy", "deploy"},
-		{"wildcard without requested username defaults to root", "*", "", "root"},
+		{"wildcard without requested username uses configured default", "*", "", "operator"},
 		{"exact stored is never overridden", "admin", "deploy", "admin"},
 		{"exact stored with empty requested", "operator", "", "operator"},
 	}
@@ -342,6 +389,42 @@ func TestNormalizeWildcardUsername(t *testing.T) {
 					tc.stored, tc.requested, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveAccessUsername_UsesConfiguredDefault(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.Load()
+	cfg.Security.DefaultWildcardUsername = "svc-default"
+
+	got, ok := resolveAccessUsername("*")
+	if !ok {
+		t.Fatal("expected wildcard username to resolve")
+	}
+	if got != "svc-default" {
+		t.Fatalf("resolveAccessUsername(*) = %q, want %q", got, "svc-default")
+	}
+}
+
+func TestTCPProxyRejectsJITMFAProtectedAccess(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "alice", models.RoleUser)
+	group := mustCreateGroup(t, db, "prod")
+	group.MFARequired = true
+	if err := db.Save(&group).Error; err != nil {
+		t.Fatalf("save group: %v", err)
+	}
+	mustAddUserToGroup(t, db, user.ID, group.ID, "member")
+	mustCreateGroupAccess(t, db, group.ID, "deploy", "myserver", 22)
+	mustCreateGroupEgressKey(t, db, group.ID)
+
+	err := TCPProxy(db, user, *slog.Default(), "myserver", "22")
+	if err == nil {
+		t.Fatal("expected TCPProxy to reject JIT MFA protected access")
+	}
+	if !strings.Contains(err.Error(), "requires JIT MFA") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -495,6 +578,74 @@ func TestResolveRealmHop(t *testing.T) {
 	}
 	if host != "bastion-eu.internal" || port != "2200" {
 		t.Fatalf("unexpected realm hop: %s:%s", host, port)
+	}
+}
+
+func TestConnectLogsRequestedAndEffectiveTargets(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "alice", models.RoleUser)
+	mustCreateAlias(t, db, user.ID, "hub", "hub.monplex.fr")
+	mustCreateSelfAccess(t, db, user.ID, "deploy", "hub.monplex.fr", 22)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	t.Setenv("SSH_CLIENT", "90.103.139.92 35118 22")
+
+	if err := Connect(db, user, *logger, "hub"); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+
+	entries := parseJSONLogLines(t, &logBuf)
+	entry := findLogEntry(entries, "ssh_connect", func(entry map[string]any) bool {
+		return entry["reason"] == "no_valid_key"
+	})
+	if entry == nil {
+		t.Fatal("expected ssh_connect log with no_valid_key")
+	}
+	if entry["requested_target_host"] != "hub" {
+		t.Fatalf("requested_target_host = %v, want hub", entry["requested_target_host"])
+	}
+	if entry["requested_target_user"] != "" {
+		t.Fatalf("requested_target_user = %v, want empty", entry["requested_target_user"])
+	}
+	if entry["target_host"] != "hub.monplex.fr" {
+		t.Fatalf("target_host = %v, want hub.monplex.fr", entry["target_host"])
+	}
+	if entry["target_user"] != "deploy" {
+		t.Fatalf("target_user = %v, want deploy", entry["target_user"])
+	}
+}
+
+func TestConnectLogsExplicitRequestedUserUnchanged(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "alice", models.RoleUser)
+	mustCreateSelfAccess(t, db, user.ID, "deploy", "myserver", 22)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	t.Setenv("SSH_CLIENT", "90.103.139.92 35118 22")
+
+	if err := Connect(db, user, *logger, "deploy@myserver"); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+
+	entries := parseJSONLogLines(t, &logBuf)
+	entry := findLogEntry(entries, "ssh_connect", func(entry map[string]any) bool {
+		return entry["reason"] == "no_valid_key"
+	})
+	if entry == nil {
+		t.Fatal("expected ssh_connect log with no_valid_key")
+	}
+	if entry["requested_target_user"] != "deploy" {
+		t.Fatalf("requested_target_user = %v, want deploy", entry["requested_target_user"])
+	}
+	if entry["target_user"] != "deploy" {
+		t.Fatalf("target_user = %v, want deploy", entry["target_user"])
+	}
+	if entry["requested_target_host"] != "myserver" || entry["target_host"] != "myserver" {
+		t.Fatalf("unexpected target hosts: requested=%v target=%v", entry["requested_target_host"], entry["target_host"])
 	}
 }
 

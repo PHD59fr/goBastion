@@ -3,6 +3,9 @@ package session
 import (
 	"reflect"
 	"testing"
+
+	"goBastion/internal/config"
+	"goBastion/internal/models"
 )
 
 func TestParseDBRequest(t *testing.T) {
@@ -56,5 +59,39 @@ func TestParseDBRequest(t *testing.T) {
 				t.Fatalf("parseDBRequest(%q, %v) = %v, want %v", tt.cmd, tt.args, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInteractiveAllowConfig(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.Load()
+	if !cfg.Interactive.Allow {
+		t.Fatal("interactive.allow should default to true")
+	}
+	cfg.Interactive.Allow = false
+	if cfg.Interactive.Allow {
+		t.Fatal("expected interactive.allow to accept runtime override")
+	}
+}
+
+func TestTCPProxyMFABlockMessage(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.Load()
+
+	if msg := tcpProxyMFABlockMessage(models.User{}); msg != "" {
+		t.Fatalf("unexpected block message without MFA: %q", msg)
+	}
+	if msg := tcpProxyMFABlockMessage(models.User{PasswordHash: "hash"}); msg == "" {
+		t.Fatal("expected password MFA block message")
+	}
+	if msg := tcpProxyMFABlockMessage(models.User{TOTPEnabled: true, TOTPSecret: "secret"}); msg == "" {
+		t.Fatal("expected TOTP MFA block message")
+	}
+
+	cfg.RequireMFA.Enabled = true
+	if msg := tcpProxyMFABlockMessage(models.User{}); msg == "" {
+		t.Fatal("expected global MFA block message")
 	}
 }

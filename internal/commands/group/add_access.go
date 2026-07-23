@@ -2,6 +2,7 @@ package group
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -150,10 +151,17 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	if err := db.Where("group_id = ? AND server = ? AND port = ? AND username = ?", group.ID, server, port, username).First(&existingAccess).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
-			BlockType: "info",
-			Sections:  []console.SectionContent{{SubTitle: "Info", Body: []string{"Access already exists for this group with the given server, port, and username."}}},
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Access already exists for this group with the given server, port, and username."}}},
 		})
-		return nil
+		return fmt.Errorf("group access already exists for %s@%s:%d in group %q", username, server, port, groupName)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Database error while checking for existing access. Please try again."}}},
+		})
+		return fmt.Errorf("database error: %v", err)
 	}
 
 	access := models.GroupAccess{
@@ -185,4 +193,3 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	})
 	return nil
 }
-

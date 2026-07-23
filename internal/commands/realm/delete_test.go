@@ -39,10 +39,9 @@ func TestRealmDelete_NotFound(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
-	// Deleting a non-existent realm returns nil (no error).
 	err := Delete(db, admin, []string{"--realm", "nonexistent"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected not found error")
 	}
 }
 

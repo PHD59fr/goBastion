@@ -1,8 +1,6 @@
 package sftpProxy
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,9 +13,11 @@ import (
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/sshHostKey"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+	"gorm.io/gorm"
 )
 
 // stdinoutConn wraps os.Stdin/Stdout as net.Conn for use with ssh.NewServerConn.
@@ -44,9 +44,7 @@ func (c *stdinoutConn) SetWriteDeadline(_ time.Time) error { return nil }
 //	Host myserver
 //	  User root
 //	  ProxyCommand ssh -p 2222 -- user@bastion "sftp-session root@%h:%p"
-//	  StrictHostKeyChecking no
-//	  UserKnownHostsFile /dev/null
-func Proxy(access models.AccessRight) error {
+func Proxy(db *gorm.DB, access models.AccessRight) error {
 	// 1. Connect to the target with the egress key.
 	signer, err := ssh.ParsePrivateKey([]byte(access.PrivateKey))
 	if err != nil {
@@ -109,14 +107,11 @@ func Proxy(access models.AccessRight) error {
 		return fmt.Errorf("target stdout pipe: %w", err)
 	}
 
-	// 3. Generate an ephemeral RSA host key for our fake SSH server.
-	hostKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// 3. Load the stable host key used by the fake SSH server presented to the
+	// local sftp client. This allows clients to pin the host key in known_hosts.
+	hostSigner, _, _, err := sshHostKey.EnsureSFTPProxyHostKey(db, false)
 	if err != nil {
-		return fmt.Errorf("generate ephemeral host key: %w", err)
-	}
-	hostSigner, err := ssh.NewSignerFromKey(hostKey)
-	if err != nil {
-		return fmt.Errorf("create host signer: %w", err)
+		return fmt.Errorf("load SFTP proxy host key: %w", err)
 	}
 
 	// 4. Present a minimal SSH server on stdin/stdout.

@@ -50,6 +50,7 @@ func DisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 
 	user.TOTPSecret = ""
 	user.TOTPEnabled = false
+	user.BackupCodes = ""
 	if err := db.Save(user).Error; err != nil {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}

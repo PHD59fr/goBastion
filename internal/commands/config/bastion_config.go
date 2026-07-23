@@ -752,12 +752,6 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 		raw[section] = sec
 	}
 
-	current := sec[field]
-	coerced, err := coerceValue(fmt.Sprintf("%v", current), newValue)
-	if err != nil {
-		return fmt.Errorf("invalid value: %v", err)
-	}
-
 	// Guard: session time limits must be at least 30s (0 disables/unlimits them).
 	switch key {
 	case "session.idle_timeout":
@@ -772,9 +766,29 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 		if n, perr := strconv.ParseInt(strings.TrimSpace(newValue), 10, 64); perr == nil && n < 0 {
 			return fmt.Errorf("retention_days must be 0 or greater (use 0 to keep forever)")
 		}
+	case "security.group_visibility.mode":
+		switch strings.ToLower(strings.TrimSpace(newValue)) {
+		case "open", "members", "managers", "private":
+		default:
+			return fmt.Errorf("group_visibility.mode must be one of: open, members, managers, private")
+		}
+	case "security.egress_key_visibility.mode":
+		switch strings.ToLower(strings.TrimSpace(newValue)) {
+		case "discoverable", "members", "managers", "private":
+		default:
+			return fmt.Errorf("egress_key_visibility.mode must be one of: discoverable, members, managers, private")
+		}
 	}
 
-	sec[field] = coerced
+	current, parent, leaf, err := resolveConfigLeaf(sec, field)
+	if err != nil {
+		return err
+	}
+	coerced, err := coerceValue(fmt.Sprintf("%v", current), newValue)
+	if err != nil {
+		return fmt.Errorf("invalid value: %v", err)
+	}
+	parent[leaf] = coerced
 
 	patchedJSON, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -791,6 +805,23 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 	patchedCfg.InternalDB.DSN = cfg.InternalDB.DSN
 
 	return config.SaveConfig(db, patchedCfg)
+}
+
+func resolveConfigLeaf(section map[string]any, field string) (current any, parent map[string]any, leaf string, err error) {
+	parts := strings.Split(field, ".")
+	parent = section
+	for i := 0; i < len(parts)-1; i++ {
+		part := parts[i]
+		next, ok := parent[part].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			parent[part] = next
+		}
+		parent = next
+	}
+	leaf = parts[len(parts)-1]
+	current = parent[leaf]
+	return current, parent, leaf, nil
 }
 
 // parseDurationInput parses a duration with the same rules as the config
