@@ -86,13 +86,11 @@ func main() {
 				log.Error("config_load_from_db_failed", slog.Any("error", err))
 				os.Exit(1)
 			}
-			if err := config.EnsureInstance(db); err != nil {
-				log.Error("config_ensure_instance_failed", slog.Any("error", err))
-				os.Exit(1)
-			}
-			if err := config.LoadFromDB(db); err != nil {
-				log.Error("config_load_from_db_failed", slog.Any("error", err))
-				os.Exit(1)
+			// Keep a pristine database empty until the first administrator is
+			// created. This is also what makes a freshly migrated target suitable
+			// for --dbImport. --firstInstall creates the instance row below.
+			if !hasArg("--firstInstall") {
+				log.Info("config_not_initialized")
 			}
 		}
 		log.Info("config_loaded", slog.Duration("took", time.Since(tCfg)))

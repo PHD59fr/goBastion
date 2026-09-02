@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	envKey = "EGRESS_ENC_KEY"
+	envKey          = "EGRESS_ENC_KEY"
+	encryptedPrefix = "gob:v1:"
 )
 
 var (
@@ -32,7 +33,7 @@ func Enabled() bool {
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM with a random nonce.
-// Returns base64(nonce || ciphertext).
+// Returns a versioned value containing base64(nonce || ciphertext).
 func Encrypt(plaintext string) (string, error) {
 	if !Enabled() {
 		return "", fmt.Errorf("egress key encryption not configured (set %s)", envKey)
@@ -42,16 +43,17 @@ func Encrypt(plaintext string) (string, error) {
 		return "", fmt.Errorf("generate nonce: %w", err)
 	}
 	ct := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.StdEncoding.EncodeToString(ct), nil
+	return encryptedPrefix + base64.StdEncoding.EncodeToString(ct), nil
 }
 
-// Decrypt decrypts a base64(nonce || ciphertext) string produced by Encrypt.
-// Returns the plaintext or an error.
+// Decrypt accepts both the current versioned format and legacy unprefixed
+// base64(nonce || ciphertext) values.
 func Decrypt(encoded string) (string, error) {
 	if !Enabled() {
 		return "", fmt.Errorf("egress key encryption not configured (set %s)", envKey)
 	}
-	data, err := base64.StdEncoding.DecodeString(encoded)
+	payload := strings.TrimPrefix(encoded, encryptedPrefix)
+	data, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		return "", fmt.Errorf("base64 decode: %w", err)
 	}
@@ -68,18 +70,24 @@ func Decrypt(encoded string) (string, error) {
 }
 
 // DecryptOrPassThrough returns the plaintext for both encrypted and legacy plaintext values.
-// If EGRESS_ENC_KEY is not set, returns raw as-is.
-// If set, attempts decryption; on failure assumes legacy plaintext and returns raw.
-func DecryptOrPassThrough(raw string) string {
+// Marked encrypted values always fail closed when the key is missing or invalid.
+// Unmarked values retain legacy plaintext compatibility.
+func DecryptOrPassThrough(raw string) (string, error) {
 	if !Enabled() {
-		return raw
+		if strings.HasPrefix(raw, encryptedPrefix) {
+			return "", fmt.Errorf("encrypted value cannot be decrypted: %s is not configured", envKey)
+		}
+		return raw, nil
 	}
 	plain, err := Decrypt(raw)
 	if err != nil {
+		if strings.HasPrefix(raw, encryptedPrefix) {
+			return "", fmt.Errorf("decrypt marked encrypted value: %w", err)
+		}
 		// Legacy plaintext value (stored before encryption was enabled).
-		return raw
+		return raw, nil
 	}
-	return plain
+	return plain, nil
 }
 
 // ReEncryptIfNeeded takes a plaintext value and encrypts it if EGRESS_ENC_KEY is set.
@@ -95,35 +103,22 @@ func ReEncryptIfNeeded(plaintext string) (string, error) {
 	return Encrypt(plaintext)
 }
 
-// IsEncrypted returns true if the value looks like a valid encrypted blob.
-// A valid encrypted blob is base64-encoded, decodable, and has the exact size
-// of nonce (12) + ciphertext + tag (16) for AES-GCM, i.e. at least 28 bytes
-// but also must NOT look like a standard PEM or OpenSSH key.
+// IsEncrypted recognizes the versioned format and authenticates legacy blobs.
 func IsEncrypted(raw string) bool {
-	data, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
+	if strings.HasPrefix(raw, encryptedPrefix) {
+		if !Enabled() {
+			return false
+		}
+		_, err := Decrypt(raw)
+		return err == nil
+	}
+	// Backward compatibility for unprefixed ciphertext written by older releases:
+	// only accept it when its GCM authentication tag verifies with the active key.
+	if !Enabled() {
 		return false
 	}
-	// AES-256-GCM nonce is 12 bytes, tag is 16 bytes = minimum 28 bytes.
-	if len(data) < 28 {
-		return false
-	}
-	// Heuristic: encrypted blobs have no line breaks. SSH keys and PEM data
-	// contain newlines. Also reject data that looks like it starts with
-	// common SSH key type markers (ssh-rsa, ssh-ed25519, etc.).
-	trimmed := strings.TrimSpace(raw)
-	if strings.Contains(trimmed, "\n") || strings.Contains(trimmed, "\r") {
-		return false
-	}
-	// Reject data starting with known PEM headers.
-	if strings.HasPrefix(trimmed, "-----") {
-		return false
-	}
-	// Reject base64 that decodes to something starting with "ssh-" (common SSH key prefix).
-	if len(data) > 4 && string(data[:4]) == "ssh-" {
-		return false
-	}
-	return true
+	_, err := Decrypt(raw)
+	return err == nil
 }
 
 // readKeyFromEnv reads EGRESS_ENC_KEY from env or fallback config file.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/validation"
@@ -98,6 +99,18 @@ func AddDBAccess(db *gorm.DB, user *models.User, args []string) error {
 			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be a comma-separated list of valid CIDR notation (e.g. 10.0.0.0/8,192.168.1.0/24)"}}},
 		})
 		return fmt.Errorf("invalid CIDRs: %s", allowedFrom)
+	}
+
+	// Prompt for the password interactively when it was not passed as a flag,
+	// so it does not linger in the shell history or the process list.
+	password, err := utils.ResolveSecret(password, "Database password")
+	if err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Personal DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Input Error", Body: []string{err.Error()}}},
+		})
+		return err
 	}
 
 	// Encrypt password if provided

@@ -73,6 +73,9 @@ func AddAlias(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Failed to add alias. Please contact admin."}},
 			},
 		})
+		if validation.IsDuplicateKeyError(err) {
+			return fmt.Errorf("personal alias %q already exists", alias)
+		}
 		return err
 	}
 	console.DisplayBlock(console.ContentBlock{

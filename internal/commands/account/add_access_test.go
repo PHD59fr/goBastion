@@ -64,3 +64,32 @@ func TestAddAccess_UserNotFound(t *testing.T) {
 		t.Fatal("expected error for unknown user, got nil")
 	}
 }
+
+func TestAddAccess_RejectsInvalidInputsAndDuplicates(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	newRegularUser(t, db, "alice")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"negative TTL", []string{"--user", "alice", "--server", "db.internal", "--username", "root", "--ttl", "-1"}},
+		{"invalid host", []string{"--user", "alice", "--server", "bad host", "--username", "root"}},
+		{"invalid remote username", []string{"--user", "alice", "--server", "db.internal", "--username", "bad user"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := AddAccess(db, admin, tc.args); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+
+	args := []string{"--user", "alice", "--server", "db.internal", "--username", "root"}
+	if err := AddAccess(db, admin, args); err != nil {
+		t.Fatalf("create access: %v", err)
+	}
+	if err := AddAccess(db, admin, args); err == nil {
+		t.Fatal("expected duplicate access error")
+	}
+}

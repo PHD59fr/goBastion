@@ -1,10 +1,13 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 // EntityNameRegexp matches valid entity names (aliases, group names, realm names, etc.).
@@ -64,11 +67,10 @@ func DBProtocolClient(p string) string {
 	}
 }
 
-// IsValidHost returns true when h is a valid hostname or IP address.
-// IPv6 addresses enclosed in square brackets (e.g. [::1]) are accepted.
-// Rejects strings containing spaces, '@', '/', or '\'.
+// IsValidHost returns true when h is a valid hostname or IP address for a new
+// persisted value. IPv6 addresses enclosed in square brackets are accepted.
 func IsValidHost(h string) bool {
-	if strings.ContainsAny(h, " @/\\") {
+	if !IsValidHostReference(h) {
 		return false
 	}
 	host := h
@@ -78,7 +80,32 @@ func IsValidHost(h string) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
-	return EntityNameRegexp.MatchString(host)
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || !isASCIIAlphanumeric(label[0]) || !isASCIIAlphanumeric(label[len(label)-1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsValidHostReference retains the permissive syntax accepted by older
+// releases for runtime connection inputs and existing persisted hosts.
+func IsValidHostReference(h string) bool {
+	if strings.ContainsAny(h, " @/\\") {
+		return false
+	}
+	host := h
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return net.ParseIP(host) != nil || EntityNameRegexp.MatchString(host)
+}
+
+func isASCIIAlphanumeric(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
 }
 
 // IsValidUsername returns true when u is a valid Linux username.
@@ -125,6 +152,19 @@ func WrapDBError(err error, context string) error {
 		return err
 	}
 	return fmt.Errorf("%s: %w", context, err)
+}
+
+// IsDuplicateKeyError recognizes uniqueness violations from the supported
+// databases, including connections not configured with GORM error translation.
+func IsDuplicateKeyError(err error) bool {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique constraint failed") ||
+		strings.Contains(message, "duplicate entry") ||
+		strings.Contains(message, "sqlstate 23505") ||
+		strings.Contains(message, "violates unique constraint")
 }
 
 // IsValidCIDRs validates a comma-separated list of CIDR notation strings.

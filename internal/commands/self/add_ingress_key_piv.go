@@ -18,24 +18,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// addIngressKey is a shared helper: calls CreateDBIngressKey and optionally marks the
-// resulting IngressKey as PIV-attested before syncing authorized_keys.
+// addIngressKey persists the key and its attestation metadata before syncing authorized_keys.
 func addIngressKey(db *gorm.DB, user *models.User, pubKeyText, comment string, pivAttested bool) error {
-	if err := account.CreateDBIngressKey(db, user, pubKeyText); err != nil {
+	if err := account.CreateDBIngressKey(db, user, pubKeyText, account.IngressKeyMetadata{PIVAttested: pivAttested}); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add PIV Ingress Key",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("Failed to add key: %v", err)}}},
 		})
 		return fmt.Errorf("failed to add ingress key: %w", err)
-	}
-
-	if pivAttested {
-		if err := db.Model(&models.IngressKey{}).
-			Where("user_id = ? AND key = ?", user.ID, strings.TrimSpace(pubKeyText)).
-			Update("piv_attested", true).Error; err != nil {
-			return fmt.Errorf("key added but PIV attestation flag could not be set: %w", err)
-		}
 	}
 
 	// Re-sync authorized_keys
@@ -69,7 +60,8 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 	var flagOutput strings.Builder
 	fs.SetOutput(&flagOutput)
 
-	if err := fs.Parse(args); err != nil || attestFile == "" || intermediateFile == "" {
+	parseErr := fs.Parse(args)
+	if parseErr != nil || attestFile == "" || intermediateFile == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add PIV Ingress Key",
 			BlockType: "error",
@@ -81,7 +73,10 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 				"  yubico-piv-tool --action=read-cert --slot=f9 > intermediate.pem",
 			}}},
 		})
-		return nil
+		if parseErr != nil {
+			return parseErr
+		}
+		return fmt.Errorf("attestation and intermediate certificate files are required")
 	}
 
 	attestPEM, err := os.ReadFile(attestFile)
@@ -91,7 +86,7 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("Cannot read attest file: %v", err)}}},
 		})
-		return nil
+		return fmt.Errorf("cannot read attest file: %w", err)
 	}
 
 	intermediatePEM, err := os.ReadFile(intermediateFile)
@@ -101,7 +96,7 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("Cannot read intermediate file: %v", err)}}},
 		})
-		return nil
+		return fmt.Errorf("cannot read intermediate file: %w", err)
 	}
 
 	// Remaining args after flags is the SSH public key text
@@ -112,18 +107,26 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Please provide the SSH public key as the last argument."}}},
 		})
-		return nil
+		return fmt.Errorf("SSH public key is required")
 	}
 
 	// Load all trust anchors from DB and find one that validates the chain.
 	var anchors []models.PIVTrustAnchor
-	if err := db.Find(&anchors).Error; err != nil || len(anchors) == 0 {
+	if err := db.Find(&anchors).Error; err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add PIV Ingress Key",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to load PIV trust anchors. Please contact admin."}}},
+		})
+		return fmt.Errorf("failed to load PIV trust anchors: %w", err)
+	}
+	if len(anchors) == 0 {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add PIV Ingress Key",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"No PIV trust anchors configured. An admin must add one first with pivAddTrustAnchor."}}},
 		})
-		return nil
+		return fmt.Errorf("no PIV trust anchors configured")
 	}
 
 	var verifyErr error
@@ -139,7 +142,7 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Attestation Failed", Body: []string{verifyErr.Error()}}},
 		})
-		return nil
+		return fmt.Errorf("PIV attestation failed: %w", verifyErr)
 	}
 
 	// Attestation OK - add the key, marked as PIV-attested.

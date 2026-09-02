@@ -64,3 +64,12 @@ func TestDeleteUser_AdapterError(t *testing.T) {
 	// The important thing is that the error is propagated.
 	_ = count
 }
+
+func TestDelete_MissingUsernameIsError(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+
+	if err := Delete(db, osadapter.NewMockAdapter(), admin, nil); err == nil {
+		t.Fatal("expected missing username error")
+	}
+}

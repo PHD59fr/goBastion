@@ -39,6 +39,23 @@ func TestDelAccess_NotFound(t *testing.T) {
 	db := newTestDB(t)
 	admin := newAdminUser(t, db, "admin")
 
-	// Non-existent UUID — function should not return error (it silently deletes 0 rows)
-	_ = DelAccess(db, admin, []string{"--access", "00000000-0000-0000-0000-000000000000"})
+	if err := DelAccess(db, admin, []string{"--access", "00000000-0000-0000-0000-000000000000"}); err == nil {
+		t.Fatal("expected not-found error")
+	}
+}
+
+func TestDelAccess_ValidationErrors(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	regular := newRegularUser(t, db, "regular")
+
+	if err := DelAccess(db, admin, nil); err == nil {
+		t.Fatal("expected missing access ID error")
+	}
+	if err := DelAccess(db, admin, []string{"--access", "invalid"}); err == nil {
+		t.Fatal("expected invalid access ID error")
+	}
+	if err := DelAccess(db, regular, []string{"--access", "00000000-0000-0000-0000-000000000000"}); err == nil {
+		t.Fatal("expected access-denied error")
+	}
 }

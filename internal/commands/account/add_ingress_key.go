@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/sshkey"
@@ -15,8 +16,22 @@ import (
 	"gorm.io/gorm"
 )
 
+// IngressKeyMetadata contains metadata stored with a newly created ingress key.
+type IngressKeyMetadata struct {
+	ExpiresAt   *time.Time
+	PIVAttested bool
+}
+
 // CreateDBIngressKey validates and persists an SSH ingress public key for a user.
-func CreateDBIngressKey(db *gorm.DB, user *models.User, key string) error {
+func CreateDBIngressKey(db *gorm.DB, user *models.User, key string, metadata ...IngressKeyMetadata) error {
+	if len(metadata) > 1 {
+		return fmt.Errorf("only one ingress key metadata value may be provided")
+	}
+	var keyMetadata IngressKeyMetadata
+	if len(metadata) == 1 {
+		keyMetadata = metadata[0]
+	}
+
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return fmt.Errorf("public SSH key cannot be empty")
@@ -51,8 +66,13 @@ func CreateDBIngressKey(db *gorm.DB, user *models.User, key string) error {
 		Fingerprint: fingerprint,
 		Size:        keySize,
 		Comment:     comment,
+		ExpiresAt:   keyMetadata.ExpiresAt,
+		PIVAttested: keyMetadata.PIVAttested,
 	}
 	if err = db.Create(&ingressKey).Error; err != nil {
+		if validation.IsDuplicateKeyError(err) {
+			return fmt.Errorf("key already exists with fingerprint: %s", fingerprint)
+		}
 		return fmt.Errorf("error creating ingress key in DB: %w", err)
 	}
 	return nil

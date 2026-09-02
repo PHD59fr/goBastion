@@ -38,3 +38,12 @@ func TestRealmInfo_NotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent realm, got nil")
 	}
 }
+
+func TestRealmInfo_MissingName(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+
+	if err := Info(db, admin, nil); err == nil {
+		t.Fatal("expected missing realm name error")
+	}
+}

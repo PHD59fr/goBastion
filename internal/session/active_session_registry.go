@@ -1,6 +1,7 @@
 package session
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -41,7 +42,7 @@ func registerActiveSession(db *gorm.DB, currentUser *models.User, sessionID, kin
 		}
 
 		return tx.Create(&record).Error
-	}); err != nil {
+	}, &sql.TxOptions{Isolation: sql.LevelSerializable}); err != nil {
 		return nil, err
 	}
 

@@ -24,12 +24,12 @@ CREATE TABLE IF NOT EXISTS active_sessions (
     session_id  varchar(36) NOT NULL PRIMARY KEY,
     instance_id varchar(191) NOT NULL,
     username    longtext NOT NULL,
-    pid         bigint NOT NULL,
+    p_id        bigint NOT NULL,
     kind        longtext NOT NULL,
     created_at  datetime,
     updated_at  datetime,
     KEY idx_active_sessions_instance_id (instance_id),
-    KEY idx_active_sessions_username (username)
+    KEY idx_active_sessions_username (username(255))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ── users ────────────────────────────────────────────────────────────────────
@@ -50,7 +50,9 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      datetime,
     updated_at      datetime,
     deleted_at      datetime,
-    UNIQUE KEY idx_username_deletedat (username(255), deleted_at),
+    active_username_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(LOWER(username), 256)) ELSE NULL END) VIRTUAL,
+    KEY idx_username_deletedat (username(255), deleted_at),
+    UNIQUE KEY uq_active_users_username (active_username_hash),
     KEY idx_users_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -75,10 +77,12 @@ CREATE TABLE IF NOT EXISTS user_groups (
     created_at datetime,
     updated_at datetime,
     deleted_at datetime,
+    active_membership_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', group_id), 256)) ELSE NULL END) VIRTUAL,
     KEY idx_user_groups_user_id (user_id),
     KEY idx_user_groups_group_id (group_id),
     KEY idx_user_groups_deleted_at (deleted_at),
     KEY idx_user_group_lookup (user_id, group_id),
+    UNIQUE KEY uq_active_user_groups_membership (active_membership_hash),
     CONSTRAINT fk_user_groups_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_user_groups_group FOREIGN KEY (group_id) REFERENCES `groups`(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -97,8 +101,10 @@ CREATE TABLE IF NOT EXISTS ingress_keys (
     created_at   datetime,
     updated_at   datetime,
     deleted_at   datetime,
+    active_fingerprint_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', fingerprint), 256)) ELSE NULL END) VIRTUAL,
     KEY idx_ingress_keys_user_id (user_id),
     KEY idx_ingress_keys_deleted_at (deleted_at),
+    UNIQUE KEY uq_active_ingress_keys_fingerprint (active_fingerprint_hash),
     CONSTRAINT fk_ingress_keys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -143,7 +149,7 @@ CREATE TABLE IF NOT EXISTS self_accesses (
     username        longtext NOT NULL,
     server          longtext NOT NULL,
     port            bigint NOT NULL,
-    protocol        longtext NOT NULL DEFAULT 'ssh',
+    protocol        varchar(32) NOT NULL DEFAULT 'ssh',
     comment         longtext,
     allowed_from    longtext,
     expires_at      datetime,
@@ -164,7 +170,7 @@ CREATE TABLE IF NOT EXISTS group_accesses (
     username        longtext NOT NULL,
     server          longtext NOT NULL,
     port            bigint NOT NULL,
-    protocol        longtext NOT NULL DEFAULT 'ssh',
+    protocol        varchar(32) NOT NULL DEFAULT 'ssh',
     comment         longtext,
     allowed_from    longtext,
     expires_at      datetime,
@@ -188,7 +194,7 @@ CREATE TABLE IF NOT EXISTS group_guest_accesses (
     username      longtext NOT NULL,
     server        longtext NOT NULL,
     port          bigint NOT NULL,
-    protocol      longtext NOT NULL DEFAULT 'ssh',
+    protocol      varchar(32) NOT NULL DEFAULT 'ssh',
     comment       longtext,
     allowed_from  longtext,
     expires_at    datetime,
@@ -212,9 +218,13 @@ CREATE TABLE IF NOT EXISTS aliases (
     created_at   datetime,
     updated_at   datetime,
     deleted_at   datetime,
+    active_user_alias_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND user_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL,
+    active_group_alias_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND group_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(group_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL,
     KEY idx_aliases_user_id (user_id),
     KEY idx_aliases_group_id (group_id),
     KEY idx_aliases_deleted_at (deleted_at),
+    UNIQUE KEY uq_active_aliases_user (active_user_alias_hash),
+    UNIQUE KEY uq_active_aliases_group (active_group_alias_hash),
     CONSTRAINT fk_aliases_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_aliases_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -309,9 +319,13 @@ CREATE TABLE IF NOT EXISTS database_aliases (
     created_at   datetime,
     updated_at   datetime,
     deleted_at   datetime,
+    active_user_alias_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND user_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL,
+    active_group_alias_hash binary(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND group_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(group_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL,
     KEY idx_database_aliases_user_id (user_id),
     KEY idx_database_aliases_group_id (group_id),
     KEY idx_database_aliases_deleted_at (deleted_at),
+    UNIQUE KEY uq_active_database_aliases_user (active_user_alias_hash),
+    UNIQUE KEY uq_active_database_aliases_group (active_group_alias_hash),
     CONSTRAINT fk_database_aliases_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_database_aliases_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -382,6 +396,85 @@ CREATE TABLE IF NOT EXISTS restricted_command_grants (
     CONSTRAINT fk_restricted_command_grants_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_restricted_command_grants_granted_by FOREIGN KEY (granted_by_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Preflight and upgrade active-row business identities for existing databases.
+-- This intentionally aborts instead of deleting or merging duplicate rows.
+DROP PROCEDURE IF EXISTS gobastion_add_active_identity_indexes;
+DELIMITER //
+CREATE PROCEDURE gobastion_add_active_identity_indexes()
+BEGIN
+    IF EXISTS (SELECT 1 FROM users WHERE deleted_at IS NULL GROUP BY LOWER(username) HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active usernames exist; resolve manually (no data deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM user_groups WHERE deleted_at IS NULL GROUP BY user_id, group_id HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active memberships exist; resolve manually (no data deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM ingress_keys WHERE deleted_at IS NULL GROUP BY user_id, fingerprint HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active ingress keys exist; resolve manually (no data deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM aliases WHERE deleted_at IS NULL AND user_id IS NOT NULL GROUP BY user_id, LOWER(resolve_from) HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active personal aliases exist; resolve manually (no data deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM aliases WHERE deleted_at IS NULL AND group_id IS NOT NULL GROUP BY group_id, LOWER(resolve_from) HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active group aliases exist; resolve manually (no data deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM database_aliases WHERE deleted_at IS NULL AND user_id IS NOT NULL GROUP BY user_id, LOWER(resolve_from) HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active personal DB aliases exist; resolve manually (no data deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM database_aliases WHERE deleted_at IS NULL AND group_id IS NOT NULL GROUP BY group_id, LOWER(resolve_from) HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active group DB aliases exist; resolve manually (no data deleted)';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'active_username_hash') THEN
+        ALTER TABLE users ADD COLUMN active_username_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(LOWER(username), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'users' AND index_name = 'uq_active_users_username') THEN
+        CREATE UNIQUE INDEX uq_active_users_username ON users (active_username_hash);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'user_groups' AND column_name = 'active_membership_hash') THEN
+        ALTER TABLE user_groups ADD COLUMN active_membership_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', group_id), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'user_groups' AND index_name = 'uq_active_user_groups_membership') THEN
+        CREATE UNIQUE INDEX uq_active_user_groups_membership ON user_groups (active_membership_hash);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'ingress_keys' AND column_name = 'active_fingerprint_hash') THEN
+        ALTER TABLE ingress_keys ADD COLUMN active_fingerprint_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', fingerprint), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'ingress_keys' AND index_name = 'uq_active_ingress_keys_fingerprint') THEN
+        CREATE UNIQUE INDEX uq_active_ingress_keys_fingerprint ON ingress_keys (active_fingerprint_hash);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'aliases' AND column_name = 'active_user_alias_hash') THEN
+        ALTER TABLE aliases ADD COLUMN active_user_alias_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND user_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'aliases' AND column_name = 'active_group_alias_hash') THEN
+        ALTER TABLE aliases ADD COLUMN active_group_alias_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND group_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(group_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'aliases' AND index_name = 'uq_active_aliases_user') THEN
+        CREATE UNIQUE INDEX uq_active_aliases_user ON aliases (active_user_alias_hash);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'aliases' AND index_name = 'uq_active_aliases_group') THEN
+        CREATE UNIQUE INDEX uq_active_aliases_group ON aliases (active_group_alias_hash);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'database_aliases' AND column_name = 'active_user_alias_hash') THEN
+        ALTER TABLE database_aliases ADD COLUMN active_user_alias_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND user_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(user_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'database_aliases' AND column_name = 'active_group_alias_hash') THEN
+        ALTER TABLE database_aliases ADD COLUMN active_group_alias_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND group_id IS NOT NULL THEN UNHEX(SHA2(CONCAT(group_id, ':', LOWER(resolve_from)), 256)) ELSE NULL END) VIRTUAL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'database_aliases' AND index_name = 'uq_active_database_aliases_user') THEN
+        CREATE UNIQUE INDEX uq_active_database_aliases_user ON database_aliases (active_user_alias_hash);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'database_aliases' AND index_name = 'uq_active_database_aliases_group') THEN
+        CREATE UNIQUE INDEX uq_active_database_aliases_group ON database_aliases (active_group_alias_hash);
+    END IF;
+END//
+DELIMITER ;
+CALL gobastion_add_active_identity_indexes();
+DROP PROCEDURE gobastion_add_active_identity_indexes;
 
 -- ── Done ─────────────────────────────────────────────────────────────────────
 -- Grant the goBastion app user minimal privileges:

@@ -73,3 +73,56 @@ func TestRealmCreate_InvalidPublicKey(t *testing.T) {
 		t.Fatal("expected invalid public key error")
 	}
 }
+
+func TestRealmCreate_ValidationErrors(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	tests := []struct {
+		name  string
+		field string
+		value string
+	}{
+		{name: "name", field: "--realm", value: "Invalid Name"},
+		{name: "host", field: "--bastion", value: "invalid host"},
+		{name: "port", field: "--port", value: "0"},
+		{name: "CIDRs", field: "--from", value: "not-a-cidr"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{
+				"--realm", "remote-bastion",
+				"--bastion", "bastion.example.com",
+				"--port", "22",
+				"--from", "10.0.0.0/8",
+				"--public-key", testRealmPublicKey,
+			}
+			for i := 0; i < len(args); i += 2 {
+				if args[i] == test.field {
+					args[i+1] = test.value
+				}
+			}
+			if err := Create(db, admin, args); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestRealmCreate_ExistingRealmIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	args := []string{
+		"--realm", "remote-bastion",
+		"--bastion", "bastion.example.com",
+		"--from", "10.0.0.0/8",
+		"--public-key", testRealmPublicKey,
+	}
+
+	if err := Create(db, admin, args); err != nil {
+		t.Fatalf("create realm: %v", err)
+	}
+	if err := Create(db, admin, args); err != nil {
+		t.Fatalf("expected idempotent success, got %v", err)
+	}
+}

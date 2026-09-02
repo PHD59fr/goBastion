@@ -18,7 +18,7 @@ func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []str
 			Title: "Change Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"No password MFA configured. Use selfSetPassword first."}}},
 		})
-		return nil
+		return fmt.Errorf("no password MFA configured")
 	}
 	fmt.Print("Enter current password: ")
 	current, err := readPassword()
@@ -32,7 +32,7 @@ func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []str
 			Title: "Change Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Current password is incorrect."}}},
 		})
-		return nil
+		return fmt.Errorf("current password is incorrect")
 	}
 	fmt.Print("Enter new password: ")
 	pass1, err := readPassword()
@@ -50,14 +50,14 @@ func ChangePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []str
 			Title: "Change Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Passwords do not match."}}},
 		})
-		return nil
+		return fmt.Errorf("passwords do not match")
 	}
 	if len(pass1) < 8 {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Change Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
 		})
-		return nil
+		return fmt.Errorf("password must be at least 8 characters")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(pass1), bcrypt.DefaultCost)
 	if err != nil {

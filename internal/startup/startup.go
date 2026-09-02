@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	cmdaccount "goBastion/internal/commands/account"
+	"goBastion/internal/config"
 	internaldb "goBastion/internal/db"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
@@ -52,6 +53,14 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) int {
 		fmt.Fprintln(os.Stderr, "✅ SFTP proxy host key regenerated.")
 
 	case *firstInstallFlag:
+		// The instance configuration is initialized alongside first-install
+		// rather than during a normal empty-database startup. This keeps a
+		// freshly migrated database eligible as an import target.
+		if err := config.EnsureInstance(db); err != nil {
+			log.Error("startup_failed", slog.String("reason", "ensure_instance"), slog.Any("error", err))
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
 		if err := createFirstAdminUser(db, log, syncer, adapter); err != nil {
 			log.Error("startup_failed", slog.String("reason", "first_install"), slog.Any("error", err))
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -214,7 +223,10 @@ func createFirstAdminUser(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer, 
 		return fmt.Errorf("error syncing system users: %w", err)
 	}
 
-	if err = cmdaccount.CreateUser(db, adapter, username, pubKey); err != nil {
+	if err = cmdaccount.CreateUser(db, adapter, username, pubKey, cmdaccount.UserCreationOptions{
+		Role:    models.RoleAdmin,
+		Enabled: true,
+	}); err != nil {
 		return fmt.Errorf("error creating user: %w", err)
 	}
 	if err = switchToAdmin(db, adapter, username); err != nil {
@@ -269,7 +281,7 @@ func runDisableTOTP(db *gorm.DB, log *slog.Logger, username string) int {
 	}
 
 	log.Info("disable_totp", slog.String("user", username))
-	fmt.Printf("✅ TOTP, password MFA, and backup codes disabled for user '%s'.\n", username)
+	fmt.Printf("✅ TOTP and backup codes disabled for user '%s'.\n", username)
 	return 0
 }
 

@@ -19,6 +19,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 // resolveDBConfig returns DB_DRIVER and DB_DSN with precedence:
@@ -110,7 +111,11 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 			}
 			dsn = "file:" + filepath.Join(cfg.Paths.DbDir, "bastion.db") + "?cache=shared&mode=rwc"
 		}
-		dialector = sqlite.Open(dsn)
+		separator := "?"
+		if strings.Contains(dsn, "?") {
+			separator = "&"
+		}
+		dialector = sqlite.Open(dsn + separator + "_pragma=foreign_keys(1)")
 
 	default:
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q — supported values: sqlite, mysql, postgres", driver)
@@ -259,9 +264,17 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 
 // migrate runs GORM AutoMigrate for all managed models and creates custom indexes.
 func migrate(db *gorm.DB, driver string) error {
+	if driver == "mysql" {
+		if err := configureMySQLUUIDColumnTypes(db); err != nil {
+			return fmt.Errorf("configure MySQL UUID column types: %w", err)
+		}
+	}
 	err := db.AutoMigrate(ManagedModelsInDependencyOrder()...)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate models: %w", err)
+	}
+	if err := ensureBusinessIdentityIndexes(db, driver); err != nil {
+		return err
 	}
 
 	switch driver {
@@ -316,39 +329,167 @@ func migrate(db *gorm.DB, driver string) error {
 
 	case "mysql":
 		// MySQL does not support partial indexes (no WHERE clause).
-		// Create composite indexes matching the PostgreSQL/SQLite ones.
-		if err := db.Exec(`
-			CREATE INDEX IF NOT EXISTS idx_self_access_lookup
-			ON self_accesses(user_id, server, port, username, protocol);
-		`).Error; err != nil {
-			return fmt.Errorf("failed to create idx_self_access_lookup: %w", err)
+		// It also lacks CREATE INDEX IF NOT EXISTS, so check through the
+		// migrator before issuing each statement. Text columns need prefixes.
+		indexes := []struct {
+			table, name, columns string
+		}{
+			{"self_accesses", "idx_self_access_lookup", "user_id, server(191), port, username(191), protocol(32)"},
+			{"group_accesses", "idx_group_access_lookup", "group_id, server(191), port, username(191), protocol(32)"},
+			{"self_db_accesses", "idx_self_db_access_lookup", "user_id, host(191), port, username(191), protocol(32)"},
+			{"group_db_accesses", "idx_group_db_access_lookup", "group_id, host(191), port, username(191), protocol(32)"},
+			{"user_groups", "idx_user_group_lookup", "user_id, group_id"},
 		}
-		if err := db.Exec(`
-			CREATE INDEX IF NOT EXISTS idx_group_access_lookup
-			ON group_accesses(group_id, server, port, username, protocol);
-		`).Error; err != nil {
-			return fmt.Errorf("failed to create idx_group_access_lookup: %w", err)
-		}
-		if err := db.Exec(`
-			CREATE INDEX IF NOT EXISTS idx_self_db_access_lookup
-			ON self_db_accesses(user_id, host(191), port, username(191), protocol(32));
-		`).Error; err != nil {
-			return fmt.Errorf("failed to create idx_self_db_access_lookup: %w", err)
-		}
-		if err := db.Exec(`
-			CREATE INDEX IF NOT EXISTS idx_group_db_access_lookup
-			ON group_db_accesses(group_id, host(191), port, username(191), protocol(32));
-		`).Error; err != nil {
-			return fmt.Errorf("failed to create idx_group_db_access_lookup: %w", err)
-		}
-		if err := db.Exec(`
-			CREATE INDEX IF NOT EXISTS idx_user_group_lookup
-			ON user_groups(user_id, group_id);
-		`).Error; err != nil {
-			return fmt.Errorf("failed to create idx_user_group_lookup: %w", err)
+		for _, index := range indexes {
+			if db.Migrator().HasIndex(index.table, index.name) {
+				continue
+			}
+			statement := fmt.Sprintf("CREATE INDEX `%s` ON `%s` (%s)", index.name, index.table, index.columns)
+			if err := db.Exec(statement).Error; err != nil {
+				return fmt.Errorf("failed to create %s: %w", index.name, err)
+			}
 		}
 	}
 
+	return nil
+}
+
+// configureMySQLUUIDColumnTypes translates the PostgreSQL-oriented `type:uuid`
+// model tag to a portable textual UUID representation for MySQL. The schema
+// cache belongs to this GORM connection, so PostgreSQL keeps its native UUID
+// columns and SQLite behavior is unchanged.
+func configureMySQLUUIDColumnTypes(db *gorm.DB) error {
+	for _, model := range ManagedModelsInDependencyOrder() {
+		stmt := &gorm.Statement{DB: db}
+		if err := stmt.Parse(model); err != nil {
+			return err
+		}
+		for _, field := range stmt.Schema.Fields {
+			if field.DataType == schema.DataType("uuid") {
+				field.DataType = schema.DataType("char(36)")
+			}
+			// MySQL cannot index TEXT/BLOB columns without a prefix length. GORM
+			// otherwise maps un-sized strings to LONGTEXT, including fields with
+			// a uniqueIndex tag such as PIV trust-anchor and realm names.
+			if field.DataType == schema.String &&
+				(field.Unique || field.UniqueIndex != "" || field.TagSettings["INDEX"] != "" || field.TagSettings["UNIQUEINDEX"] != "") &&
+				field.Size == 0 {
+				field.Size = 191
+			}
+		}
+	}
+	return nil
+}
+
+type activeIdentityCheck struct {
+	table   string
+	name    string
+	where   string
+	groupBy string
+}
+
+var activeIdentityChecks = []activeIdentityCheck{
+	{table: "users", name: "username", where: "deleted_at IS NULL", groupBy: "LOWER(username)"},
+	{table: "user_groups", name: "user/group membership", where: "deleted_at IS NULL", groupBy: "user_id, group_id"},
+	{table: "ingress_keys", name: "user/fingerprint ingress key", where: "deleted_at IS NULL", groupBy: "user_id, fingerprint"},
+	{table: "aliases", name: "personal alias", where: "deleted_at IS NULL AND user_id IS NOT NULL", groupBy: "user_id, LOWER(resolve_from)"},
+	{table: "aliases", name: "group alias", where: "deleted_at IS NULL AND group_id IS NOT NULL", groupBy: "group_id, LOWER(resolve_from)"},
+	{table: "database_aliases", name: "personal database alias", where: "deleted_at IS NULL AND user_id IS NOT NULL", groupBy: "user_id, LOWER(resolve_from)"},
+	{table: "database_aliases", name: "group database alias", where: "deleted_at IS NULL AND group_id IS NOT NULL", groupBy: "group_id, LOWER(resolve_from)"},
+}
+
+func ensureBusinessIdentityIndexes(db *gorm.DB, driver string) error {
+	for _, check := range activeIdentityChecks {
+		query := fmt.Sprintf(
+			"SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s GROUP BY %s HAVING COUNT(*) > 1) AS duplicate_identities",
+			check.table, check.where, check.groupBy,
+		)
+		var duplicateGroups int64
+		if err := db.Raw(query).Scan(&duplicateGroups).Error; err != nil {
+			return fmt.Errorf("preflight active %s uniqueness: %w", check.name, err)
+		}
+		if duplicateGroups > 0 {
+			return fmt.Errorf(
+				"cannot create active-row unique index: table %s contains %d duplicate active %s identity group(s); resolve them manually and restart (no data was deleted)",
+				check.table, duplicateGroups, check.name,
+			)
+		}
+	}
+
+	if driver == "mysql" {
+		return ensureMySQLBusinessIdentityIndexes(db)
+	}
+
+	statements := []struct {
+		name string
+		sql  string
+	}{
+		{"uq_active_users_username", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_users_username ON users(LOWER(username)) WHERE deleted_at IS NULL`},
+		{"uq_active_user_groups_membership", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_user_groups_membership ON user_groups(user_id, group_id) WHERE deleted_at IS NULL`},
+		{"uq_active_ingress_keys_fingerprint", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_ingress_keys_fingerprint ON ingress_keys(user_id, fingerprint) WHERE deleted_at IS NULL`},
+		{"uq_active_aliases_user", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_aliases_user ON aliases(user_id, LOWER(resolve_from)) WHERE deleted_at IS NULL AND user_id IS NOT NULL`},
+		{"uq_active_aliases_group", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_aliases_group ON aliases(group_id, LOWER(resolve_from)) WHERE deleted_at IS NULL AND group_id IS NOT NULL`},
+		{"uq_active_database_aliases_user", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_database_aliases_user ON database_aliases(user_id, LOWER(resolve_from)) WHERE deleted_at IS NULL AND user_id IS NOT NULL`},
+		{"uq_active_database_aliases_group", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_database_aliases_group ON database_aliases(group_id, LOWER(resolve_from)) WHERE deleted_at IS NULL AND group_id IS NOT NULL`},
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement.sql).Error; err != nil {
+			return fmt.Errorf("create %s index: %w", statement.name, err)
+		}
+	}
+	return nil
+}
+
+func ensureMySQLBusinessIdentityIndexes(db *gorm.DB) error {
+	// MariaDB 10.11 rejects the generated-column expressions used to emulate
+	// partial unique indexes (including simple CONCAT expressions). MariaDB
+	// performs the active-identity duplicate preflight above, so leave these
+	// optional indexes out there rather than preventing the whole database from
+	// starting. MySQL continues with the generated-column implementation below.
+	var version string
+	if err := db.Raw("SELECT VERSION()").Scan(&version).Error; err != nil {
+		return fmt.Errorf("detect mysql-compatible server version: %w", err)
+	}
+	if strings.Contains(strings.ToLower(version), "mariadb") {
+		return nil
+	}
+
+	identities := []struct {
+		table      string
+		column     string
+		index      string
+		expression string
+	}{
+		// Keep these expressions deliberately simple. MariaDB rejects SHA2/UNHEX
+		// in generated columns (and differs from MySQL in virtual-column index
+		// support), while the concatenated identities are bounded by the indexed
+		// model fields and remain unique without a hash.
+		{"users", "active_username_hash", "uq_active_users_username", "CASE WHEN deleted_at IS NULL THEN LOWER(username) ELSE NULL END"},
+		{"user_groups", "active_membership_hash", "uq_active_user_groups_membership", "CASE WHEN deleted_at IS NULL THEN CONCAT(user_id, ':', group_id) ELSE NULL END"},
+		{"ingress_keys", "active_fingerprint_hash", "uq_active_ingress_keys_fingerprint", "CASE WHEN deleted_at IS NULL THEN CONCAT(user_id, ':', fingerprint) ELSE NULL END"},
+		{"aliases", "active_user_alias_hash", "uq_active_aliases_user", "CASE WHEN deleted_at IS NULL AND user_id IS NOT NULL THEN CONCAT(user_id, ':', LOWER(resolve_from)) ELSE NULL END"},
+		{"aliases", "active_group_alias_hash", "uq_active_aliases_group", "CASE WHEN deleted_at IS NULL AND group_id IS NOT NULL THEN CONCAT(group_id, ':', LOWER(resolve_from)) ELSE NULL END"},
+		{"database_aliases", "active_user_alias_hash", "uq_active_database_aliases_user", "CASE WHEN deleted_at IS NULL AND user_id IS NOT NULL THEN CONCAT(user_id, ':', LOWER(resolve_from)) ELSE NULL END"},
+		{"database_aliases", "active_group_alias_hash", "uq_active_database_aliases_group", "CASE WHEN deleted_at IS NULL AND group_id IS NOT NULL THEN CONCAT(group_id, ':', LOWER(resolve_from)) ELSE NULL END"},
+	}
+
+	for _, identity := range identities {
+		if !db.Migrator().HasColumn(identity.table, identity.column) {
+			statement := fmt.Sprintf(
+				"ALTER TABLE `%s` ADD COLUMN `%s` VARCHAR(512) GENERATED ALWAYS AS (%s) STORED",
+				identity.table, identity.column, identity.expression,
+			)
+			if err := db.Exec(statement).Error; err != nil {
+				return fmt.Errorf("add generated identity column %s.%s: %w", identity.table, identity.column, err)
+			}
+		}
+		if !db.Migrator().HasIndex(identity.table, identity.index) {
+			statement := fmt.Sprintf("CREATE UNIQUE INDEX `%s` ON `%s` (`%s`)", identity.index, identity.table, identity.column)
+			if err := db.Exec(statement).Error; err != nil {
+				return fmt.Errorf("create %s index: %w", identity.index, err)
+			}
+		}
+	}
 	return nil
 }
 

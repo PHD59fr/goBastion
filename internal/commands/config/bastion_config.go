@@ -588,10 +588,11 @@ func termHeight(fd int) int {
 	return h
 }
 
-// viewportAvail returns how many entry rows fit (total height minus the fixed
-// header/footer overhead of 6 rows).
+// viewportAvail returns how many entry rows fit. The frame uses seven fixed
+// rows (three for the header and four for the footer), plus one spare row so
+// the final CRLF cannot scroll the alternate screen and hide the top corners.
 func viewportAvail(fd int) int {
-	avail := termHeight(fd) - 6
+	avail := termHeight(fd) - 8
 	if avail < 1 {
 		avail = 1
 	}

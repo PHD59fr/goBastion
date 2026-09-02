@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"goBastion/internal/config"
+	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/cryptokey"
@@ -358,15 +359,19 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		var guestGrants []models.GroupGuestAccess
 		if hasGuestRole {
 			if err := DB.Where(
-				"user_id = ? AND server = ? AND port = ? AND username = ? AND (expires_at IS NULL OR expires_at > ?)",
-				user.ID, host, portInt, username, now,
+				"user_id = ? AND server = ? AND port = ? AND username = ? AND "+
+					"(protocol = 'ssh' OR protocol = ?) AND (expires_at IS NULL OR expires_at > ?)",
+				user.ID, host, portInt, username, protocol, now,
 			).Find(&guestGrants).Error; err != nil {
 				return nil, fmt.Errorf("error retrieving guest grants: %w", err)
 			}
-			// Build a set of group IDs for which this user has a matching grant.
+			// A guest grant is an additional restriction on top of the group's
+			// access. Ignore grants whose own source-CIDR policy does not match.
 			grantGroupIDs := make(map[uuid.UUID]bool, len(guestGrants))
 			for i := range guestGrants {
-				grantGroupIDs[guestGrants[i].GroupID] = true
+				if ipAllowed(clientIP, guestGrants[i].AllowedFrom) {
+					grantGroupIDs[guestGrants[i].GroupID] = true
+				}
 			}
 
 			for i := range groupAccesses {
@@ -484,6 +489,10 @@ func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess,
 	if reason == "admin-override-group" {
 		sourcePrefix = "admin-group"
 	}
+	privateKey, err := decryptPrivKey(key.PrivKey)
+	if err != nil {
+		return models.AccessRight{}, fmt.Errorf("decrypt group egress key: %w", err)
+	}
 
 	access := models.AccessRight{
 		ID:             ga.ID,
@@ -498,7 +507,7 @@ func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess,
 		KeyFingerprint: key.Fingerprint,
 		KeyUpdatedAt:   key.UpdatedAt,
 		PublicKey:      key.PubKey,
-		PrivateKey:     decryptPrivKey(key.PrivKey),
+		PrivateKey:     privateKey,
 		MFARequired:    ga.Group.MFARequired,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
@@ -518,6 +527,10 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 	if reason == "admin-override-self" {
 		sourcePrefix = "admin-account"
 	}
+	privateKey, err := decryptPrivKey(key.PrivKey)
+	if err != nil {
+		return models.AccessRight{}, fmt.Errorf("decrypt personal egress key: %w", err)
+	}
 
 	access := models.AccessRight{
 		ID:             sa.ID,
@@ -532,7 +545,7 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 		KeyFingerprint: key.Fingerprint,
 		KeyUpdatedAt:   key.UpdatedAt,
 		PublicKey:      key.PubKey,
-		PrivateKey:     decryptPrivKey(key.PrivKey),
+		PrivateKey:     privateKey,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
 	maybeReEncryptKey(db, log, "self", key.ID, key.PrivKey)
@@ -540,7 +553,7 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 }
 
 // decryptPrivKey returns the plaintext private key, handling both encrypted and legacy plaintext values.
-func decryptPrivKey(raw string) string {
+func decryptPrivKey(raw string) (string, error) {
 	return cryptokey.DecryptOrPassThrough(raw)
 }
 
@@ -622,16 +635,10 @@ func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 			return true
 		}
 		if user.BackupCodes != "" {
-			matched, updatedJSON, err := totpUtil.VerifyAndConsumeBackupCode(code, user.BackupCodes)
+			matched, err := mfa.VerifyAndConsumeBackupCode(db, user, code)
 			if err != nil {
 				log.Warn("mfa_error", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("error", err.Error()))
 			} else if matched {
-				if dbErr := db.Model(user).Update("backup_codes", updatedJSON).Error; dbErr != nil {
-					log.Error("mfa_backup_code_db_error", slog.String("user", user.Username), slog.String("error", dbErr.Error()))
-					fmt.Println("⛔ Internal error saving backup code. Contact your admin.")
-					return false
-				}
-				user.BackupCodes = updatedJSON
 				log.Info("mfa_success", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username))
 				return true
 			}
@@ -698,7 +705,23 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 		user = target[:idx]
 		target = target[idx+1:]
 	}
-	if idx := strings.LastIndex(target, ":"); idx >= 0 {
+
+	// [IPv6] or [IPv6]:port form — brackets must be stripped before the
+	// plain ":" split, otherwise an unbracketed IPv6 like [::1] breaks.
+	if strings.HasPrefix(target, "[") {
+		if bracketEnd := strings.LastIndex(target, "]"); bracketEnd >= 0 {
+			host = target[1:bracketEnd]
+			rest := target[bracketEnd+1:]
+			if strings.HasPrefix(rest, ":") {
+				port = rest[1:]
+			}
+		} else {
+			// Malformed (opening bracket without closing one); fall back to
+			// treating the whole token as the host so the caller reports a
+			// clean validation error instead of a broken host/port split.
+			host = target
+		}
+	} else if idx := strings.LastIndex(target, ":"); idx >= 0 {
 		// host:port form
 		host = target[:idx]
 		port = target[idx+1:]
@@ -777,7 +800,20 @@ func parseHop(s string) (SSHHop, error) {
 		hop.User = s[:idx]
 		s = s[idx+1:]
 	}
-	if idx := strings.LastIndex(s, ":"); idx >= 0 {
+	if strings.HasPrefix(s, "[") {
+		bracketEnd := strings.LastIndex(s, "]")
+		if bracketEnd < 0 {
+			return SSHHop{}, fmt.Errorf("invalid bracketed IPv6 host %q", s)
+		}
+		hop.Host = s[1:bracketEnd]
+		suffix := s[bracketEnd+1:]
+		if suffix != "" {
+			if !strings.HasPrefix(suffix, ":") || len(suffix) == 1 {
+				return SSHHop{}, fmt.Errorf("invalid bracketed IPv6 host %q", s)
+			}
+			hop.Port = suffix[1:]
+		}
+	} else if idx := strings.LastIndex(s, ":"); idx >= 0 {
 		hop.Host = s[:idx]
 		hop.Port = s[idx+1:]
 	} else {
@@ -786,7 +822,7 @@ func parseHop(s string) (SSHHop, error) {
 	if hop.Host == "" {
 		return SSHHop{}, fmt.Errorf("missing host")
 	}
-	if !validation.IsValidHost(hop.Host) {
+	if !validation.IsValidHostReference(hop.Host) {
 		return SSHHop{}, fmt.Errorf("invalid host %q", hop.Host)
 	}
 	portInt, err := strconv.ParseInt(hop.Port, 10, 64)
@@ -800,10 +836,11 @@ func parseHop(s string) (SSHHop, error) {
 func formatJumpHosts(hops []SSHHop) []string {
 	out := make([]string, len(hops))
 	for i, h := range hops {
+		host := formatHostPortHost(h.Host)
 		if h.User != "" {
-			out[i] = h.User + "@" + h.Host + ":" + h.Port
+			out[i] = h.User + "@" + host + ":" + h.Port
 		} else {
-			out[i] = h.Host + ":" + h.Port
+			out[i] = host + ":" + h.Port
 		}
 	}
 	return out
@@ -813,13 +850,21 @@ func formatJumpHosts(hops []SSHHop) []string {
 func formatHopChain(hops []SSHHop) string {
 	parts := make([]string, len(hops))
 	for i, h := range hops {
+		host := formatHostPortHost(h.Host)
 		if h.User != "" {
-			parts[i] = h.User + "@" + h.Host + ":" + h.Port
+			parts[i] = h.User + "@" + host + ":" + h.Port
 		} else {
-			parts[i] = h.Host + ":" + h.Port
+			parts[i] = host + ":" + h.Port
 		}
 	}
 	return strings.Join(parts, "->")
+}
+
+func formatHostPortHost(host string) string {
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 // resolveRealmHop looks up a named realm in the DB and returns its bastion endpoint.
@@ -841,7 +886,7 @@ func resolveRealmHop(db *gorm.DB, realmName string) (string, string, error) {
 	if hopHost == "" {
 		hopHost = realm.Name
 	}
-	if !validation.IsValidHost(hopHost) {
+	if !validation.IsValidHostReference(hopHost) {
 		return "", "", fmt.Errorf("⛔ Realm '%s' has invalid bastion host '%s'", realm.Name, hopHost)
 	}
 	hopPort := realm.BastionPort
@@ -1121,14 +1166,16 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 	if hasGuestRole {
 		var guestGrants []models.GroupGuestAccess
 		if err := db.Where(
-			"user_id = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+			"user_id = ? AND server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
 			user.ID, host, port, now,
 		).Find(&guestGrants).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("error retrieving guest grants: %w", err)
 		}
 		guestGrantGroupIDs = make(map[uuid.UUID]bool, len(guestGrants))
 		for i := range guestGrants {
-			guestGrantGroupIDs[guestGrants[i].GroupID] = true
+			if ipAllowed(clientIP, guestGrants[i].AllowedFrom) {
+				guestGrantGroupIDs[guestGrants[i].GroupID] = true
+			}
 		}
 	}
 

@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -359,47 +357,14 @@ func (u *User) canDoRestricted(db *gorm.DB, right string) bool {
 	return count > 0
 }
 
-// groupsCache is a process-wide cache of group memberships keyed by user ID.
-// Entries expire after groupsCacheTTL to avoid stale permission grants.
-var (
-	groupsCacheMu sync.RWMutex
-	groupsCache   = make(map[uuid.UUID]groupsCacheEntry)
-)
-
-const groupsCacheTTL = 5 * time.Minute
-
-type groupsCacheEntry struct {
-	groups    []UserGroup
-	createdAt time.Time
-}
-
 // getGroups returns all group memberships for the user.
-// Results are cached for a short TTL to avoid repeated DB queries within a
-// single session while still picking up membership changes promptly.
 func (u *User) getGroups(db *gorm.DB) ([]UserGroup, error) {
-	groupsCacheMu.RLock()
-	entry, ok := groupsCache[u.ID]
-	groupsCacheMu.RUnlock()
-
-	if ok && time.Since(entry.createdAt) < groupsCacheTTL {
-		return entry.groups, nil
-	}
-
 	var userGroups []UserGroup
 	if err := db.Preload("Group").Where("user_id = ?", u.ID).Find(&userGroups).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving user groups: %w", err)
 	}
-
-	groupsCacheMu.Lock()
-	groupsCache[u.ID] = groupsCacheEntry{groups: userGroups, createdAt: time.Now()}
-	groupsCacheMu.Unlock()
-
 	return userGroups, nil
 }
 
-// InvalidateGroupsCache clears the cached groups so the next CanDo call re-queries the DB.
-func InvalidateGroupsCache(userID uuid.UUID) {
-	groupsCacheMu.Lock()
-	delete(groupsCache, userID)
-	groupsCacheMu.Unlock()
-}
+// InvalidateGroupsCache is retained for callers; group memberships are no longer cached.
+func InvalidateGroupsCache(uuid.UUID) {}

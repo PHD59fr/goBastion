@@ -19,13 +19,17 @@ func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs.StringVar(&realmName, "realm", "", "Realm name")
 	var out bytes.Buffer
 	fs.SetOutput(&out)
-	if err := fs.Parse(args); err != nil || strings.TrimSpace(realmName) == "" {
+	parseErr := fs.Parse(args)
+	if parseErr != nil || strings.TrimSpace(realmName) == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Realm Info",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: realmInfo --realm <name>"}}},
 		})
-		return nil
+		if parseErr != nil {
+			return parseErr
+		}
+		return fmt.Errorf("realm name is required")
 	}
 
 	if !currentUser.CanDo(db, "realmInfo", "") {

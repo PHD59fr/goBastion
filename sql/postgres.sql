@@ -54,8 +54,15 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at      timestamptz,
     deleted_at      timestamptz
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_username_deletedat ON users (username, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_username_deletedat ON users (username, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users (deleted_at);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM users WHERE deleted_at IS NULL GROUP BY lower(username) HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create active username unique index: duplicate active usernames exist; resolve them manually (no data was deleted)';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_users_username ON users (lower(username)) WHERE deleted_at IS NULL;
 
 -- ── groups ───────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS groups (
@@ -83,6 +90,13 @@ CREATE INDEX IF NOT EXISTS idx_user_groups_user_id ON user_groups (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_groups_group_id ON user_groups (group_id);
 CREATE INDEX IF NOT EXISTS idx_user_groups_deleted_at ON user_groups (deleted_at);
 CREATE INDEX IF NOT EXISTS idx_user_group_lookup ON user_groups (user_id, group_id) WHERE deleted_at IS NULL;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM user_groups WHERE deleted_at IS NULL GROUP BY user_id, group_id HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create active membership unique index: duplicate active memberships exist; resolve them manually (no data was deleted)';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_user_groups_membership ON user_groups (user_id, group_id) WHERE deleted_at IS NULL;
 
 -- ── ingress_keys ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ingress_keys (
@@ -101,6 +115,13 @@ CREATE TABLE IF NOT EXISTS ingress_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_ingress_keys_user_id ON ingress_keys (user_id);
 CREATE INDEX IF NOT EXISTS idx_ingress_keys_deleted_at ON ingress_keys (deleted_at);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM ingress_keys WHERE deleted_at IS NULL GROUP BY user_id, fingerprint HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create active ingress-key unique index: duplicate active user fingerprints exist; resolve them manually (no data was deleted)';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_ingress_keys_fingerprint ON ingress_keys (user_id, fingerprint) WHERE deleted_at IS NULL;
 
 -- ── self_egress_keys ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS self_egress_keys (
@@ -210,6 +231,17 @@ CREATE TABLE IF NOT EXISTS aliases (
 CREATE INDEX IF NOT EXISTS idx_aliases_user_id ON aliases (user_id);
 CREATE INDEX IF NOT EXISTS idx_aliases_group_id ON aliases (group_id);
 CREATE INDEX IF NOT EXISTS idx_aliases_deleted_at ON aliases (deleted_at);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM aliases WHERE deleted_at IS NULL AND user_id IS NOT NULL GROUP BY user_id, lower(resolve_from) HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create personal alias unique index: duplicate active personal aliases exist; resolve them manually (no data was deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM aliases WHERE deleted_at IS NULL AND group_id IS NOT NULL GROUP BY group_id, lower(resolve_from) HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create group alias unique index: duplicate active group aliases exist; resolve them manually (no data was deleted)';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_aliases_user ON aliases (user_id, lower(resolve_from)) WHERE deleted_at IS NULL AND user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_aliases_group ON aliases (group_id, lower(resolve_from)) WHERE deleted_at IS NULL AND group_id IS NOT NULL;
 
 -- ── self_db_accesses ─────────────────────────────────────────────────────────
 -- Supported protocols in the bundled container image: mysql, postgres, redis.
@@ -301,6 +333,17 @@ CREATE TABLE IF NOT EXISTS database_aliases (
 CREATE INDEX IF NOT EXISTS idx_database_aliases_user_id ON database_aliases (user_id);
 CREATE INDEX IF NOT EXISTS idx_database_aliases_group_id ON database_aliases (group_id);
 CREATE INDEX IF NOT EXISTS idx_database_aliases_deleted_at ON database_aliases (deleted_at);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM database_aliases WHERE deleted_at IS NULL AND user_id IS NOT NULL GROUP BY user_id, lower(resolve_from) HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create personal database-alias unique index: duplicate active personal database aliases exist; resolve them manually (no data was deleted)';
+    END IF;
+    IF EXISTS (SELECT 1 FROM database_aliases WHERE deleted_at IS NULL AND group_id IS NOT NULL GROUP BY group_id, lower(resolve_from) HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create group database-alias unique index: duplicate active group database aliases exist; resolve them manually (no data was deleted)';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_database_aliases_user ON database_aliases (user_id, lower(resolve_from)) WHERE deleted_at IS NULL AND user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_database_aliases_group ON database_aliases (group_id, lower(resolve_from)) WHERE deleted_at IS NULL AND group_id IS NOT NULL;
 
 -- ── ssh_host_keys ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ssh_host_keys (

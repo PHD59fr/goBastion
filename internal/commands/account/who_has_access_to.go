@@ -50,11 +50,12 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return nil
 	}
 
-	// Filter self_accesses by server substring in SQL to reduce dataset,
-	// then do Go-side filtering for CIDR containment.
+	// Narrow the candidate set in SQL, then apply the authoritative literal/CIDR
+	// matcher below.
 	var allSelfAccesses []models.SelfAccess
 	if err := db.Preload("User", "deleted_at IS NULL").
-		Where("deleted_at IS NULL AND server LIKE ?", "%"+server+"%").
+		Where("deleted_at IS NULL").
+		Scopes(serverCandidateScope(server)).
 		Find(&allSelfAccesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
@@ -64,10 +65,10 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 		return err
 	}
 
-	// Filter group_accesses by server substring in SQL to reduce dataset.
 	var allGroupAccesses []models.GroupAccess
 	if err := db.Preload("Group", "deleted_at IS NULL").
-		Where("deleted_at IS NULL AND server LIKE ?", "%"+server+"%").
+		Where("deleted_at IS NULL").
+		Scopes(serverCandidateScope(server)).
 		Find(&allGroupAccesses).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Who Has Access",
@@ -134,6 +135,40 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 	})
 
 	return nil
+}
+
+// serverCandidateScope keeps the SQL prefilter broad enough that every value
+// accepted by serverMatchesQuery reaches it. LIKE metacharacters in the query
+// are escaped so the substring check remains literal on all supported DBs.
+func serverCandidateScope(query string) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		escapedQuery := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(query)
+		conditions := []string{
+			"server LIKE ? ESCAPE '!'",
+			"LENGTH(server) <= ?",
+		}
+		args := []any{"%" + escapedQuery + "%", len(query)}
+
+		if queryIP := net.ParseIP(query); queryIP != nil {
+			// A queried IP can match any stored CIDR.
+			familyMarker := ":"
+			if queryIP.To4() != nil {
+				familyMarker = "."
+			}
+			conditions = append(conditions, "(server LIKE ? AND server LIKE ?)")
+			args = append(args, "%/%", "%"+familyMarker+"%")
+		} else if queryIP, _, err := net.ParseCIDR(query); err == nil {
+			// A queried network can contain stored IPs from the same address family.
+			familyMarker := ":"
+			if queryIP.To4() != nil {
+				familyMarker = "."
+			}
+			conditions = append(conditions, "(server NOT LIKE ? AND server LIKE ?)")
+			args = append(args, "%/%", "%"+familyMarker+"%")
+		}
+
+		return db.Where("("+strings.Join(conditions, " OR ")+")", args...)
+	}
 }
 
 // serverMatchesQuery returns true if the stored server string matches the query.

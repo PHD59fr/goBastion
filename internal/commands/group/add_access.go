@@ -70,6 +70,19 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("invalid CIDRs: %s", allowedFrom)
 	}
 
+	// Authorization must precede any side-effect (the TCP connectivity probe
+	// below opens an outbound connection to the target). Checking permissions
+	// first prevents unprivileged authenticated users from triggering
+	// internal-network probes.
+	if !currentUser.CanDo(db, "groupAddAccess", groupName) {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add access for this group."}}},
+		})
+		return fmt.Errorf("access denied for %s", currentUser.Username)
+	}
+
 	// Check TCP connectivity to server:port with 5s timeout (skip if --force).
 	// A failed connectivity check is a warning only — it must not block access creation.
 	// Network reachability can change after the access entry is saved.
@@ -108,15 +121,6 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 				}},
 			})
 		}
-	}
-
-	if !currentUser.CanDo(db, "groupAddAccess", groupName) {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Add Group Access",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to add access for this group."}}},
-		})
-		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	if !validation.IsValidProtocol(protocol) {

@@ -49,7 +49,7 @@ func DelDBAccess(db *gorm.DB, user *models.User, args []string) error {
 		}
 		return err
 	}
-	if strings.TrimSpace(fs.Lookup("id").Value.String()) == "" || accessID == uuid.Nil {
+	if accessID == uuid.Nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Personal DB Access",
 			BlockType: "error",
@@ -57,7 +57,7 @@ func DelDBAccess(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Usage", Body: []string{"selfDelDBAccess --id <access_id>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("access ID is required")
 	}
 	var access models.SelfDBAccess
 	result := db.Where("id = ? AND user_id = ?", accessID, user.ID).First(&access)
@@ -69,7 +69,7 @@ func DelDBAccess(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"No such access found."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("personal DB access not found")
 	} else if result.Error != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Delete Personal DB Access",
@@ -78,7 +78,7 @@ func DelDBAccess(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Error", Body: []string{"Database error while looking up access entry. Please try again."}},
 			},
 		})
-		return fmt.Errorf("database error: %v", result.Error)
+		return fmt.Errorf("database error: %w", result.Error)
 	}
 	if err := db.Delete(&access).Error; err != nil {
 		console.DisplayBlock(console.ContentBlock{

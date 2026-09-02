@@ -24,18 +24,18 @@ const (
 
 type User struct {
 	ID            uuid.UUID `gorm:"type:uuid;primaryKey"`
-	Username      string    `gorm:"not null;index:idx_username_deletedat,unique"`
+	Username      string    `gorm:"not null;index:idx_username_deletedat"`
 	Role          string    `gorm:"not null"` // "admin" or "user"
 	Enabled       bool      `gorm:"type:boolean;default:true"`
 	OSHOnly       bool      `gorm:"type:boolean;default:false"` // when true, account may execute only -osh commands
 	SuperOwner    bool      `gorm:"type:boolean;default:false"` // implicit owner privileges on all groups
 	SystemUser    bool      `gorm:"type:boolean;default:false"`
 	LastLoginFrom string    `gorm:"default:null"`
-	LastLoginAt   time.Time
-	TOTPSecret    string `gorm:"default:null"`
-	TOTPEnabled   bool   `gorm:"type:boolean;default:false"`
-	PasswordHash  string `gorm:"default:null"` // bcrypt hash for password MFA second factor
-	BackupCodes   string `gorm:"default:null"` // JSON array of bcrypt-hashed single-use backup codes
+	LastLoginAt   time.Time `gorm:"default:null"`
+	TOTPSecret    string    `gorm:"default:null"`
+	TOTPEnabled   bool      `gorm:"type:boolean;default:false"`
+	PasswordHash  string    `gorm:"default:null"` // bcrypt hash for password MFA second factor
+	BackupCodes   string    `gorm:"default:null"` // JSON array of bcrypt-hashed single-use backup codes
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	DeletedAt     gorm.DeletedAt `gorm:"index:idx_username_deletedat"`

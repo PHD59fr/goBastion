@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func openTestDB(t *testing.T) *gorm.DB {
@@ -111,8 +114,68 @@ func TestDeriveKeyForExportWithPassphrase(t *testing.T) {
 	}
 }
 
+func TestDeriveKeyForImportRejectsExcessiveArgon2Parameters(t *testing.T) {
+	kdf := exportKDFEnvelope{
+		Name: "argon2id", Salt: "MDEyMzQ1Njc4OWFiY2RlZg==",
+		Time: 1, Memory: maxArgon2Memory + 1, Threads: 1, KeyLen: 32,
+	}
+	if _, err := deriveKeyForImport("secret", kdf); err == nil {
+		t.Fatal("expected excessive Argon2 memory to be rejected")
+	}
+}
+
+func TestValidateImportTablesRejectsMissingAndDuplicateTables(t *testing.T) {
+	db := openTestDB(t)
+	if err := validateImportTables(db, nil); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected missing-table error, got %v", err)
+	}
+	sch, err := parseModelSchema(db, ManagedModelsInDependencyOrder()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables := make([]exportTable, 0, len(ManagedModelsInDependencyOrder())+1)
+	for _, model := range ManagedModelsInDependencyOrder() {
+		modelSchema, parseErr := parseModelSchema(db, model)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		tables = append(tables, exportTable{Name: modelSchema.Table})
+	}
+	tables = append(tables, exportTable{Name: sch.Table})
+	if err := validateImportTables(db, tables); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate-table error, got %v", err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// Avoid accidental leakage from caller environment
 	_ = os.Unsetenv("DB_EXPORT_KEY")
 	os.Exit(m.Run())
+}
+
+func TestEncodeCellZeroTimeIsNull(t *testing.T) {
+	field := &schema.Field{FieldType: reflect.TypeOf(time.Time{}), Name: "LastConnection"}
+	cell, err := encodeCell(field, time.Time{})
+	if err != nil {
+		t.Fatalf("encodeCell(zero time): %v", err)
+	}
+	if cell.Type != "null" {
+		t.Fatalf("expected zero time to encode as null, got type=%q value=%v", cell.Type, cell.Value)
+	}
+}
+
+func TestQuoteIdentReservedWords(t *testing.T) {
+	// MySQL reserved words in column names (e.g. ingress_keys.key) must be quoted.
+	if got := quoteIdent("key", "mysql"); got != "`key`" {
+		t.Fatalf("mysql quoteIdent(key)=%q, want `key`", got)
+	}
+	if got := quoteIdent("type", "mysql"); got != "`type`" {
+		t.Fatalf("mysql quoteIdent(type)=%q, want `type`", got)
+	}
+	if got := quoteIdent("key", "postgres"); got != `"key"` {
+		t.Fatalf("postgres quoteIdent(key)=%q, want \"key\"", got)
+	}
+	if got := quoteIdent("key", "sqlite"); got != `"key"` {
+		t.Fatalf("sqlite quoteIdent(key)=%q, want \"key\"", got)
+	}
 }

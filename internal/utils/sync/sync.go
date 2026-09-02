@@ -402,7 +402,13 @@ func (s *Syncer) EnforceFromDB() error {
 		}
 		// Use "--" to prevent osUser from being interpreted as a flag.
 		out, pErr := exec.Command("pgrep", "-u", "--", osUser).Output()
-		if pErr == nil && len(strings.TrimSpace(string(out))) > 0 {
+		if pErr != nil {
+			// Fail closed: if we cannot confirm the user has no active sessions,
+			// do NOT remove the account or its home directory.
+			s.log.Warn("sync_rogue_user_pgrep_failed", slog.String("user", osUser), slog.Any("error", pErr))
+			continue
+		}
+		if len(strings.TrimSpace(string(out))) > 0 {
 			s.log.Warn("sync_rogue_user_session_active", slog.String("user", osUser))
 			continue
 		}

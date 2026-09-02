@@ -236,3 +236,96 @@ func TestSlogLevelToGelf(t *testing.T) {
 		}
 	}
 }
+
+func TestPlainTextHandlerSanitizesControls(t *testing.T) {
+	var buf bytes.Buffer
+	h := newPlainTextHandler(&buf)
+	r := slog.NewRecord(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), slog.LevelInfo, "msg\r\n\x1b\x00\u0085\x7f", 0)
+	r.AddAttrs(slog.String("ke\ty", "value\b\f\u009f"))
+
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+
+	got := buf.String()
+	if strings.Count(got, "\n") != 1 {
+		t.Fatalf("plain output contains an injected line break: %q", got)
+	}
+	for _, want := range []string{
+		`msg\u000d\u000a\u001b\u0000\u0085\u007f`,
+		`ke\u0009y=value\u0008\u000c\u009f`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("plain output %q does not contain %q", got, want)
+		}
+	}
+	assertNoLogControls(t, got[:len(got)-1])
+}
+
+type testSyslogWriter struct {
+	severity string
+	message  string
+}
+
+func (w *testSyslogWriter) Err(message string) error {
+	w.severity, w.message = "error", message
+	return nil
+}
+
+func (w *testSyslogWriter) Warning(message string) error {
+	w.severity, w.message = "warning", message
+	return nil
+}
+
+func (w *testSyslogWriter) Info(message string) error {
+	w.severity, w.message = "info", message
+	return nil
+}
+
+func TestSyslogHandlerSanitizesControls(t *testing.T) {
+	w := &testSyslogWriter{}
+	h := &syslogHandler{writer: w, level: slog.LevelInfo}
+	r := slog.NewRecord(time.Now(), slog.LevelWarn, "msg\n\x1b\u0080", 0)
+	r.AddAttrs(slog.String("ke\ry", "value\x00\x7f\u009f"))
+
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+
+	if w.severity != "warning" {
+		t.Errorf("severity = %q, want warning", w.severity)
+	}
+	want := `msg\u000a\u001b\u0080 ke\u000dy=value\u0000\u007f\u009f`
+	if w.message != want {
+		t.Errorf("syslog message = %q, want %q", w.message, want)
+	}
+	assertNoLogControls(t, w.message)
+}
+
+func TestJSONHandlerPreservesControlCharacters(t *testing.T) {
+	var buf bytes.Buffer
+	h := newTestJSONHandler(&buf)
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "msg\n\x1b\u0085", 0)
+	r.AddAttrs(slog.String("ke\ry", "value\x00\x7f\u009f"))
+
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+
+	m := decodeJSON(t, buf.String())
+	if m["msg"] != "msg\n\x1b\u0085" {
+		t.Errorf("JSON message was sanitized instead of JSON-escaped: %q", m["msg"])
+	}
+	if m["_ke\ry"] != "value\x00\x7f\u009f" {
+		t.Errorf("JSON attribute was sanitized instead of JSON-escaped: %q", m["_ke\ry"])
+	}
+}
+
+func assertNoLogControls(t *testing.T, value string) {
+	t.Helper()
+	for _, r := range value {
+		if (r >= 0 && r <= 0x1f) || (r >= 0x7f && r <= 0x9f) {
+			t.Errorf("output contains control character U+%04X: %q", r, value)
+		}
+	}
+}

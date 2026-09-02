@@ -21,13 +21,17 @@ func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 	var flagOutput bytes.Buffer
 	fs.SetOutput(&flagOutput)
 
-	if err := fs.Parse(args); err != nil || strings.TrimSpace(username) == "" {
+	parseErr := fs.Parse(args)
+	if parseErr != nil || strings.TrimSpace(username) == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Delete",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountDelete --user <username>"}}},
 		})
-		return err
+		if parseErr != nil {
+			return parseErr
+		}
+		return fmt.Errorf("username is required")
 	}
 
 	if !currentUser.CanDo(db, "accountDelete", username) {

@@ -3,8 +3,14 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+
+	"goBastion/internal/models"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -110,6 +116,52 @@ func TestInstanceIDResolution(t *testing.T) {
 	id = InstanceID()
 	if id != "my-custom-instance" {
 		t.Errorf("InstanceID() = %q, want my-custom-instance", id)
+	}
+}
+
+func TestEnsureInstanceConcurrent(t *testing.T) {
+	ResetForTesting()
+	t.Setenv("INSTANCE_ID", "concurrent-instance")
+	Load()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := db.AutoMigrate(&models.BastionInstance{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- EnsureInstance(db)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("EnsureInstance() error: %v", err)
+		}
+	}
+
+	var count int64
+	if err := db.Model(&models.BastionInstance{}).Where("instance_id = ?", "concurrent-instance").Count(&count).Error; err != nil {
+		t.Fatalf("count instances: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("instance rows = %d, want 1", count)
 	}
 }
 

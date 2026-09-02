@@ -82,10 +82,13 @@ type GroupGuestDBAccess struct {
 }
 
 func (g *GroupGuestDBAccess) BeforeCreate(tx *gorm.DB) (err error) {
-	g.ID = uuid.New()
+	if g.GroupID == uuid.Nil {
+		return fmt.Errorf("group_id is required for group guest DB access")
+	}
 	if g.UserID == uuid.Nil {
 		return fmt.Errorf("user_id is required for group guest DB access")
 	}
+	g.ID = uuid.New()
 	return nil
 }
 

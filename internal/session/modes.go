@@ -28,6 +28,7 @@ import (
 	cmdssh "goBastion/internal/commands/ssh"
 	cmdtty "goBastion/internal/commands/tty"
 	"goBastion/internal/config"
+	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
@@ -152,7 +153,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 				return
 			}
 			defer releaseSession()
-			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", cmd))
+			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", redactAuditCommand(cmd)))
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session_end", slog.String("user", currentUser.Username))
 		}
@@ -205,17 +206,21 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			runInteractiveMode(db, currentUser, log, nil)
 			return
 		}
+		command = args[0]
+		args = args[1:]
+		_ = executeCommandJSONAware(db, currentUser, log, command, args)
+		return
 	}
 
-	if strings.HasPrefix(command, "-osh") {
-		parts := strings.Split(command, "-osh")
-		command = parts[1]
-		commandParts := strings.Split(command, " ")
-		if len(commandParts) > 1 {
-			command = commandParts[1]
-			args = commandParts[2:]
+	if strings.HasPrefix(command, "-osh ") {
+		parts := strings.SplitN(command, " ", 2)
+		command = strings.TrimSpace(parts[1])
+		commandParts := strings.Fields(command)
+		if len(commandParts) > 0 {
+			command = commandParts[0]
+			args = commandParts[1:]
 		}
-		executeCommandJSONAware(db, currentUser, log, command, args)
+		_ = executeCommandJSONAware(db, currentUser, log, command, args)
 	} else if host, port, ok := parseTCPProxyRequest(command, args); ok {
 		if err := cmdssh.TCPProxy(db, *currentUser, *log, host, port); err != nil {
 			log.Warn("tcp_proxy_failed", slog.String("error", err.Error()))
@@ -332,33 +337,36 @@ func parseOshJSONMode(args []string) (oshJSONMode, []string) {
 	return mode, filtered
 }
 
-func executeCommandJSONAware(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) {
+func executeCommandJSONAware(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) error {
 	mode, filteredArgs := parseOshJSONMode(args)
 	if mode == oshJSONDisabled {
-		_ = executeCommand(db, currentUser, log, cmd, filteredArgs)
-		return
+		return executeCommand(db, currentUser, log, cmd, filteredArgs)
 	}
 
-	stdout, stderr, runErr, err := captureOutput(func() error {
+	// The command runs with its stdout/stderr captured. `runErr` is the error
+	// returned by the command itself (mapped onto the JSON error_code), while
+	// `capErr` is a *capture* failure: the command already ran but its output
+	// could not be read back. Re-running in that case would double-execute a
+	// mutating command, so we report the failure as a JSON error instead.
+	stdout, stderr, runErr, capErr := captureOutput(func() error {
 		return executeCommand(db, currentUser, log, cmd, filteredArgs)
 	})
-	if err != nil {
-		log.Error("json_api_capture_failed", slog.String("cmd", cmd), slog.String("error", err.Error()))
-		_ = executeCommand(db, currentUser, log, cmd, filteredArgs)
-		return
-	}
 
 	errorCode := "OK"
 	errorMessage := "OK"
-	if runErr != nil {
-		switch {
-		case errors.Is(runErr, ErrUnknownCommand):
-			errorCode = "KO_UNKNOWN_COMMAND"
-		case errors.Is(runErr, ErrPermissionDenied):
-			errorCode = "KO_PERMISSION_DENIED"
-		default:
-			errorCode = "ERR_COMMAND"
-		}
+	switch {
+	case capErr != nil:
+		log.Error("json_api_capture_failed", slog.String("cmd", redactAuditCommand(cmd)), slog.String("error", capErr.Error()))
+		errorCode = "ERR_CAPTURE"
+		errorMessage = capErr.Error()
+	case errors.Is(runErr, ErrUnknownCommand):
+		errorCode = "KO_UNKNOWN_COMMAND"
+		errorMessage = runErr.Error()
+	case errors.Is(runErr, ErrPermissionDenied):
+		errorCode = "KO_PERMISSION_DENIED"
+		errorMessage = runErr.Error()
+	case runErr != nil:
+		errorCode = "ERR_COMMAND"
 		errorMessage = runErr.Error()
 	}
 
@@ -372,6 +380,7 @@ func executeCommandJSONAware(db *gorm.DB, currentUser *models.User, log *slog.Lo
 		},
 	}
 	emitJSONPayload(mode, payload)
+	return runErr
 }
 
 func captureOutput(run func() error) (stdout string, stderr string, runErr error, captureErr error) {
@@ -388,6 +397,10 @@ func captureOutput(run func() error) (stdout string, stderr string, runErr error
 		_ = w.Close()
 		return "", "", nil, err
 	}
+	// The readers must stay open until both copy goroutines have observed EOF,
+	// but still need closing before this function returns.
+	defer func() { _ = r.Close() }()
+	defer func() { _ = rErr.Close() }()
 
 	os.Stdout = w
 	os.Stderr = wErr
@@ -419,8 +432,6 @@ func captureOutput(run func() error) (stdout string, stderr string, runErr error
 	_ = wErr.Close()
 	os.Stdout = origStdout
 	os.Stderr = origStderr
-	_ = r.Close()
-	_ = rErr.Close()
 
 	// Drain both channels. Pipes are closed so goroutines will finish and
 	// send exactly one value each (either a string or an error). We always
@@ -604,7 +615,20 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 			if tokens[0] == "ttyPlay" {
 				stopIdle()
 			}
-			err := executeCommand(db, currentUser, log, tokens[0], tokens[1:])
+			// Strip JSON flags from the whole token slice; the resulting
+			// `filtered` slice is the real command and its arguments — it is
+			// also used in the "else" branch so that a JSON flag can never
+			// leak into the routed command name.
+			mode, filtered := parseOshJSONMode(tokens)
+			if len(filtered) == 0 {
+				return
+			}
+			var err error
+			if mode != oshJSONDisabled {
+				err = executeCommandJSONAware(db, currentUser, log, filtered[0], filtered[1:])
+			} else {
+				err = executeCommand(db, currentUser, log, filtered[0], filtered[1:])
+			}
 			if errors.Is(err, errSessionExit) {
 				shouldExit.Store(true)
 				return
@@ -729,6 +753,8 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 	resetStdIn() // Mandatory: prevents the terminal from being left in a broken state.
 
 	log = log.With(slog.String("user", currentUser.Username))
+	auditCmd := redactAuditCommand(cmd)
+	auditArgs := redactAuditArgs(args)
 	hasPerm := func(perm string) bool {
 		return currentUser.CanDo(db, perm, "")
 	}
@@ -747,15 +773,15 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 	}
 
 	if found == nil {
-		log.Warn("command", slog.String("cmd", cmd),
-			slog.Any("args", args), slog.String("result", "unknown_command"))
+		log.Warn("command", slog.String("cmd", auditCmd),
+			slog.Any("args", auditArgs), slog.String("result", "unknown_command"))
 		fmt.Printf("Unknown command: %s\n", cmd)
 		return fmt.Errorf("%w: %s", ErrUnknownCommand, cmd)
 	}
 
 	if found.Permission != "" && !hasPerm(found.Permission) {
-		log.Warn("command", slog.String("cmd", cmd),
-			slog.Any("args", args), slog.String("result", "permission_denied"))
+		log.Warn("command", slog.String("cmd", auditCmd),
+			slog.Any("args", auditArgs), slog.String("result", "permission_denied"))
 		fmt.Printf("Permission denied for '%s'. Contact your admin or type 'help' to see available commands.\n", cmd)
 		return fmt.Errorf("%w: %s", ErrPermissionDenied, cmd)
 	}
@@ -763,8 +789,8 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 	// Feature-flag gate: disabled features (and global read-only mode) deny
 	// their commands before any handler runs.
 	if msg := featureDenied(found, currentUser); msg != "" {
-		log.Warn("command", slog.String("cmd", cmd),
-			slog.Any("args", args), slog.String("result", "feature_disabled"))
+		log.Warn("command", slog.String("cmd", auditCmd),
+			slog.Any("args", auditArgs), slog.String("result", "feature_disabled"))
 		fmt.Println(msg)
 		return fmt.Errorf("%w: %s", ErrPermissionDenied, cmd)
 	}
@@ -784,11 +810,11 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 		err := cmdtty.Play(db, currentUser, args)
 		resetStdIn()
 		if err != nil {
-			log.Error("command_failed", slog.String("cmd", cmd),
-				slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
+			log.Error("command_failed", slog.String("cmd", auditCmd),
+				slog.Any("args", auditArgs), slog.String("result", "error"), slog.String("error", err.Error()))
 		} else {
-			log.Info("command", slog.String("cmd", cmd),
-				slog.Any("args", args), slog.String("result", "ok"))
+			log.Info("command", slog.String("cmd", auditCmd),
+				slog.Any("args", auditArgs), slog.String("result", "ok"))
 		}
 		return err
 	}
@@ -799,12 +825,12 @@ func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd
 
 	err := found.Handler()
 	if err != nil {
-		log.Error("command_failed", slog.String("cmd", cmd),
-			slog.Any("args", args), slog.String("result", "error"), slog.String("error", err.Error()))
+		log.Error("command_failed", slog.String("cmd", auditCmd),
+			slog.Any("args", auditArgs), slog.String("result", "error"), slog.String("error", err.Error()))
 		return err
 	} else {
-		log.Info("command", slog.String("cmd", cmd),
-			slog.Any("args", args), slog.String("result", "ok"))
+		log.Info("command", slog.String("cmd", auditCmd),
+			slog.Any("args", auditArgs), slog.String("result", "ok"))
 	}
 	return nil
 }
@@ -880,17 +906,11 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 
 		// Try backup code
 		if user.BackupCodes != "" {
-			matched, updatedJSON, err := totp.VerifyAndConsumeBackupCode(code, user.BackupCodes)
+			matched, err := mfa.VerifyAndConsumeBackupCode(db, user, code)
 			if err != nil {
 				log.Warn("mfa_error", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("error", err.Error()))
 			} else if matched {
-				if dbErr := db.Model(user).Update("backup_codes", updatedJSON).Error; dbErr != nil {
-					log.Error("mfa_backup_code_db_error", slog.String("user", user.Username), slog.String("error", dbErr.Error()))
-					fmt.Println("⛔ Internal error saving backup code. Contact your admin.")
-					return false
-				}
-				user.BackupCodes = updatedJSON
-				remaining := totp.CountBackupCodes(updatedJSON)
+				remaining := totp.CountBackupCodes(user.BackupCodes)
 				log.Info("mfa_success", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("from", ip))
 				fmt.Printf("✅ Backup code accepted. %d code(s) remaining.\n", remaining)
 				return true
@@ -945,9 +965,13 @@ func isMoshServerRequest(command string, args []string) bool {
 
 // allowedMoshFlags is the set of flags that mosh-server is permitted to receive.
 // Any other flag is rejected to prevent argument injection.
+// `-l` is sent by every real mosh client as `-l LANG=<locale>` to set the
+// locale; omitting it from the allowlist made every legitimate session be
+// rejected as an "unsafe argument".
 var allowedMoshFlags = map[string]bool{
 	"-s": true,
 	"-c": true,
+	"-l": true,
 	"-":  true,
 }
 
@@ -964,8 +988,11 @@ func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 	cmdArgs := append(parts[1:], extraArgs...)
 
 	// Validate arguments to prevent injection of unexpected flags.
-	// Only known-safe flags (-s, -c, -) and positional arguments (host, port) are allowed.
-	for i, arg := range cmdArgs {
+	// Only known-safe flags (-s, -c, -l, -) and positional arguments (host,
+	// port) are allowed. Flags that take a value consume their value, which is
+	// therefore never validated as if it were a flag.
+	for i := 0; i < len(cmdArgs); i++ {
+		arg := cmdArgs[i]
 		if arg == "--" {
 			// End-of-options marker; everything after this is positional and safe.
 			break
@@ -978,10 +1005,10 @@ func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
 			fmt.Fprintf(os.Stderr, "mosh-server: rejected unsafe argument %q\n", arg)
 			return
 		}
-		// Skip the value that follows a flag that expects an argument.
+		// Flags -s, -c and -l expect a value: consume it so it is not
+		// re-interpreted as a flag.
 		if allowedMoshFlags[arg] && arg != "-" && i+1 < len(cmdArgs) {
-			// Skip the next token (value for this flag).
-			continue
+			i++
 		}
 	}
 

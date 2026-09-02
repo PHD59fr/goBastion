@@ -20,13 +20,17 @@ func DisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, ar
 	fs.StringVar(&targetUser, "user", "", "Target username")
 	fs.SetOutput(&buf)
 
-	if err := fs.Parse(args); err != nil || targetUser == "" {
+	parseErr := fs.Parse(args)
+	if parseErr != nil || targetUser == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable Account Password MFA",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"accountDisablePassword --user <username>"}}},
 		})
-		return nil
+		if parseErr != nil {
+			return parseErr
+		}
+		return fmt.Errorf("target username is required")
 	}
 
 	if !currentUser.CanDo(db, "accountSetPassword", targetUser) {
@@ -35,7 +39,7 @@ func DisablePassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, ar
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Only admins can clear password MFA for other users."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var user models.User

@@ -1,6 +1,7 @@
 package validation_test
 
 import (
+	"strings"
 	"testing"
 
 	"goBastion/internal/utils/validation"
@@ -15,8 +16,20 @@ func TestIsValidHost(t *testing.T) {
 		{"my-server.internal", true},
 		{"192.168.1.1", true},
 		{"[::1]", true},
+		{"2001:db8::1", true},
+		{"localhost", true},
 		{"server_name", true},
+		{strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61), true},
 		{"", false},
+		{"---", false},
+		{"___", false},
+		{"a..b", false},
+		{"-server", false},
+		{"server-", false},
+		{"_server", false},
+		{"server_", false},
+		{strings.Repeat("a", 64) + ".example", false},
+		{strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 62), false},
 		{"host with space", false},
 		{"host@domain", false},
 		{"host/path", false},
@@ -29,6 +42,14 @@ func TestIsValidHost(t *testing.T) {
 				t.Errorf("IsValidHost(%q) = %v, want %v", tc.host, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsValidHostReference_PreservesLegacyRuntimeNames(t *testing.T) {
+	for _, host := range []string{"---", "_legacy", "legacy_"} {
+		if !validation.IsValidHostReference(host) {
+			t.Errorf("IsValidHostReference(%q) = false, want true", host)
+		}
 	}
 }
 

@@ -19,7 +19,7 @@ func DisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []st
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"No password MFA configured."}}},
 		})
-		return nil
+		return fmt.Errorf("no password MFA configured")
 	}
 
 	fmt.Print("Enter current password: ")
@@ -36,7 +36,7 @@ func DisablePassword(db *gorm.DB, user *models.User, log *slog.Logger, args []st
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Current password is incorrect."}}},
 		})
-		return nil
+		return fmt.Errorf("current password is incorrect")
 	}
 
 	if err := db.Model(user).Update("password_hash", "").Error; err != nil {

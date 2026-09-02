@@ -42,8 +42,10 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 		t.Fatalf("write ttyrec stub: %v", err)
 	}
 
+	clientEnvLog := filepath.Join(tmpDir, "client.env")
 	clientScript := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > \"" + clientLog + "\"\n"
+		"printf '%s\\n' \"$@\" > \"" + clientLog + "\"\n" +
+		"printf '%s\\n' \"MYSQL_PWD=$MYSQL_PWD\" > \"" + clientEnvLog + "\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "mariadb"), []byte(clientScript), 0o755); err != nil {
 		t.Fatalf("write mariadb stub: %v", err)
 	}
@@ -85,10 +87,23 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 		t.Fatalf("read client log: %v", err)
 	}
 	clientArgsStr := string(clientArgs)
-	for _, want := range []string{"-h", "db.example.internal", "-P", "3306", "-u", "dbuser", "--protocol=tcp", "-psecret", "appdb"} {
+	for _, want := range []string{"-h", "db.example.internal", "-P", "3306", "-u", "dbuser", "--protocol=tcp", "appdb"} {
 		if !strings.Contains(clientArgsStr, want) {
 			t.Fatalf("mariadb client args missing %q, args=%q", want, clientArgsStr)
 		}
+	}
+	// The password must never appear in argv (world-readable via /proc/<pid>/cmdline).
+	if strings.Contains(clientArgsStr, "secret") {
+		t.Fatalf("mariadb password leaked into client argv, args=%q", clientArgsStr)
+	}
+
+	// It must instead be forwarded through the client env.
+	clientEnv, err := os.ReadFile(clientEnvLog)
+	if err != nil {
+		t.Fatalf("read client env log: %v", err)
+	}
+	if got := strings.TrimSpace(string(clientEnv)); got != "MYSQL_PWD=secret" {
+		t.Fatalf("expected MYSQL_PWD in client env, got %q", got)
 	}
 
 	recordings, err := filepath.Glob(filepath.Join(ttyrecDir, "alice", "db.example.internal", "dbuser.db.example.internal:3306_*_mysql_appdb.ttyrec.gz"))
@@ -133,8 +148,10 @@ func TestConnectFixesTTYRecDirPermissions(t *testing.T) {
 		t.Fatalf("write ttyrec stub: %v", err)
 	}
 
+	clientEnvLog := filepath.Join(tmpDir, "client.env")
 	clientScript := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > \"" + clientLog + "\"\n"
+		"printf '%s\\n' \"$@\" > \"" + clientLog + "\"\n" +
+		"printf '%s\\n' \"MYSQL_PWD=$MYSQL_PWD\" > \"" + clientEnvLog + "\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "mariadb"), []byte(clientScript), 0o755); err != nil {
 		t.Fatalf("write mariadb stub: %v", err)
 	}
@@ -220,13 +237,72 @@ func newAliasTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
-	if err := db.AutoMigrate(&models.User{}, &models.Group{}, &models.UserGroup{}, &models.DatabaseAlias{}, &models.GroupDBAccess{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Group{}, &models.UserGroup{}, &models.DatabaseAlias{}, &models.GroupDBAccess{}, &models.GroupGuestDBAccess{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := db.AutoMigrate(&models.SelfDBAccess{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return db
+}
+
+func TestDBAccessFilterGuestRequiresExplicitGrant(t *testing.T) {
+	db := newAliasTestDB(t)
+	t.Setenv("SSH_CLIENT", "10.1.2.3 12345 22")
+	user := models.User{Username: "guest", Role: models.RoleUser, Enabled: true}
+	group := models.Group{Name: "ops"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.UserGroup{UserID: user.ID, GroupID: group.ID, Role: models.GroupRoleGuest}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.GroupDBAccess{GroupID: group.ID, Host: "db.internal", Port: 5432, Protocol: "postgres", Username: "broad"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := dbAccessFilter(db, user, "db.internal", 5432, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("guest inherited broad group access: %+v", got)
+	}
+
+	grant := models.GroupGuestDBAccess{GroupID: group.ID, UserID: user.ID, Host: "db.internal", Port: 5432, Protocol: "postgres", Username: "limited"}
+	if err := db.Create(&grant).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err = dbAccessFilter(db, user, "db.internal", 5432, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Username != "limited" {
+		t.Fatalf("explicit guest grant not applied: %+v", got)
+	}
+}
+
+func TestDBAccessFilterCIDRIsFailClosedWithoutClientIP(t *testing.T) {
+	db := newAliasTestDB(t)
+	t.Setenv("SSH_CLIENT", "")
+	t.Setenv("SSH_CONNECTION", "")
+	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.SelfDBAccess{UserID: user.ID, Host: "db.internal", Port: 5432, Protocol: "postgres", Username: "dbuser", AllowedFrom: "10.0.0.0/8"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := dbAccessFilter(db, user, "db.internal", 5432, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("CIDR-restricted access accepted without client IP: %+v", got)
+	}
 }
 
 func TestResolveTargetFindsGroupDBAccessByHost(t *testing.T) {
@@ -407,6 +483,46 @@ func TestResolveTargetDetailedReportsRequestedAndEffectiveTargets(t *testing.T) 
 	}
 	if details.AccessSource != "group-"+group.Name {
 		t.Fatalf("AccessSource = %q, want group-%s", details.AccessSource, group.Name)
+	}
+}
+
+func TestBuildClientArgsAndEnvKeepPasswordOutOfArgv(t *testing.T) {
+	tests := []struct {
+		protocol string
+		wantEnv  string // exact env var line expected in clientEnv
+	}{
+		{protocol: "mysql", wantEnv: "MYSQL_PWD=secret"},
+		{protocol: "postgres", wantEnv: "PGPASSWORD=secret"},
+		{protocol: "redis", wantEnv: "REDISCLI_AUTH=secret"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.protocol, func(t *testing.T) {
+			access := models.DBAccessRight{
+				Host: "db.internal", Port: 5432, Protocol: tt.protocol,
+				Username: "dbuser", Password: "secret", Database: "appdb",
+			}
+			args := buildClientArgs(access)
+			for _, a := range args {
+				if strings.Contains(a, "secret") {
+					t.Fatalf("password leaked into argv: %q", args)
+				}
+			}
+			env := clientEnv(access)
+			found := false
+			for _, e := range env {
+				if e == tt.wantEnv {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("clientEnv missing %q, got %v", tt.wantEnv, env)
+			}
+		})
+	}
+
+	// No password → no env vars set at all.
+	if env := clientEnv(models.DBAccessRight{Protocol: "mysql", Host: "h", Port: 3306}); len(env) != 0 {
+		t.Fatalf("expected no env for empty password, got %v", env)
 	}
 }
 
