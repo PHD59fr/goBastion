@@ -19,9 +19,9 @@ import (
 func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("accountSetPassword", flag.ContinueOnError)
 	var targetUser string
-	var clear bool
+	var clearPassword bool
 	fs.StringVar(&targetUser, "user", "", "Target username")
-	fs.BoolVar(&clear, "clear", false, "Clear/remove password MFA for the user")
+	fs.BoolVar(&clearPassword, "clear", false, "Clear/remove password MFA for the user")
 	var buf bytes.Buffer
 	fs.SetOutput(&buf)
 
@@ -53,7 +53,7 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 		return err
 	}
 
-	if clear {
+	if clearPassword {
 		if err := db.Model(&user).Update("password_hash", "").Error; err != nil {
 			return fmt.Errorf("failed to clear password: %w", err)
 		}
@@ -70,19 +70,19 @@ func SetPassword(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 
 	fmt.Print("Enter new password for " + targetUser + ": ")
 	passBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	defer clear(passBytes)
 	fmt.Println()
 	if err != nil {
 		return fmt.Errorf("could not read password: %w", err)
 	}
-	password := string(passBytes)
-	if len(password) < 8 {
+	if len(passBytes) < 8 {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Set Account Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
 		})
 		return fmt.Errorf("password must be at least 8 characters")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword(passBytes, bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("bcrypt error: %w", err)
 	}

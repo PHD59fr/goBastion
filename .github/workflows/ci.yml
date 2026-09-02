@@ -26,9 +26,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v7
+      # Build the linter with the Go version selected above so its toolchain
+      # always matches the module's target version.
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11.1
+          version: v2.13.2
+          install-mode: goinstall
           args: --timeout=5m
 
   test:
@@ -124,4 +127,3 @@ jobs:
           tags: ${{ steps.meta-full.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-

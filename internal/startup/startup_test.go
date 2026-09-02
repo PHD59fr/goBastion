@@ -97,18 +97,28 @@ func TestRunDisableTOTP_PreservesPasswordMFA(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	oldStderr := os.Stderr
+	oldStdout := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
 	os.Stderr = w
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	os.Stdout = stdoutW
 	t.Cleanup(func() {
 		os.Stderr = oldStderr
+		os.Stdout = oldStdout
 		_ = r.Close()
+		_ = stdoutR.Close()
 	})
 
 	code := runDisableTOTP(db, log, user.Username)
 	_ = w.Close()
+	_ = stdoutW.Close()
+	os.Stdout = oldStdout
 	if code != 0 {
 		t.Fatalf("runDisableTOTP exit code = %d, want 0", code)
 	}
@@ -117,14 +127,24 @@ func TestRunDisableTOTP_PreservesPasswordMFA(t *testing.T) {
 	if err := db.Where("username = ?", user.Username).First(&got).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
-	if got.PasswordHash == "" {
-		t.Fatal("password MFA should be preserved by --disableTOTP")
+	if got.PasswordHash != user.PasswordHash {
+		t.Fatal("password MFA should be preserved unchanged by --disableTOTP")
 	}
 	if got.TOTPEnabled || got.TOTPSecret != "" {
 		t.Fatal("TOTP should be disabled and secret cleared")
 	}
 	if got.BackupCodes != "" {
 		t.Fatal("backup codes should be cleared")
+	}
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if !strings.Contains(string(stdout), "TOTP and backup codes disabled") {
+		t.Fatalf("unexpected success message: %q", string(stdout))
+	}
+	if strings.Contains(string(stdout), "password") {
+		t.Fatalf("success message incorrectly says password MFA was disabled: %q", string(stdout))
 	}
 }
 

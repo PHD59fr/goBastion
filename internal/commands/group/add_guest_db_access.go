@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/validation"
@@ -137,6 +138,18 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			Sections:  []console.SectionContent{{SubTitle: "Wrong Role", Body: []string{fmt.Sprintf("User '%s' has role '%s' in group '%s', not 'guest'. Guest access grants only apply to guest-role users.", account, ug.Role, groupName)}}},
 		})
 		return nil
+	}
+
+	// Prompt for the password interactively when it was not passed as a flag,
+	// so it does not linger in the shell history or the process list.
+	password, err := utils.ResolveSecret(password, "Database password")
+	if err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Guest DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Input Error", Body: []string{err.Error()}}},
+		})
+		return err
 	}
 
 	// Encrypt password if provided

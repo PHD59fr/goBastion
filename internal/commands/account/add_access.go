@@ -2,12 +2,14 @@ package account
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"strings"
 	"time"
 
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/validation"
 
@@ -49,6 +51,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("missing required arguments")
 	}
 
+	targetUser = utils.NormalizeUsername(targetUser)
 	if !currentUser.CanDo(db, "accountAddAccess", targetUser) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
@@ -57,7 +60,6 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
-
 	if !validation.IsValidProtocol(protocol) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",
@@ -65,6 +67,15 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: ssh, scpupload, scpdownload, sftp, rsync"}}},
 		})
 		return fmt.Errorf("invalid protocol: %s", protocol)
+	}
+	if ttlDays < 0 {
+		return fmt.Errorf("invalid TTL: %d (must be zero or positive)", ttlDays)
+	}
+	if !validation.IsValidHost(server) {
+		return fmt.Errorf("invalid server: %s", server)
+	}
+	if username != "*" && !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid remote username: %s", username)
 	}
 	if !validation.IsValidPort(port) {
 		console.DisplayBlock(console.ContentBlock{
@@ -91,6 +102,14 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' not found. Check spelling or run accountList.", targetUser)}}},
 		})
 		return err
+	}
+	var existing models.SelfAccess
+	result := db.Where("user_id = ? AND server = ? AND username = ? AND port = ?", user.ID, server, username, port).First(&existing)
+	if result.Error == nil {
+		return fmt.Errorf("personal access already exists for %s@%s:%d", username, server, port)
+	}
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("check existing personal access: %w", result.Error)
 	}
 
 	access := models.SelfAccess{UserID: user.ID, Server: server, Username: username, Port: port, Comment: comment, AllowedFrom: allowedFrom, Protocol: protocol}

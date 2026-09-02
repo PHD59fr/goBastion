@@ -27,6 +27,9 @@ import (
 const (
 	exportFormatName    = "gobastion-dbexport"
 	exportFormatVersion = 1
+	maxArgon2Time       = 10
+	maxArgon2Memory     = 256 * 1024 // KiB (256 MiB)
+	maxArgon2Threads    = 16
 )
 
 var (
@@ -135,7 +138,13 @@ func deriveKeyForImport(secret string, kdf exportKDFEnvelope) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode kdf salt: %w", err)
 		}
-		if kdf.Time == 0 || kdf.Memory == 0 || kdf.Threads == 0 || kdf.KeyLen == 0 {
+		if len(salt) < 16 || len(salt) > 64 {
+			return nil, fmt.Errorf("invalid argon2id salt length")
+		}
+		if kdf.Time == 0 || kdf.Time > maxArgon2Time ||
+			kdf.Memory == 0 || kdf.Memory > maxArgon2Memory ||
+			kdf.Threads == 0 || kdf.Threads > maxArgon2Threads ||
+			!isValidAESKeyLength(int(kdf.KeyLen)) {
 			return nil, fmt.Errorf("invalid argon2id parameters in export")
 		}
 		return argon2.IDKey([]byte(secret), salt, kdf.Time, kdf.Memory, kdf.Threads, kdf.KeyLen), nil
@@ -326,6 +335,9 @@ func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
 	if payload.Version != exportFormatVersion {
 		return fmt.Errorf("unsupported payload version: %d", payload.Version)
 	}
+	if err := validateImportTables(db, payload.Tables); err != nil {
+		return err
+	}
 
 	tx := db.Begin()
 	if tx.Error != nil {
@@ -404,6 +416,33 @@ func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
 	return tx.Commit().Error
 }
 
+func validateImportTables(db *gorm.DB, tables []exportTable) error {
+	expected := make(map[string]bool, len(ManagedModelsInDependencyOrder()))
+	for _, model := range ManagedModelsInDependencyOrder() {
+		sch, err := parseModelSchema(db, model)
+		if err != nil {
+			return fmt.Errorf("parse schema while validating import: %w", err)
+		}
+		expected[sch.Table] = false
+	}
+	for _, table := range tables {
+		seen, ok := expected[table.Name]
+		if !ok {
+			return fmt.Errorf("table %s is not importable by this version", table.Name)
+		}
+		if seen {
+			return fmt.Errorf("duplicate table %s in import", table.Name)
+		}
+		expected[table.Name] = true
+	}
+	for table, seen := range expected {
+		if !seen {
+			return fmt.Errorf("required table %s is missing from import", table)
+		}
+	}
+	return nil
+}
+
 func parseModelSchema(db *gorm.DB, model any) (*schema.Schema, error) {
 	stmt := &gorm.Statement{DB: db}
 	if err := stmt.Parse(model); err != nil {
@@ -437,7 +476,15 @@ func exportTableRows(db *gorm.DB, sch *schema.Schema, log *slog.Logger) ([]map[s
 		)
 	}
 
-	query := db.Unscoped().Table(sch.Table)
+	// Select model-managed columns explicitly. MySQL active-row uniqueness uses
+	// generated identity columns, which must not be exported or inserted.
+	// Quote identifiers so columns that are MySQL/Postgres reserved words
+	// (e.g. ingress_keys.key) do not break the SELECT.
+	quoted := make([]string, 0, len(sch.DBNames))
+	for _, col := range sch.DBNames {
+		quoted = append(quoted, quoteIdent(col, db.Name()))
+	}
+	query := db.Unscoped().Table(sch.Table).Select(quoted)
 	for _, pk := range sch.PrimaryFields {
 		query = query.Order(pk.DBName)
 	}
@@ -508,6 +555,9 @@ func encodeCell(field *schema.Field, value any) (encodedCell, error) {
 			t, err := asTime(value)
 			if err != nil {
 				return encodedCell{}, err
+			}
+			if t.IsZero() {
+				return encodedCell{Type: "null"}, nil
 			}
 			return encodedCell{Type: "time", Value: t.UTC().Format(time.RFC3339Nano)}, nil
 
@@ -724,7 +774,7 @@ FROM %s
 }
 
 func indirectType(t reflect.Type) reflect.Type {
-	for t != nil && t.Kind() == reflect.Ptr {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t

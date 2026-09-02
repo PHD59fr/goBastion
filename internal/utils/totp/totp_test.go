@@ -1,12 +1,35 @@
 package totp
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"goBastion/internal/config"
 )
+
+func TestOtpAuthURL_EncodesLabelAndQueryValues(t *testing.T) {
+	issuer := "Example & Co:東京"
+	account := "alice smith:ops&测试"
+	secret := "ABC+& =?"
+
+	got := OtpAuthURL(issuer, account, secret)
+	wantPath := "/Example%20%26%20Co%3A%E6%9D%B1%E4%BA%AC:alice%20smith%3Aops%26%E6%B5%8B%E8%AF%95"
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse OtpAuthURL: %v", err)
+	}
+	if parsed.Scheme != "otpauth" || parsed.Host != "totp" {
+		t.Fatalf("unexpected URL prefix: %s", got)
+	}
+	if parsed.EscapedPath() != wantPath {
+		t.Errorf("escaped path = %q, want %q", parsed.EscapedPath(), wantPath)
+	}
+	if values := parsed.Query(); values.Get("issuer") != issuer || values.Get("secret") != secret {
+		t.Errorf("query values were not preserved: %v", values)
+	}
+}
 
 func TestGenerateBackupCodes_CountAndLength(t *testing.T) {
 	cfg := config.Get().TOTP
@@ -120,6 +143,11 @@ func TestVerify(t *testing.T) {
 	}
 	if Verify(secret, "000000") {
 		t.Error("random code should not verify")
+	}
+	for _, invalid := range []string{"12345", "1234567", "12345a", " 123456", "１２３４５６"} {
+		if Verify(secret, invalid) {
+			t.Errorf("malformed TOTP code %q should not verify", invalid)
+		}
 	}
 }
 

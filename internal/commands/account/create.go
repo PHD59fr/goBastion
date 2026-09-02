@@ -2,13 +2,14 @@ package account
 
 import (
 	"bufio"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 
@@ -72,7 +73,12 @@ func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 		return fmt.Errorf("invalid SSH key: %w", err)
 	}
 
-	if err = CreateUser(db, adapter, username, pubKey); err != nil {
+	if err = CreateUser(db, adapter, username, pubKey, UserCreationOptions{
+		Role:       models.RoleUser,
+		Enabled:    true,
+		OSHOnly:    oshOnly,
+		SuperOwner: superOwner,
+	}); err != nil {
 		title := "Error"
 		if strings.Contains(err.Error(), "exists") {
 			title = "User Exists"
@@ -83,18 +89,6 @@ func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 			Sections:  []console.SectionContent{{SubTitle: title, Body: []string{err.Error()}}},
 		})
 		return err
-	}
-
-	if oshOnly || superOwner {
-		if err = db.Model(&models.User{}).Where("username = ?", strings.ToLower(strings.TrimSpace(username))).
-			Updates(map[string]any{"osh_only": oshOnly, "super_owner": superOwner}).Error; err != nil {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "Account Create",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("User created but failed to set flags: %v", err)}}},
-			})
-			return err
-		}
 	}
 
 	console.DisplayBlock(console.ContentBlock{
@@ -109,19 +103,23 @@ func Create(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 	return nil
 }
 
+// UserCreationOptions are persisted atomically with a new account row.
+type UserCreationOptions struct {
+	Role       string
+	Enabled    bool
+	OSHOnly    bool
+	SuperOwner bool
+}
+
 // CreateUser creates the DB record, registers the ingress key and creates the OS user.
-func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, pubKey string) error {
+func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, pubKey string, options UserCreationOptions) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if !validation.IsValidUsername(username) {
 		return fmt.Errorf("invalid username: %s", username)
 	}
 
-	var count int64
-	if err := db.Model(&models.User{}).Where("username = ? AND deleted_at IS NULL", username).Count(&count).Error; err != nil {
-		return validation.WrapDBError(err, "error querying database")
-	}
-	if count > 0 {
-		return fmt.Errorf("user '%s' already exists", username)
+	if options.Role != models.RoleUser && options.Role != models.RoleAdmin {
+		return fmt.Errorf("invalid account role: %s", options.Role)
 	}
 
 	var (
@@ -129,7 +127,7 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 		err     error
 	)
 	if err = db.Transaction(func(tx *gorm.DB) error {
-		newUser, err = createDBUser(tx, username)
+		newUser, err = createDBUser(tx, username, options)
 		if err != nil {
 			return err
 		}
@@ -155,19 +153,35 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 	return nil
 }
 
-// createDBUser inserts a new user record into the database.
-func createDBUser(db *gorm.DB, username string) (*models.User, error) {
+// createDBUser performs an insert-only account creation.
+func createDBUser(db *gorm.DB, username string, options UserCreationOptions) (*models.User, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
-
-	var existing models.User
-	if err := db.Where("username = ?", username).First(&existing).Error; err == nil {
-		return &existing, nil
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, validation.WrapDBError(err, "error checking user existence")
+	now := time.Now()
+	newUser := models.User{
+		ID:         uuid.New(),
+		Username:   username,
+		Role:       options.Role,
+		Enabled:    options.Enabled,
+		OSHOnly:    options.OSHOnly,
+		SuperOwner: options.SuperOwner,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
-
-	newUser := models.User{Username: username, Role: models.RoleUser, Enabled: true}
-	if err := db.Create(&newUser).Error; err != nil {
+	// A map insert preserves explicit false values despite GORM default tags.
+	err := db.Model(&models.User{}).Create(map[string]any{
+		"id":          newUser.ID,
+		"username":    newUser.Username,
+		"role":        newUser.Role,
+		"enabled":     newUser.Enabled,
+		"osh_only":    newUser.OSHOnly,
+		"super_owner": newUser.SuperOwner,
+		"created_at":  newUser.CreatedAt,
+		"updated_at":  newUser.UpdatedAt,
+	}).Error
+	if err != nil {
+		if validation.IsDuplicateKeyError(err) {
+			return nil, fmt.Errorf("user '%s' already exists", username)
+		}
 		return nil, validation.WrapDBError(err, "error creating user")
 	}
 	return &newUser, nil

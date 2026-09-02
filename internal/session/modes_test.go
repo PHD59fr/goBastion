@@ -1,12 +1,43 @@
 package session
 
 import (
+	"fmt"
+	"os"
 	"reflect"
 	"testing"
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 )
+
+func TestCaptureOutputDoesNotLeakFileDescriptors(t *testing.T) {
+	countFDs := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Skipf("file descriptor inspection is unavailable: %v", err)
+		}
+		return len(entries)
+	}
+
+	before := countFDs()
+	for i := 0; i < 20; i++ {
+		stdout, stderr, runErr, captureErr := captureOutput(func() error {
+			_, _ = fmt.Fprint(os.Stdout, "stdout")
+			_, _ = fmt.Fprint(os.Stderr, "stderr")
+			return nil
+		})
+		if runErr != nil || captureErr != nil {
+			t.Fatalf("captureOutput errors: run=%v capture=%v", runErr, captureErr)
+		}
+		if stdout != "stdout" || stderr != "stderr" {
+			t.Fatalf("captured stdout=%q stderr=%q", stdout, stderr)
+		}
+	}
+	after := countFDs()
+	if after != before {
+		t.Fatalf("open file descriptors changed from %d to %d", before, after)
+	}
+}
 
 func TestParseDBRequest(t *testing.T) {
 	tests := []struct {

@@ -48,7 +48,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Usage", Body: []string{"selfGenerateEgressKey --type <keytype> --size <keysize>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("key type and positive key size are required")
 	}
 	validKeyTypes := map[string]bool{"ed25519": true, "rsa": true, "ecdsa": true}
 	if !validKeyTypes[keyType] {
@@ -59,7 +59,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Invalid Key Type", Body: []string{"Key type must be one of: ed25519, rsa, ecdsa"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("invalid key type %q", keyType)
 	}
 	if keyType == "rsa" && keySize < 2048 {
 		console.DisplayBlock(console.ContentBlock{
@@ -69,7 +69,7 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Weak Key Size", Body: []string{"RSA key size must be at least 2048 bits."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("RSA key size must be at least 2048 bits")
 	}
 	tmpDir := filepath.Join(config.Get().Paths.HomeBaseDir, user.Username, ".tmp")
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {

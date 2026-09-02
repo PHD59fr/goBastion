@@ -28,7 +28,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.User{}, &models.Group{}, &models.UserGroup{},
-		&models.SelfAccess{}, &models.GroupAccess{},
+		&models.SelfAccess{}, &models.GroupAccess{}, &models.GroupGuestAccess{},
 		&models.SelfEgressKey{}, &models.GroupEgressKey{},
 		&models.Aliases{}, &models.KnownHostsEntry{}, &models.Realm{},
 	); err != nil {
@@ -330,6 +330,65 @@ func TestAccessFilter_ExpiredAccessIgnored(t *testing.T) {
 	}
 }
 
+func TestAccessFilter_GuestGrantCannotEscalateProtocol(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "guest", models.RoleUser)
+	group := mustCreateGroup(t, db, "prod")
+	mustAddUserToGroup(t, db, user.ID, group.ID, models.GroupRoleGuest)
+	if err := db.Create(&models.GroupAccess{
+		GroupID: group.ID, Username: "deploy", Server: "myserver", Port: 22, Protocol: "sftp",
+	}).Error; err != nil {
+		t.Fatalf("create group access: %v", err)
+	}
+	if err := db.Create(&models.GroupGuestAccess{
+		GroupID: group.ID, UserID: user.ID, Username: "deploy", Server: "myserver", Port: 22, Protocol: "scpdownload",
+	}).Error; err != nil {
+		t.Fatalf("create guest grant: %v", err)
+	}
+
+	if _, err := accessFilter(db, user, "deploy", "myserver", "22", "sftp"); err == nil {
+		t.Fatal("a scpdownload guest grant must not authorize SFTP")
+	}
+}
+
+func TestAccessFilter_GuestGrantEnforcesAllowedFrom(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "guest", models.RoleUser)
+	group := mustCreateGroup(t, db, "prod")
+	mustAddUserToGroup(t, db, user.ID, group.ID, models.GroupRoleGuest)
+	mustCreateGroupAccess(t, db, group.ID, "deploy", "myserver", 22)
+	if err := db.Create(&models.GroupGuestAccess{
+		GroupID: group.ID, UserID: user.ID, Username: "deploy", Server: "myserver",
+		Port: 22, Protocol: "ssh", AllowedFrom: "10.0.0.0/8",
+	}).Error; err != nil {
+		t.Fatalf("create guest grant: %v", err)
+	}
+	t.Setenv("SSH_CLIENT", "203.0.113.5 12345 22")
+
+	if _, err := accessFilter(db, user, "deploy", "myserver", "22", "ssh"); err == nil {
+		t.Fatal("guest grant source CIDR must be enforced")
+	}
+}
+
+func TestTCPProxy_GuestRequiresSSHGrantAndAllowedSource(t *testing.T) {
+	db := newTestDB(t)
+	user := mustCreateUser(t, db, "guest", models.RoleUser)
+	group := mustCreateGroup(t, db, "prod")
+	mustAddUserToGroup(t, db, user.ID, group.ID, models.GroupRoleGuest)
+	mustCreateGroupAccess(t, db, group.ID, "deploy", "myserver", 22)
+	if err := db.Create(&models.GroupGuestAccess{
+		GroupID: group.ID, UserID: user.ID, Username: "deploy", Server: "myserver",
+		Port: 22, Protocol: "scpdownload", AllowedFrom: "10.0.0.0/8",
+	}).Error; err != nil {
+		t.Fatalf("create guest grant: %v", err)
+	}
+	t.Setenv("SSH_CLIENT", "10.1.2.3 12345 22")
+
+	if _, err := tcpProxyAccessFilter(db, slog.Default(), user, "myserver", 22); err == nil {
+		t.Fatal("a non-SSH guest grant must not authorize the raw TCP proxy")
+	}
+}
+
 // --- inferSSHUsername tests ---
 
 // TestInferSSHUsername_NoFallbackToRoot verifies no silent "root" fallback.
@@ -447,6 +506,9 @@ func TestParseSSHCommand(t *testing.T) {
 		{"user@host with cmd", "deploy@myserver ls -la", "deploy", "myserver", "22", "ls -la", ""},
 		{"empty input", "", "", "", "", "", "empty command"},
 		{"missing host", "@", "", "", "", "", "missing host"},
+		{"ipv6 host", "[::1]", "", "::1", "22", "", ""},
+		{"ipv6 host with port", "deploy@[::1]:2222", "deploy", "::1", "2222", "", ""},
+		{"ipv6 host with cmd", "deploy@[::1] whoami", "deploy", "::1", "22", "whoami", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -505,6 +567,12 @@ func TestExtractForwardHops(t *testing.T) {
 			},
 		},
 		{
+			name:      "bracketed IPv6 hop",
+			input:     "deploy@target --via jump@[2001:db8::1]:2222",
+			wantClean: "deploy@target",
+			wantHops:  []SSHHop{{User: "jump", Host: "2001:db8::1", Port: "2222"}},
+		},
+		{
 			name:    "missing --via argument",
 			input:   "deploy@host --via",
 			wantErr: "requires an argument",
@@ -548,9 +616,10 @@ func TestFormatJumpHosts(t *testing.T) {
 	hops := []SSHHop{
 		{User: "phd", Host: "10.0.0.1", Port: "22"},
 		{User: "phd", Host: "1.3.2.1", Port: "2222"},
+		{User: "jump", Host: "2001:db8::1", Port: "2200"},
 	}
 	got := formatJumpHosts(hops)
-	if len(got) != 2 || got[0] != "phd@10.0.0.1:22" || got[1] != "phd@1.3.2.1:2222" {
+	if len(got) != 3 || got[0] != "phd@10.0.0.1:22" || got[1] != "phd@1.3.2.1:2222" || got[2] != "jump@[2001:db8::1]:2200" {
 		t.Fatalf("formatJumpHosts unexpected: %v", got)
 	}
 }

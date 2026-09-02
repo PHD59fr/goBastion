@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"goBastion/internal/config"
 )
@@ -161,8 +162,35 @@ func (h *multiHandler) WithGroup(name string) slog.Handler {
 
 // syslogHandler routes slog records to the system syslog daemon (best-effort).
 type syslogHandler struct {
-	writer *syslog.Writer
+	writer syslogWriter
 	level  slog.Level
+}
+
+type syslogWriter interface {
+	Err(string) error
+	Warning(string) error
+	Info(string) error
+}
+
+func sanitizeLogText(s string) string {
+	var b strings.Builder
+	start := 0
+	for i, r := range s {
+		if (r < 0 || r > 0x1f) && (r < 0x7f || r > 0x9f) {
+			continue
+		}
+		if b.Cap() == 0 {
+			b.Grow(len(s))
+		}
+		b.WriteString(s[start:i])
+		fmt.Fprintf(&b, `\u%04x`, r)
+		start = i + utf8.RuneLen(r)
+	}
+	if b.Cap() == 0 {
+		return s
+	}
+	b.WriteString(s[start:])
+	return b.String()
 }
 
 // Enabled always returns true for the syslog handler.
@@ -172,9 +200,9 @@ func (h *syslogHandler) Enabled(_ context.Context, level slog.Level) bool {
 
 // Handle writes the log message to the syslog daemon.
 func (h *syslogHandler) Handle(_ context.Context, r slog.Record) error {
-	msg := r.Message
+	msg := sanitizeLogText(r.Message)
 	r.Attrs(func(a slog.Attr) bool {
-		msg += " " + a.Key + "=" + a.Value.String()
+		msg += " " + sanitizeLogText(a.Key) + "=" + sanitizeLogText(a.Value.String())
 		return true
 	})
 	switch {
@@ -232,13 +260,13 @@ func (h *plainTextHandler) Handle(_ context.Context, r slog.Record) error {
 		b.WriteByte(' ')
 	}
 	b.WriteByte(' ')
-	b.WriteString(r.Message)
+	b.WriteString(sanitizeLogText(r.Message))
 
 	emitAttr := func(a slog.Attr) bool {
 		b.WriteByte(' ')
-		b.WriteString(a.Key)
+		b.WriteString(sanitizeLogText(a.Key))
 		b.WriteByte('=')
-		fmt.Fprintf(&b, "%v", a.Value.Any())
+		b.WriteString(sanitizeLogText(fmt.Sprint(a.Value.Any())))
 		return true
 	}
 	for _, a := range h.preAttrs {

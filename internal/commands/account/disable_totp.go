@@ -17,7 +17,8 @@ func DisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 	fs := flag.NewFlagSet("accountDisableTOTP", flag.ContinueOnError)
 	var username string
 	fs.StringVar(&username, "user", "", "Username whose TOTP to disable")
-	if err := fs.Parse(args); err != nil || strings.TrimSpace(username) == "" {
+	parseErr := fs.Parse(args)
+	if parseErr != nil || strings.TrimSpace(username) == "" {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Disable TOTP",
 			BlockType: "error",
@@ -25,7 +26,10 @@ func DisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 				{SubTitle: "Usage", Body: []string{"accountDisableTOTP --user <username>"}},
 			},
 		})
-		return nil
+		if parseErr != nil {
+			return parseErr
+		}
+		return fmt.Errorf("username is required")
 	}
 
 	if !currentUser.CanDo(db, "accountDisableTOTP", username) {
@@ -36,7 +40,7 @@ func DisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 				{SubTitle: "Access Denied", Body: []string{"You do not have permission to disable TOTP for this account."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var target models.User

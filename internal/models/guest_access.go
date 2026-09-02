@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,25 +12,31 @@ import (
 // within a group. A guest-role user can only connect to servers listed in
 // their grants, using the group's egress key.
 type GroupGuestAccess struct {
-	ID           uuid.UUID      `gorm:"type:uuid;primaryKey"`
-	GroupID      uuid.UUID      `gorm:"type:uuid;not null;index"`
-	Group        Group          `gorm:"foreignKey:GroupID"`
-	UserID       uuid.UUID      `gorm:"type:uuid;not null;index"`
-	User         User           `gorm:"foreignKey:UserID"`
-	Username     string         `gorm:"not null"`
-	Server       string         `gorm:"not null"`
-	Port         int64          `gorm:"not null"`
-	Protocol     string         `gorm:"default:ssh"`
-	Comment      string         `gorm:"default:null"`
-	AllowedFrom  string         `gorm:"default:null"`
-	ExpiresAt    *time.Time     `gorm:"default:null"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	DeletedAt    gorm.DeletedAt `gorm:"index"`
+	ID          uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	GroupID     uuid.UUID  `gorm:"type:uuid;not null;index"`
+	Group       Group      `gorm:"foreignKey:GroupID"`
+	UserID      uuid.UUID  `gorm:"type:uuid;not null;index"`
+	User        User       `gorm:"foreignKey:UserID"`
+	Username    string     `gorm:"not null"`
+	Server      string     `gorm:"not null"`
+	Port        int64      `gorm:"not null"`
+	Protocol    string     `gorm:"default:ssh"`
+	Comment     string     `gorm:"default:null"`
+	AllowedFrom string     `gorm:"default:null"`
+	ExpiresAt   *time.Time `gorm:"default:null"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
 // BeforeCreate generates a UUID for GroupGuestAccess before insertion.
 func (gga *GroupGuestAccess) BeforeCreate(*gorm.DB) (err error) {
+	if gga.GroupID == uuid.Nil {
+		return fmt.Errorf("group_id is required for group guest access")
+	}
+	if gga.UserID == uuid.Nil {
+		return fmt.Errorf("user_id is required for group guest access")
+	}
 	gga.ID = uuid.New()
-	return
+	return nil
 }

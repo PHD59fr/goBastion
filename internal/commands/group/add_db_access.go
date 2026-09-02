@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/validation"
@@ -104,6 +105,18 @@ func AddDBAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			Title:     "Add Group DB Access",
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
+		})
+		return err
+	}
+
+	// Prompt for the password interactively when it was not passed as a flag,
+	// so it does not linger in the shell history or the process list.
+	password, err := utils.ResolveSecret(password, "Database password")
+	if err != nil {
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Group DB Access",
+			BlockType: "error",
+			Sections:  []console.SectionContent{{SubTitle: "Input Error", Body: []string{err.Error()}}},
 		})
 		return err
 	}

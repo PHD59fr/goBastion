@@ -8,6 +8,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
 )
@@ -93,6 +94,9 @@ func AddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to add member to group."}}},
 		})
+		if validation.IsDuplicateKeyError(err) {
+			return fmt.Errorf("user %q is already a member of group %q", username, groupName)
+		}
 		return err
 	}
 	models.InvalidateGroupsCache(currentUser.ID)

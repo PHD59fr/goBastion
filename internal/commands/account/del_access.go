@@ -3,6 +3,7 @@ package account
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"strings"
 
 	"goBastion/internal/models"
@@ -35,7 +36,7 @@ func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountDelAccess --access <access_id>"}}},
 		})
-		return nil
+		return fmt.Errorf("access ID is required")
 	}
 
 	if !currentUser.CanDo(db, "accountDelAccess", "") {
@@ -44,7 +45,7 @@ func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to delete personal access."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	// Validate access ID format
@@ -54,7 +55,7 @@ func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid ID", Body: []string{"Invalid access ID format."}}},
 		})
-		return nil
+		return fmt.Errorf("invalid access ID: %w", err)
 	}
 
 	// For non-admin users, verify the access belongs to them before deleting.
@@ -66,7 +67,7 @@ func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 				BlockType: "error",
 				Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Access entry not found or does not belong to you."}}},
 			})
-			return nil
+			return fmt.Errorf("access entry not found or does not belong to user: %w", err)
 		}
 	}
 
@@ -85,7 +86,7 @@ func DelAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"Access entry not found or does not belong to you."}}},
 		})
-		return nil
+		return fmt.Errorf("access entry not found or does not belong to user")
 	}
 
 	console.DisplayBlock(console.ContentBlock{

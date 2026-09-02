@@ -1,5 +1,5 @@
 # ── Go binary (cross-compiled from build platform, no QEMU) ──────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:26402d86be3d72e6a9410afa0108f03529f51f0c1b5eb7f503d0bc44cc7857ac AS go-builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux

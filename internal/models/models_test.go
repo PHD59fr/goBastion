@@ -129,6 +129,21 @@ func TestUser_CanDo_UnknownCommand(t *testing.T) {
 	}
 }
 
+func TestUser_CanDo_ReflectsMembershipRevocationImmediately(t *testing.T) {
+	db := newRightsTestDB(t)
+	owner, _, _, _, groupName := seedVisibilityTestData(t, db)
+	if !owner.CanDo(db, "groupAddAccess", groupName) {
+		t.Fatal("owner should initially be allowed to add group access")
+	}
+
+	if err := db.Where("user_id = ?", owner.ID).Delete(&UserGroup{}).Error; err != nil {
+		t.Fatalf("delete membership directly: %v", err)
+	}
+	if owner.CanDo(db, "groupAddAccess", groupName) {
+		t.Fatal("revoked owner should be denied immediately")
+	}
+}
+
 func TestUserGroup_RoleMethods(t *testing.T) {
 	cases := []struct {
 		role     string
@@ -163,6 +178,32 @@ func TestUserGroup_RoleMethods(t *testing.T) {
 		if ug.IsGuest() != tc.isGuest {
 			t.Errorf("role=%q: IsGuest()=%v, want %v", tc.role, ug.IsGuest(), tc.isGuest)
 		}
+	}
+}
+
+func TestGroupGuestAccessHooksRequireUserAndGroup(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	tests := []struct {
+		name  string
+		model interface{ BeforeCreate(*gorm.DB) error }
+		want  bool
+	}{
+		{"guest access missing group", &GroupGuestAccess{UserID: userID}, true},
+		{"guest access missing user", &GroupGuestAccess{GroupID: groupID}, true},
+		{"guest access valid", &GroupGuestAccess{GroupID: groupID, UserID: userID}, false},
+		{"guest DB access missing group", &GroupGuestDBAccess{UserID: userID}, true},
+		{"guest DB access missing user", &GroupGuestDBAccess{GroupID: groupID}, true},
+		{"guest DB access valid", &GroupGuestDBAccess{GroupID: groupID, UserID: userID}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.model.BeforeCreate(nil)
+			if (err != nil) != tc.want {
+				t.Fatalf("BeforeCreate() error = %v, want error %v", err, tc.want)
+			}
+		})
 	}
 }
 

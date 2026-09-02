@@ -3,7 +3,6 @@ package config
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"goBastion/internal/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Duration is a time.Duration that is (un)marshaled from/to a human-readable
@@ -596,24 +596,16 @@ func EnsureInstance(db *gorm.DB) error {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
 
-	// Use an explicit existence check + Create so the SQL is dialect-agnostic
-	// (sqlite, mysql, postgres) and creation is logged exactly once. The
-	// previous raw INSERT used datetime('now') and ON CONFLICT, which are
-	// SQLite/Postgres-only and fail on MySQL.
-	var inst models.BastionInstance
-	err = db.Where("instance_id = ?", boot.InstanceID).First(&inst).Error
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("ensure instance: %w", err)
-		}
-		inst = models.BastionInstance{
-			InstanceID: boot.InstanceID,
-			Role:       "master",
-			Config:     string(jsonData),
-		}
-		if err := db.Create(&inst).Error; err != nil {
-			return fmt.Errorf("ensure instance: %w", err)
-		}
+	inst := models.BastionInstance{
+		InstanceID: boot.InstanceID,
+		Role:       "master",
+		Config:     string(jsonData),
+	}
+	result := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&inst)
+	if result.Error != nil {
+		return fmt.Errorf("ensure instance: %w", result.Error)
+	}
+	if result.RowsAffected == 1 {
 		slog.Info("config_instance_created",
 			slog.String("instance_id", boot.InstanceID),
 			slog.String("role", "master"),

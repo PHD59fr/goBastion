@@ -53,7 +53,7 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Name", Body: []string{"Realm name must match ^[a-z0-9][a-z0-9._-]{0,63}$"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid realm name %q", realmName)
 	}
 	bastionHost = strings.TrimSpace(bastionHost)
 	if !validation.IsValidHost(bastionHost) {
@@ -62,7 +62,7 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Bastion Host", Body: []string{"--bastion must be a valid hostname or IP"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid bastion host %q", bastionHost)
 	}
 	if !validation.IsValidPort(bastionPort) {
 		console.DisplayBlock(console.ContentBlock{
@@ -70,7 +70,7 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Bastion Port", Body: []string{"--port must be between 1 and 65535"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid bastion port %d", bastionPort)
 	}
 	if !validation.IsValidCIDRs(allowedFrom) {
 		console.DisplayBlock(console.ContentBlock{
@@ -78,7 +78,7 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid CIDRs", Body: []string{"--from must be valid comma-separated CIDRs"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid source CIDRs %q", allowedFrom)
 	}
 	publicKey = strings.TrimSpace(publicKey)
 	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(publicKey)); err != nil {

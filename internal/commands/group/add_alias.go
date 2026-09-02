@@ -82,6 +82,9 @@ func AddAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error adding alias."}}},
 		})
+		if validation.IsDuplicateKeyError(err) {
+			return fmt.Errorf("group alias %q already exists in group %q", alias, groupName)
+		}
 		return err
 	}
 

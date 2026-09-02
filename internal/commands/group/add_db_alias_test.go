@@ -31,3 +31,21 @@ func TestAddDBAliasRejectsCaseInsensitiveDuplicateInGroupScope(t *testing.T) {
 		t.Fatalf("expected duplicate db alias to be rejected, got %d aliases", count)
 	}
 }
+
+func TestAddGroupDBAliasValidatesHostAndPort(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	group := models.Group{Name: "infra"}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"--group", group.Name, "--alias", "badhost", "--host", "db..internal", "--port", "5432", "--protocol", "postgres"},
+		{"--group", group.Name, "--alias", "badport", "--host", "db.internal", "--port", "-1", "--protocol", "postgres"},
+	} {
+		if err := AddDBAlias(db, admin, args); err == nil {
+			t.Fatalf("AddDBAlias(%v) should fail", args)
+		}
+	}
+}

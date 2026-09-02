@@ -65,6 +65,12 @@ func AddDBAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 		})
 		return fmt.Errorf("invalid protocol: %s", protocol)
 	}
+	if !validation.IsValidHost(host) {
+		return fmt.Errorf("invalid host: %s", host)
+	}
+	if !validation.IsValidPort(int64(port)) {
+		return fmt.Errorf("invalid port: %d", port)
+	}
 	var existing models.DatabaseAlias
 	if err := db.Where("LOWER(resolve_from) = ? AND group_id = ? AND deleted_at IS NULL", strings.ToLower(alias), group.ID).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -90,6 +96,9 @@ func AddDBAlias(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Database Error", Body: []string{"Error adding alias."}}},
 		})
+		if validation.IsDuplicateKeyError(err) {
+			return fmt.Errorf("group DB alias %q already exists in group %q", alias, groupName)
+		}
 		return err
 	}
 

@@ -1,6 +1,7 @@
 package cryptokey
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -68,9 +69,49 @@ func TestDecryptOrPassThrough_Legacy(t *testing.T) {
 
 	// Legacy plaintext value should pass through.
 	plain := "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----"
-	got := DecryptOrPassThrough(plain)
+	got, err := DecryptOrPassThrough(plain)
+	if err != nil {
+		t.Fatalf("legacy plaintext returned error: %v", err)
+	}
 	if got != plain {
 		t.Fatalf("legacy plaintext should pass through, got %q", got)
+	}
+}
+
+func TestMarkedCiphertextFailsClosed(t *testing.T) {
+	resetGCM()
+	t.Setenv(envKey, testKey)
+	if _, err := DecryptOrPassThrough(encryptedPrefix + "not-valid-base64"); err == nil {
+		t.Fatal("expected marked invalid ciphertext to fail")
+	}
+}
+
+func TestInvalidMarkedValueIsNotClassifiedAsEncrypted(t *testing.T) {
+	resetGCM()
+	t.Setenv(envKey, testKey)
+	raw := encryptedPrefix + "not-valid-base64"
+	if IsEncrypted(raw) {
+		t.Fatal("malformed marked value must not be classified as valid ciphertext")
+	}
+	got, err := ReEncryptIfNeeded(raw)
+	if err != nil {
+		t.Fatalf("ReEncryptIfNeeded failed: %v", err)
+	}
+	if got == raw || !IsEncrypted(got) {
+		t.Fatal("malformed marked plaintext should be encrypted into a valid value")
+	}
+}
+
+func TestBase64PlaintextIsNotMistakenForCiphertext(t *testing.T) {
+	resetGCM()
+	t.Setenv(envKey, testKey)
+	plain := "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE="
+	if IsEncrypted(plain) {
+		t.Fatal("base64 plaintext must not be classified as encrypted")
+	}
+	got, err := ReEncryptIfNeeded(plain)
+	if err != nil || got == plain || !strings.HasPrefix(got, encryptedPrefix) {
+		t.Fatalf("plaintext was not encrypted with versioned format: got %q err %v", got, err)
 	}
 }
 

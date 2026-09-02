@@ -27,3 +27,17 @@ func TestAddDBAliasRejectsCaseInsensitiveDuplicateInSelfScope(t *testing.T) {
 		t.Fatalf("expected duplicate db alias to be rejected, got %d aliases", count)
 	}
 }
+
+func TestAddDBAliasValidatesHostAndPort(t *testing.T) {
+	db := newTestDB(t)
+	user := newRegularUser(t, db, "alice")
+
+	for _, args := range [][]string{
+		{"--alias", "badhost", "--host", "---", "--port", "5432", "--protocol", "postgres"},
+		{"--alias", "badport", "--host", "db.internal", "--port", "70000", "--protocol", "postgres"},
+	} {
+		if err := AddDBAlias(db, user, args); err == nil {
+			t.Fatalf("AddDBAlias(%v) should fail", args)
+		}
+	}
+}

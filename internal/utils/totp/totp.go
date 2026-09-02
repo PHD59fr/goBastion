@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -56,14 +57,21 @@ func GenerateCode(secret string, t time.Time) (string, error) {
 
 // Verify checks the code against the secret with ±1 time step tolerance for clock drift.
 func Verify(secret, code string) bool {
-	code = strings.TrimSpace(code)
+	if len(code) != 6 {
+		return false
+	}
+	for i := range len(code) {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
 	now := time.Now()
 	for _, delta := range []time.Duration{0, 30 * time.Second, -30 * time.Second} {
 		expected, err := GenerateCode(secret, now.Add(delta))
 		if err != nil {
 			return false
 		}
-		if expected == code {
+		if hmac.Equal([]byte(expected), []byte(code)) {
 			return true
 		}
 	}
@@ -72,10 +80,17 @@ func Verify(secret, code string) bool {
 
 // OtpAuthURL returns the otpauth:// URI for QR-code enrollment with standard authenticator apps.
 func OtpAuthURL(issuer, username, secret string) string {
-	return fmt.Sprintf(
-		"otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
-		issuer, username, secret, issuer,
-	)
+	query := url.Values{
+		"algorithm": {"SHA1"},
+		"digits":    {"6"},
+		"issuer":    {issuer},
+		"period":    {"30"},
+		"secret":    {secret},
+	}
+	escapePathComponent := func(value string) string {
+		return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+	}
+	return "otpauth://totp/" + escapePathComponent(issuer) + ":" + escapePathComponent(username) + "?" + query.Encode()
 }
 
 // GenerateBackupCodes creates backup codes using configured count and length.

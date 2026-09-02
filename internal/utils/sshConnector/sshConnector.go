@@ -79,13 +79,13 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + knownHostsFile,
 	}
-	// Idle timeout: if configured, have the SSH client send keepalive
-	// probes so the connection is killed when idle.
+	// Close a session channel that carries no traffic for the configured
+	// interval. ServerAliveInterval only detects an unresponsive peer and does
+	// not implement user inactivity, whereas ChannelTimeout does.
 	if idleTimeout := time.Duration(config.Get().Session.IdleTimeout); idleTimeout > 0 {
 		seconds := int(idleTimeout.Seconds())
 		sshArgs = append(sshArgs,
-			"-o", fmt.Sprintf("ServerAliveInterval=%d", seconds),
-			"-o", "ServerAliveCountMax=3",
+			"-o", fmt.Sprintf("ChannelTimeout=session=%ds", seconds),
 		)
 	}
 	// SSH ProxyJump chain: -J hop1,hop2,... (bastion-to-bastion forwarding)
@@ -394,10 +394,10 @@ func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 			break
 		}
 		if !found {
-			// New key type added by the server — store it.
-			if dbErr := db.Create(&models.KnownHostsEntry{UserID: user.ID, Entry: sk.line}).Error; dbErr != nil {
-				slog.Warn("known_hosts_store_failed", slog.String("event", "known_hosts"), slog.String("error", dbErr.Error()))
-			}
+			// A new algorithm is still a host identity change. Do not silently
+			// expand trust for a host that was already enrolled.
+			changed = true
+			break
 		}
 	}
 

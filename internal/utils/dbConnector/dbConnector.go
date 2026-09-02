@@ -84,6 +84,9 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 
 	if !config.Get().TTYRec.Enabled {
 		cmd := exec.CommandContext(runCtx, clientBin, clientArgs...)
+		if env := clientEnv(access); len(env) > 0 {
+			cmd.Env = append(os.Environ(), env...)
+		}
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -209,6 +212,9 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	ttyrecArgs := []string{"-f", ttyrecFile, "--", clientBin}
 	ttyrecArgs = append(ttyrecArgs, clientArgs...)
 	cmd := exec.CommandContext(runCtx, "ttyrec", ttyrecArgs...)
+	if env := clientEnv(access); len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -386,17 +392,7 @@ func ResolveTargetDetailed(db *gorm.DB, user models.User, target string, extraAr
 	}
 
 	// Multiple matches remain — disambiguate
-	access, err := disambiguateDBAccess(target, accesses, protocol, dbUser, database)
-	if err != nil {
-		return models.DBAccessRight{}, details, err
-	}
-	details.EffectiveUser = access.Username
-	details.EffectiveHost = access.Host
-	details.EffectivePort = access.Port
-	details.EffectiveProtocol = access.Protocol
-	details.EffectiveDatabase = access.Database
-	details.AccessSource = access.Source
-	return access, details, nil
+	return models.DBAccessRight{}, details, disambiguateDBAccess(target, accesses, protocol, dbUser, database)
 }
 
 func shouldResolveDBAliasFirst(target string) bool {
@@ -408,7 +404,7 @@ func shouldResolveDBAliasFirst(target string) bool {
 }
 
 // disambiguateDBAccess returns a helpful error when multiple DB accesses match.
-func disambiguateDBAccess(target string, accesses []models.DBAccessRight, protocol, dbUser, database string) (models.DBAccessRight, error) {
+func disambiguateDBAccess(target string, accesses []models.DBAccessRight, protocol, dbUser, database string) error {
 	// Check: multiple protocols?
 	if protocol == "" {
 		seen := make(map[string]bool)
@@ -424,7 +420,7 @@ func disambiguateDBAccess(target string, accesses []models.DBAccessRight, protoc
 			for _, p := range protocols {
 				hints = append(hints, fmt.Sprintf("  bastion --db %s --%s", target, protoFlag(p)))
 			}
-			return models.DBAccessRight{}, fmt.Errorf("multiple database types found for '%s', please specify one:\n%s",
+			return fmt.Errorf("multiple database types found for '%s', please specify one:\n%s",
 				target, strings.Join(hints, "\n"))
 		}
 	}
@@ -444,7 +440,7 @@ func disambiguateDBAccess(target string, accesses []models.DBAccessRight, protoc
 			for _, u := range users {
 				hints = append(hints, fmt.Sprintf("  bastion --db %s@%s", u, target))
 			}
-			return models.DBAccessRight{}, fmt.Errorf("multiple database users found for '%s', please specify one:\n%s",
+			return fmt.Errorf("multiple database users found for '%s', please specify one:\n%s",
 				target, strings.Join(hints, "\n"))
 		}
 	}
@@ -464,12 +460,12 @@ func disambiguateDBAccess(target string, accesses []models.DBAccessRight, protoc
 			for _, d := range dbs {
 				hints = append(hints, fmt.Sprintf("  bastion --db %s --dbname %s", target, d))
 			}
-			return models.DBAccessRight{}, fmt.Errorf("multiple databases found on '%s', please specify one:\n%s",
+			return fmt.Errorf("multiple databases found on '%s', please specify one:\n%s",
 				target, strings.Join(hints, "\n"))
 		}
 	}
 
-	return models.DBAccessRight{}, fmt.Errorf("multiple matching database accesses found for '%s' (this should not happen)", target)
+	return fmt.Errorf("multiple matching database accesses found for '%s' (this should not happen)", target)
 }
 
 // protoFlag returns the CLI flag name for a protocol.
@@ -592,10 +588,12 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 
 	// Step 1: Self accesses
 	var selfAccesses []models.SelfDBAccess
-	db.Where(
+	if err := db.Where(
 		"user_id = ? AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
 		user.ID, port, port, host, host, now,
-	).Find(&selfAccesses)
+	).Find(&selfAccesses).Error; err != nil {
+		return nil, fmt.Errorf("error retrieving self db accesses: %w", err)
+	}
 	for _, a := range selfAccesses {
 		if protocol != "" && a.Protocol != protocol {
 			continue
@@ -604,8 +602,12 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 		if a.Host == host && (port == 0 || a.Port == port) {
 			score = scoreDBSelfExact
 		}
+		access, err := buildSelfDBAccessRight("account-"+user.Username, a)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt personal database credentials: %w", err)
+		}
 		candidates = append(candidates, dbCandidate{
-			access:  buildSelfDBAccessRight("account-"+user.Username, a),
+			access:  access,
 			score:   score,
 			expired: a.ExpiresAt != nil && a.ExpiresAt.Before(now),
 		})
@@ -613,17 +615,27 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 
 	// Step 2: Group accesses
 	var userGroups []models.UserGroup
-	db.Where("user_id = ?", user.ID).Find(&userGroups)
+	if err := db.Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
+		return nil, fmt.Errorf("error retrieving user groups: %w", err)
+	}
 	if len(userGroups) > 0 {
-		var groupIDs []uuid.UUID
+		var groupIDs, guestGroupIDs []uuid.UUID
 		for _, ug := range userGroups {
-			groupIDs = append(groupIDs, ug.GroupID)
+			if ug.Role == models.GroupRoleGuest {
+				guestGroupIDs = append(guestGroupIDs, ug.GroupID)
+			} else {
+				groupIDs = append(groupIDs, ug.GroupID)
+			}
 		}
 		var groupAccesses []models.GroupDBAccess
-		db.Where(
-			"group_id IN (?) AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
-			groupIDs, port, port, host, host, now,
-		).Find(&groupAccesses)
+		if len(groupIDs) > 0 {
+			if err := db.Where(
+				"group_id IN (?) AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
+				groupIDs, port, port, host, host, now,
+			).Find(&groupAccesses).Error; err != nil {
+				return nil, fmt.Errorf("error retrieving group db accesses: %w", err)
+			}
+		}
 		for _, a := range groupAccesses {
 			if protocol != "" && a.Protocol != protocol {
 				continue
@@ -632,24 +644,61 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 			if a.Host == host && (port == 0 || a.Port == port) {
 				score = scoreDBGroupExact
 			}
+			grpAccess, err := buildGroupDBAccessRight(db, a)
+			if err != nil {
+				return nil, fmt.Errorf("error resolving group db access: %w", err)
+			}
 			candidates = append(candidates, dbCandidate{
-				access:  buildGroupDBAccessRight(db, a),
+				access:  grpAccess,
 				score:   score,
 				expired: a.ExpiresAt != nil && a.ExpiresAt.Before(now),
 			})
+		}
+
+		// Guests never inherit the group's broad database accesses. They only
+		// receive grants explicitly assigned to them.
+		if len(guestGroupIDs) > 0 {
+			var grants []models.GroupGuestDBAccess
+			if err := db.Where(
+				"user_id = ? AND group_id IN (?) AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
+				user.ID, guestGroupIDs, port, port, host, host, now,
+			).Preload("Group").Find(&grants).Error; err != nil {
+				return nil, fmt.Errorf("error retrieving guest db accesses: %w", err)
+			}
+			for _, grant := range grants {
+				if protocol != "" && grant.Protocol != protocol {
+					continue
+				}
+				access, err := buildGuestDBAccessRight(grant)
+				if err != nil {
+					return nil, fmt.Errorf("decrypt guest database credentials: %w", err)
+				}
+				score := scoreDBGroupWildcard
+				if grant.Host == host && (port == 0 || grant.Port == port) {
+					score = scoreDBGroupExact
+				}
+				candidates = append(candidates, dbCandidate{access: access, score: score})
+			}
 		}
 	}
 
 	// Step 3: Admin override
 	if len(candidates) == 0 && user.IsAdmin() {
 		var allSelf []models.SelfDBAccess
-		db.Where("(host = ? OR ? = '') AND (port = ? OR ? = 0)", host, host, port, port).Find(&allSelf)
+		if err := db.Where("(host = ? OR ? = '') AND (port = ? OR ? = 0) AND (expires_at IS NULL OR expires_at > ?)",
+			host, host, port, port, now).Find(&allSelf).Error; err != nil {
+			return nil, fmt.Errorf("error retrieving admin db accesses: %w", err)
+		}
 		for _, a := range allSelf {
 			if protocol != "" && a.Protocol != protocol {
 				continue
 			}
+			access, err := buildSelfDBAccessRight("admin-override", a)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt admin database credentials: %w", err)
+			}
 			candidates = append(candidates, dbCandidate{
-				access:  buildSelfDBAccessRight("admin-override", a),
+				access:  access,
 				score:   scoreDBAdminOverride,
 				expired: a.ExpiresAt != nil && a.ExpiresAt.Before(now),
 			})
@@ -657,13 +706,9 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 	}
 
 	// Step 4: Sort by priority (highest first)
-	for i := range candidates {
-		for j := range candidates {
-			if candidates[j].score > candidates[i].score {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
 
 	// Step 5: Filter expired and check IP allowlist
 	var results []models.DBAccessRight
@@ -672,15 +717,9 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 			continue
 		}
 		if c.access.AllowedFrom != "" {
-			clientIP := os.Getenv("SSH_CLIENT")
-			if clientIP == "" {
-				clientIP = os.Getenv("SSH_CONNECTION")
-			}
-			if clientIP != "" {
-				parts := strings.Fields(clientIP)
-				if len(parts) > 0 && !ipAllowed(parts[0], c.access.AllowedFrom) {
-					continue
-				}
+			clientIP := system.ClientIPFromEnv()
+			if !ipAllowed(clientIP, c.access.AllowedFrom) {
+				continue
 			}
 		}
 		results = append(results, c.access)
@@ -689,10 +728,14 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 	return results, nil
 }
 
-func buildSelfDBAccessRight(source string, a models.SelfDBAccess) models.DBAccessRight {
+func buildSelfDBAccessRight(source string, a models.SelfDBAccess) (models.DBAccessRight, error) {
 	password := ""
 	if a.Password != "" {
-		password = cryptokey.DecryptOrPassThrough(a.Password)
+		var err error
+		password, err = cryptokey.DecryptOrPassThrough(a.Password)
+		if err != nil {
+			return models.DBAccessRight{}, err
+		}
 	}
 	return models.DBAccessRight{
 		ID:          a.ID,
@@ -704,16 +747,23 @@ func buildSelfDBAccessRight(source string, a models.SelfDBAccess) models.DBAcces
 		Password:    password,
 		Database:    a.Database,
 		AllowedFrom: a.AllowedFrom,
-	}
+	}, nil
 }
 
-func buildGroupDBAccessRight(db *gorm.DB, a models.GroupDBAccess) models.DBAccessRight {
+func buildGroupDBAccessRight(db *gorm.DB, a models.GroupDBAccess) (models.DBAccessRight, error) {
 	password := ""
 	if a.Password != "" {
-		password = cryptokey.DecryptOrPassThrough(a.Password)
+		var err error
+		password, err = cryptokey.DecryptOrPassThrough(a.Password)
+		if err != nil {
+			return models.DBAccessRight{}, err
+		}
 	}
 	var group models.Group
-	db.Where("id = ?", a.GroupID).First(&group)
+	if err := db.Where("id = ?", a.GroupID).First(&group).Error; err != nil {
+		// A missing group must not silently bypass MFA or lose the source name.
+		return models.DBAccessRight{}, fmt.Errorf("group %v not found: %w", a.GroupID, err)
+	}
 	return models.DBAccessRight{
 		ID:          a.ID,
 		Source:      "group-" + group.Name,
@@ -725,10 +775,27 @@ func buildGroupDBAccessRight(db *gorm.DB, a models.GroupDBAccess) models.DBAcces
 		Database:    a.Database,
 		AllowedFrom: a.AllowedFrom,
 		MFARequired: group.MFARequired,
+	}, nil
+}
+
+func buildGuestDBAccessRight(a models.GroupGuestDBAccess) (models.DBAccessRight, error) {
+	password, err := cryptokey.DecryptOrPassThrough(a.Password)
+	if err != nil {
+		return models.DBAccessRight{}, err
 	}
+	return models.DBAccessRight{
+		ID: a.ID, Source: "guest-group-" + a.Group.Name, Host: a.Host,
+		Port: a.Port, Protocol: a.Protocol, Username: a.Username,
+		Password: password, Database: a.Database, AllowedFrom: a.AllowedFrom,
+		MFARequired: a.Group.MFARequired,
+	}, nil
 }
 
 // buildClientArgs constructs the command-line arguments for the database client.
+// The password is deliberately NOT passed via argv: /proc/<pid>/cmdline is
+// world-readable, so a cleartext -p<password> would expose the DB credential
+// to any local user via `ps`. It is forwarded through the client env instead
+// (see clientEnv), which is only readable by the child process.
 func buildClientArgs(access models.DBAccessRight) []string {
 	var args []string
 
@@ -740,9 +807,6 @@ func buildClientArgs(access models.DBAccessRight) []string {
 			"-u", access.Username,
 			"--protocol=tcp",
 		)
-		if access.Password != "" {
-			args = append(args, "-p"+access.Password)
-		}
 		if access.Database != "" {
 			args = append(args, access.Database)
 		}
@@ -762,12 +826,32 @@ func buildClientArgs(access models.DBAccessRight) []string {
 			"-h", access.Host,
 			"-p", strconv.FormatInt(access.Port, 10),
 		)
-		if access.Password != "" {
-			args = append(args, "-a", access.Password)
-		}
 	}
 
 	return args
+}
+
+// clientEnv returns the extra environment variables through which the DB
+// clients receive their password, so it never appears on the command line.
+// Only the matching protocol's variable is set, and only for the child
+// process (cmd.Env) — the bastion's own environment is left untouched.
+func clientEnv(access models.DBAccessRight) []string {
+	if access.Password == "" {
+		return nil
+	}
+	switch access.Protocol {
+	case "mysql":
+		return []string{"MYSQL_PWD=" + access.Password}
+	case "postgres":
+		// psql reads PGPASSWORD only when it has no interactive prompt
+		// available; with a TTY it still prompts. Setting it keeps -W-style
+		// (non-tty) sessions working without exposing argv.
+		return []string{"PGPASSWORD=" + access.Password}
+	case "redis":
+		return []string{"REDISCLI_AUTH=" + access.Password}
+	default:
+		return nil
+	}
 }
 
 func ipAllowed(clientIP string, allowedFrom string) bool {
