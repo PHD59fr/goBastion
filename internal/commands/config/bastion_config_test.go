@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestApplyValueUpdatesNestedVisibilityConfig(t *testing.T) {
+func TestApplyValueUpdatesConfig(t *testing.T) {
 	appconfig.ResetForTesting()
 	cfg := appconfig.DefaultConfig()
 	appconfig.SetForTesting(cfg)
@@ -50,5 +50,15 @@ func TestApplyValueUpdatesNestedVisibilityConfig(t *testing.T) {
 	}
 	if got := appconfig.Get().Security.EgressKeyVisibility.Mode; got != "private" {
 		t.Fatalf("egress key visibility mode = %q, want private", got)
+	}
+
+	if err := applyValue(db, "splash.enabled", "false"); err != nil {
+		t.Fatalf("applyValue splash: %v", err)
+	}
+	if err := appconfig.LoadFromDB(db); err != nil {
+		t.Fatalf("reload splash config from DB: %v", err)
+	}
+	if appconfig.Get().Splash.Enabled {
+		t.Fatal("splash enabled = true, want false")
 	}
 }

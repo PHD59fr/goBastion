@@ -67,6 +67,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Account.MaxInactiveDays != 0 {
 		t.Errorf("MaxInactiveDays = %d, want 0", cfg.Account.MaxInactiveDays)
 	}
+	if !cfg.Splash.Enabled {
+		t.Error("Splash.Enabled = false, want true")
+	}
 }
 
 func TestEnvOverrides(t *testing.T) {

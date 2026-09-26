@@ -1021,6 +1021,7 @@ In practice:
 - `max_concurrent_sessions` limits concurrent authenticated sessions on that instance
 - `idle_timeout` and `max_session_duration` accept `0` to disable the limit, or a duration of at least `30s`
 - `ttyrec.retention_days=0` keeps recordings indefinitely
+- `splash.enabled=false` hides the goBastion ASCII login logo without changing the SSH server banner
 - group discovery and group egress-key discovery are controlled by `security.group_visibility.mode` and `security.egress_key_visibility.mode`
 
 **Visibility policies:**

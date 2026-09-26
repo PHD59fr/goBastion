@@ -50,7 +50,7 @@ type category struct {
 var categories = []category{
 	{"Access & Login", []string{"ssh", "mfa", "totp", "account", "security"}},
 	{"Connectivity", []string{"proxy", "interactive", "sftp", "scp", "rsync", "mosh", "realms"}},
-	{"Features", []string{"database", "guest_access", "pivs", "groups", "alias_self", "alias_group", "self_ingress", "egress_key", "known_hosts", "self_mfa", "self_password", "backup_codes", "tty_play", "restricted_grants", "restricted_cmds"}},
+	{"Features", []string{"database", "guest_access", "pivs", "groups", "alias_self", "alias_group", "self_ingress", "egress_key", "known_hosts", "self_mfa", "self_password", "backup_codes", "tty_play", "restricted_grants", "restricted_cmds", "splash"}},
 	{"Modes", []string{"readonly", "maintenance", "require_mfa", "force_osh_only"}},
 	{"Recording", []string{"ttyrec"}},
 	{"Sessions", []string{"session"}},
@@ -303,6 +303,8 @@ func displaySectionLabel(section string) string {
 		return "[database access]"
 	case "guest_access":
 		return "[guest access]"
+	case "splash":
+		return "[goBastion login splash]"
 	case "pivs":
 		return "[PIV / hardware keys]"
 	case "groups":

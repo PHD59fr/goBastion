@@ -87,6 +87,7 @@ type Config struct {
 	GuestAccess GuestAccessConfig    `json:"guest_access" toml:"guest_access"`
 	Database    DatabaseAccessConfig `json:"database" toml:"database"`
 	Interactive InteractiveConfig    `json:"interactive" toml:"interactive"`
+	Splash      SplashConfig         `json:"splash" toml:"splash"`
 
 	// Modes (default off unless noted).
 	Readonly     ReadonlyConfig     `json:"readonly" toml:"readonly"`
@@ -234,6 +235,12 @@ type DatabaseAccessConfig struct {
 
 type InteractiveConfig struct {
 	Allow bool `json:"allow" toml:"allow"`
+}
+
+// SplashConfig controls the goBastion ASCII logo displayed after login.
+// It does not control the SSH server banner.
+type SplashConfig struct {
+	Enabled bool `json:"enabled" toml:"enabled"`
 }
 
 type ReadonlyConfig struct {
@@ -409,6 +416,7 @@ func defaultConfig() *Config {
 		GuestAccess: GuestAccessConfig{Enabled: true},
 		Database:    DatabaseAccessConfig{Enabled: true},
 		Interactive: InteractiveConfig{Allow: true},
+		Splash:      SplashConfig{Enabled: true},
 
 		// Modes (defaults: off).
 		Readonly:     ReadonlyConfig{Enabled: false, Message: "🔒 Read-only mode: modifications are disabled."},
@@ -830,6 +838,7 @@ func ConfigDiff() []ConfigEntry {
 	add("guest_access", "enabled", fmt.Sprintf("%t", cfg.GuestAccess.Enabled), fmt.Sprintf("%t", def.GuestAccess.Enabled))
 	add("database", "enabled", fmt.Sprintf("%t", cfg.Database.Enabled), fmt.Sprintf("%t", def.Database.Enabled))
 	add("interactive", "allow", fmt.Sprintf("%t", cfg.Interactive.Allow), fmt.Sprintf("%t", def.Interactive.Allow))
+	add("splash", "enabled", fmt.Sprintf("%t", cfg.Splash.Enabled), fmt.Sprintf("%t", def.Splash.Enabled))
 
 	// Modes
 	add("readonly", "enabled", fmt.Sprintf("%t", cfg.Readonly.Enabled), fmt.Sprintf("%t", def.Readonly.Enabled))
