@@ -67,6 +67,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Account.MaxInactiveDays != 0 {
 		t.Errorf("MaxInactiveDays = %d, want 0", cfg.Account.MaxInactiveDays)
 	}
+	if !cfg.Splash.Enabled {
+		t.Error("Splash.Enabled = false, want true")
+	}
 }
 
 func TestEnvOverrides(t *testing.T) {
@@ -248,5 +251,66 @@ func TestGetDefaults(t *testing.T) {
 	def := defaultConfig()
 	if def.Paths.HomeBaseDir != "/home" {
 		t.Errorf("defaults HomeBaseDir = %q, want /home", def.Paths.HomeBaseDir)
+	}
+}
+
+// TestReadConfigFromDBMigratesLegacyInteractiveAllow guards the interactive.allow
+// -> interactive.enabled rename: an instance that persisted the old key must not
+// silently fall back to the default (which would re-enable the interactive
+// shell on a bastion where an admin had disabled it).
+func TestReadConfigFromDBMigratesLegacyInteractiveAllow(t *testing.T) {
+	ResetForTesting()
+	t.Cleanup(ResetForTesting)
+	t.Setenv("INSTANCE_ID", "legacy-instance")
+	Load()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := db.AutoMigrate(&models.BastionInstance{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	if err := db.Create(&models.BastionInstance{
+		InstanceID: "legacy-instance", Role: "master", Config: "{}",
+	}).Error; err != nil {
+		t.Fatalf("insert instance: %v", err)
+	}
+
+	setBlob := func(blob string) {
+		t.Helper()
+		if err := db.Model(&models.BastionInstance{}).
+			Where("instance_id = ?", "legacy-instance").
+			Update("config", blob).Error; err != nil {
+			t.Fatalf("update config: %v", err)
+		}
+	}
+
+	readInteractiveEnabled := func() bool {
+		t.Helper()
+		cfg, err := readConfigFromDB(db, "legacy-instance")
+		if err != nil {
+			t.Fatalf("readConfigFromDB: %v", err)
+		}
+		return cfg.Interactive.Enabled
+	}
+
+	// 1. Legacy blob: only "allow" is present, it must be honoured.
+	setBlob(`{"interactive": {"allow": false}}`)
+	if readInteractiveEnabled() {
+		t.Error("legacy interactive.allow=false lost: Interactive.Enabled = true, want false")
+	}
+
+	// 2. Already migrated blob: "enabled" wins over a stale "allow".
+	setBlob(`{"interactive": {"allow": false, "enabled": true}}`)
+	if !readInteractiveEnabled() {
+		t.Error("Interactive.Enabled = false, want true (new key must win over legacy key)")
+	}
+
+	// 3. Blob without the section keeps the default.
+	setBlob(`{"ssh": {"default_port": 22}}`)
+	if !readInteractiveEnabled() {
+		t.Error("Interactive.Enabled = false, want default true")
 	}
 }

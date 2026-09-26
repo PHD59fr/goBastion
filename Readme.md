@@ -1003,8 +1003,11 @@ In **goBastion**, the configuration is stored in the database (table `bastion_in
 | `DB_DRIVER` | Database backend (sqlite, mysql, postgres) |
 | `DB_DSN` | Database connection string |
 | `INSTANCE_ID` | Instance identifier (defaults to hostname, then `"master"`) |
+| `SYNC_INTERVAL_SECONDS` | Delay in seconds between two automatic `--sync` runs (default: `300`) |
 
-Everything else (sync interval, account policies, feature toggles, session limits...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.
+Everything else (account policies, feature toggles, session limits...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.
+
+> **Note:** the periodic sync loop is owned by `entrypoint.sh`, not by the Go binary, so the `sync.interval_seconds` key stored in the config JSON is informational only and is **not** editable via `bastionConfig`. Use `SYNC_INTERVAL_SECONDS` to change it.
 
 `bastionConfig` provides an admin-facing configuration menu organized by functional areas such as:
 - `Access & Login`
@@ -1020,7 +1023,8 @@ In practice:
 - session settings are scoped to the current bastion instance
 - `max_concurrent_sessions` limits concurrent authenticated sessions on that instance
 - `idle_timeout` and `max_session_duration` accept `0` to disable the limit, or a duration of at least `30s`
-- `ttyrec.retention_days=0` keeps recordings indefinitely
+- `splash.enabled=false` hides the goBastion ASCII login logo without changing the SSH server banner (it lives in `Access & Login`, next to the other settings evaluated during the login sequence)
+- `interactive.enabled=false` disables the interactive shell (only one-shot `-osh` commands remain), as `force_osh_only` does instance-wide. It was named `interactive.allow` before, and existing instances are migrated automatically on read.
 - group discovery and group egress-key discovery are controlled by `security.group_visibility.mode` and `security.egress_key_visibility.mode`
 
 **Visibility policies:**

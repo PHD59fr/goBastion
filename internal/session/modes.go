@@ -78,7 +78,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
 			return
 		}
-		if !config.Get().Interactive.Allow {
+		if !config.Get().Interactive.Enabled {
 			fmt.Println("⛔ Interactive shell is disabled by configuration.")
 			return
 		}
@@ -113,7 +113,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			return
 		}
 		if isInteractive {
-			if !config.Get().Interactive.Allow {
+			if !config.Get().Interactive.Enabled {
 				fmt.Println("⛔ Interactive shell is disabled by configuration.")
 				return
 			}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/system"
@@ -36,7 +37,7 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 		return false
 	}
 
-	fmt.Println(utils.FgYellow(logo))
+	displaySplash()
 
 	fmt.Print(utils.FgGreenB("▶") + " Welcome to goBastion, " + utils.FgYellowB(currentUser.Username) + "!\n")
 
@@ -59,6 +60,13 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 	log.Info("login", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("role", currentUser.Role))
 
 	return true
+}
+
+func displaySplash() {
+	if !config.Get().Splash.Enabled {
+		return
+	}
+	fmt.Println(utils.FgYellow(logo))
 }
 
 const logo = "                 .,,.      .,,.\n" +

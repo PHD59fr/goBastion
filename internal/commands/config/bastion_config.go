@@ -47,10 +47,19 @@ type category struct {
 	sections []string
 }
 
+// categories drives the two-level navigation. Assignment rules:
+//   - Access & Login: everything evaluated during the login sequence (auth
+//     policy, account lifecycle, and what the login screen renders).
+//   - Connectivity: transport/protocol settings for reaching targets.
+//   - Features: capability toggles consumed by featureEnabled() to gate
+//     commands or protocol handlers.
+//
+// Every section emitted by ConfigDiff() must appear exactly once, otherwise its
+// keys are unreachable: TestConfigDiffKeysAreCategorized enforces it.
 var categories = []category{
-	{"Access & Login", []string{"ssh", "mfa", "totp", "account", "security"}},
-	{"Connectivity", []string{"proxy", "interactive", "sftp", "scp", "rsync", "mosh", "realms"}},
-	{"Features", []string{"database", "guest_access", "pivs", "groups", "alias_self", "alias_group", "self_ingress", "egress_key", "known_hosts", "self_mfa", "self_password", "backup_codes", "tty_play", "restricted_grants", "restricted_cmds"}},
+	{"Access & Login", []string{"ssh", "mfa", "totp", "account", "security", "splash"}},
+	{"Connectivity", []string{"proxy", "sftp", "scp", "rsync", "mosh", "realms"}},
+	{"Features", []string{"database", "guest_access", "pivs", "groups", "alias_self", "alias_group", "self_ingress", "egress_key", "known_hosts", "self_mfa", "self_password", "backup_codes", "tty_play", "restricted_grants", "restricted_cmds", "interactive"}},
 	{"Modes", []string{"readonly", "maintenance", "require_mfa", "force_osh_only"}},
 	{"Recording", []string{"ttyrec"}},
 	{"Sessions", []string{"session"}},
@@ -303,6 +312,8 @@ func displaySectionLabel(section string) string {
 		return "[database access]"
 	case "guest_access":
 		return "[guest access]"
+	case "splash":
+		return "[goBastion login splash]"
 	case "pivs":
 		return "[PIV / hardware keys]"
 	case "groups":
@@ -333,6 +344,16 @@ func displaySectionLabel(section string) string {
 		return "[TTY recording]"
 	case "session":
 		return "[session] (instance-wide)"
+	case "readonly":
+		return "[read-only mode]"
+	case "maintenance":
+		return "[maintenance mode]"
+	case "require_mfa":
+		return "[global MFA enforcement]"
+	case "force_osh_only":
+		return "[forced -osh commands only]"
+	case "deny_root_target":
+		return "[deny root as target]"
 	default:
 		return fmt.Sprintf("[%s]", section)
 	}
@@ -762,10 +783,6 @@ func applyValue(db *gorm.DB, key, newValue string) error {
 	case "session.max_session_duration":
 		if d, perr := parseDurationInput(newValue); perr == nil && d > 0 && d < 30*time.Second {
 			return fmt.Errorf("max_session_duration must be at least 30s (use 0 for unlimited)")
-		}
-	case "ttyrec.retention_days":
-		if n, perr := strconv.ParseInt(strings.TrimSpace(newValue), 10, 64); perr == nil && n < 0 {
-			return fmt.Errorf("retention_days must be 0 or greater (use 0 to keep forever)")
 		}
 	case "security.group_visibility.mode":
 		switch strings.ToLower(strings.TrimSpace(newValue)) {

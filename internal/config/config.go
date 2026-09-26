@@ -71,10 +71,13 @@ type Config struct {
 	MFA        MFAConfig      `json:"mfa" toml:"mfa"`
 	TOTP       TOTPConfig     `json:"totp" toml:"totp"`
 	Proxy      ProxyConfig    `json:"proxy" toml:"proxy"`
-	Sync       SyncConfig     `json:"sync" toml:"sync"`
-	Account    AccountConfig  `json:"account" toml:"account"`
-	DBExport   DBExportConfig `json:"-"`
-	Security   SecurityConfig `json:"security" toml:"security"`
+	// Sync is persisted for documentation only: the periodic sync loop is driven
+	// by entrypoint.sh (SYNC_INTERVAL_SECONDS), so IntervalSeconds is not read at runtime
+	// and is therefore not editable via bastionConfig.
+	Sync     SyncConfig     `json:"sync" toml:"sync"`
+	Account  AccountConfig  `json:"account" toml:"account"`
+	DBExport DBExportConfig `json:"-"`
+	Security SecurityConfig `json:"security" toml:"security"`
 
 	// Feature toggles. All default to enabled (true) unless noted, so existing
 	// deployments keep working until an admin turns a feature off.
@@ -87,6 +90,7 @@ type Config struct {
 	GuestAccess GuestAccessConfig    `json:"guest_access" toml:"guest_access"`
 	Database    DatabaseAccessConfig `json:"database" toml:"database"`
 	Interactive InteractiveConfig    `json:"interactive" toml:"interactive"`
+	Splash      SplashConfig         `json:"splash" toml:"splash"`
 
 	// Modes (default off unless noted).
 	Readonly     ReadonlyConfig     `json:"readonly" toml:"readonly"`
@@ -232,8 +236,18 @@ type DatabaseAccessConfig struct {
 	Enabled bool `json:"enabled" toml:"enabled"`
 }
 
+// InteractiveConfig gates the interactive OSH shell (as opposed to one-shot
+// -osh commands). The field was renamed from Allow/"allow" to Enabled/"enabled"
+// to match every other feature toggle; legacy blobs are migrated on read, see
+// migrateLegacyKeys.
 type InteractiveConfig struct {
-	Allow bool `json:"allow" toml:"allow"`
+	Enabled bool `json:"enabled" toml:"enabled"`
+}
+
+// SplashConfig controls the goBastion ASCII logo displayed after login.
+// It does not control the SSH server banner.
+type SplashConfig struct {
+	Enabled bool `json:"enabled" toml:"enabled"`
 }
 
 type ReadonlyConfig struct {
@@ -255,8 +269,10 @@ type ForceOSHOnlyConfig struct {
 }
 
 type TTYRecConfig struct {
-	Enabled       bool `json:"enabled" toml:"enabled"`
-	RetentionDays int  `json:"retention_days" toml:"retention_days"` // 0 = keep forever
+	Enabled bool `json:"enabled" toml:"enabled"`
+	// RetentionDays is persisted but not applied: no pruning job reads it, so it
+	// is not editable via bastionConfig yet.
+	RetentionDays int `json:"retention_days" toml:"retention_days"` // 0 = keep forever
 }
 
 type SessionLimitsConfig struct {
@@ -408,7 +424,8 @@ func defaultConfig() *Config {
 		PIV:         PIVConfig{Enabled: true},
 		GuestAccess: GuestAccessConfig{Enabled: true},
 		Database:    DatabaseAccessConfig{Enabled: true},
-		Interactive: InteractiveConfig{Allow: true},
+		Interactive: InteractiveConfig{Enabled: true},
+		Splash:      SplashConfig{Enabled: true},
 
 		// Modes (defaults: off).
 		Readonly:     ReadonlyConfig{Enabled: false, Message: "🔒 Read-only mode: modifications are disabled."},
@@ -668,7 +685,45 @@ func readConfigFromDB(db *gorm.DB, instanceID string) (*Config, error) {
 	if err := json.Unmarshal([]byte(r.Config), cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config for %s: %w", instanceID, err)
 	}
+	migrateLegacyKeys(r.Config, cfg)
 	return cfg, nil
+}
+
+// migrateLegacyKeys carries over settings whose JSON key was renamed, so an
+// instance that persisted a blob before the rename keeps its values instead of
+// silently falling back to the defaults. The raw JSON has already been parsed
+// successfully by the caller, so parse errors are not expected here.
+func migrateLegacyKeys(raw string, cfg *Config) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return
+	}
+	interactiveRaw, ok := doc["interactive"]
+	if !ok {
+		return
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(interactiveRaw, &keys); err != nil {
+		return
+	}
+	// interactive.allow -> interactive.enabled: only when the new key is absent,
+	// so a value written after the rename always wins.
+	if _, migrated := keys["enabled"]; migrated {
+		return
+	}
+	allowRaw, ok := keys["allow"]
+	if !ok {
+		return
+	}
+	var allow bool
+	if err := json.Unmarshal(allowRaw, &allow); err != nil {
+		return
+	}
+	cfg.Interactive.Enabled = allow
+	slog.Info("config_legacy_key_migrated",
+		slog.String("from", "interactive.allow"),
+		slog.String("to", "interactive.enabled"),
+	)
 }
 
 // resolveInstanceID determines the instance identity from env, then the
@@ -807,8 +862,9 @@ func ConfigDiff() []ConfigEntry {
 	add("proxy", "sftp_dial_timeout", cfg.Proxy.SFTPDialTimeout.String(), def.Proxy.SFTPDialTimeout.String())
 	add("proxy", "sftp_ssh_timeout", cfg.Proxy.SFTPSSHTimeout.String(), def.Proxy.SFTPSSHTimeout.String())
 
-	// Sync
-	add("sync", "interval_seconds", fmt.Sprintf("%d", cfg.Sync.IntervalSeconds), fmt.Sprintf("%d", def.Sync.IntervalSeconds))
+	// Sync is intentionally absent: the sync loop is owned by entrypoint.sh
+	// (SYNC_INTERVAL_SECONDS env var), so Sync.IntervalSeconds is never read at runtime.
+	// Exposing it in the TUI would advertise a knob that has no effect.
 
 	// Account
 	add("account", "max_inactive_days", fmt.Sprintf("%d", cfg.Account.MaxInactiveDays), fmt.Sprintf("%d", def.Account.MaxInactiveDays))
@@ -829,7 +885,8 @@ func ConfigDiff() []ConfigEntry {
 	add("pivs", "enabled", fmt.Sprintf("%t", cfg.PIV.Enabled), fmt.Sprintf("%t", def.PIV.Enabled))
 	add("guest_access", "enabled", fmt.Sprintf("%t", cfg.GuestAccess.Enabled), fmt.Sprintf("%t", def.GuestAccess.Enabled))
 	add("database", "enabled", fmt.Sprintf("%t", cfg.Database.Enabled), fmt.Sprintf("%t", def.Database.Enabled))
-	add("interactive", "allow", fmt.Sprintf("%t", cfg.Interactive.Allow), fmt.Sprintf("%t", def.Interactive.Allow))
+	add("interactive", "enabled", fmt.Sprintf("%t", cfg.Interactive.Enabled), fmt.Sprintf("%t", def.Interactive.Enabled))
+	add("splash", "enabled", fmt.Sprintf("%t", cfg.Splash.Enabled), fmt.Sprintf("%t", def.Splash.Enabled))
 
 	// Modes
 	add("readonly", "enabled", fmt.Sprintf("%t", cfg.Readonly.Enabled), fmt.Sprintf("%t", def.Readonly.Enabled))
@@ -841,7 +898,9 @@ func ConfigDiff() []ConfigEntry {
 
 	// Recording + session limits
 	add("ttyrec", "enabled", fmt.Sprintf("%t", cfg.TTYRec.Enabled), fmt.Sprintf("%t", def.TTYRec.Enabled))
-	add("ttyrec", "retention_days", fmt.Sprintf("%d", cfg.TTYRec.RetentionDays), fmt.Sprintf("%d", def.TTYRec.RetentionDays))
+	// retention_days is intentionally absent: no pruning job consumes
+	// TTYRec.RetentionDays, so exposing it would advertise a knob that has no
+	// effect. The key stays in the stored JSON for a future cleanup job.
 	add("session", "idle_timeout", cfg.Session.IdleTimeout.String(), def.Session.IdleTimeout.String())
 	add("session", "max_session_duration", cfg.Session.MaxSessionDuration.String(), def.Session.MaxSessionDuration.String())
 	add("session", "max_concurrent_sessions", fmt.Sprintf("%d", cfg.Session.MaxConcurrentSessions), fmt.Sprintf("%d", def.Session.MaxConcurrentSessions))

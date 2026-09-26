@@ -93,15 +93,15 @@ func TestParseDBRequest(t *testing.T) {
 	}
 }
 
-func TestInteractiveAllowConfig(t *testing.T) {
+func TestInteractiveEnabledConfig(t *testing.T) {
 	config.ResetForTesting()
 	t.Cleanup(config.ResetForTesting)
 	cfg := config.Load()
-	if !cfg.Interactive.Allow {
+	if !cfg.Interactive.Enabled {
 		t.Fatal("interactive.allow should default to true")
 	}
-	cfg.Interactive.Allow = false
-	if cfg.Interactive.Allow {
+	cfg.Interactive.Enabled = false
+	if cfg.Interactive.Enabled {
 		t.Fatal("expected interactive.allow to accept runtime override")
 	}
 }

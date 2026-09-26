@@ -39,6 +39,36 @@ func isNonInteractiveCmd(cmd string) bool {
 		strings.Contains(c, "rsync --server")
 }
 
+// isExpectedSessionStop reports exit statuses used when a user deliberately
+// leaves a session (for example Ctrl-C in the prompt).
+func isExpectedSessionStop(err error) bool {
+	if err == nil {
+		return true
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 100, 130:
+			return true
+		}
+	}
+	return err.Error() == "signal: interrupt"
+}
+
+// isCleanInteractiveSessionExit reports an SSH exit caused by the remote
+// interactive shell ending. SSH forwards the shell's last exit code; Ctrl-D
+// can therefore legitimately result in 1 rather than 0.  OpenSSH reserves
+// 255 for its own connection/setup errors, which must still be reported.
+func isCleanInteractiveSessionExit(err error) bool {
+	if isExpectedSessionStop(err) {
+		return true
+	}
+
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 && exitErr.ExitCode() != 255
+}
+
 // SshConnection writes the egress key to a temp file and executes an SSH session via ttyrec.
 // For non-interactive binary protocols (sftp, scp, rsync) ttyrec is bypassed to avoid
 // PTY corruption of binary data. It performs TOFU host key verification before connecting.
@@ -109,8 +139,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
 			}
-			switch cmdErr.Error() {
-			case "exit status 100", "exit status 130", "signal: interrupt":
+			if isExpectedSessionStop(cmdErr) {
 				return nil
 			}
 			return fmt.Errorf("ssh execution error: %w", cmdErr)
@@ -129,8 +158,10 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
 			}
-			switch cmdErr.Error() {
-			case "exit status 100", "exit status 130", "signal: interrupt":
+			if access.RemoteCmd == "" && isCleanInteractiveSessionExit(cmdErr) {
+				return nil
+			}
+			if isExpectedSessionStop(cmdErr) {
 				return nil
 			}
 			return fmt.Errorf("ssh execution error: %w", cmdErr)
@@ -286,8 +317,10 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("⛔ Session ended: maximum session duration reached")
 		}
-		switch cmdErr.Error() {
-		case "exit status 100", "exit status 130", "signal: interrupt":
+		if access.RemoteCmd == "" && isCleanInteractiveSessionExit(cmdErr) {
+			return nil
+		}
+		if isExpectedSessionStop(cmdErr) {
 			return nil
 		}
 		return fmt.Errorf("ttyrec execution error: %v", cmdErr)
