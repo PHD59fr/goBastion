@@ -104,7 +104,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 	var existing models.SelfAccess
-	result := db.Where("user_id = ? AND server = ? AND username = ? AND port = ?", user.ID, server, username, port).First(&existing)
+	result := db.Where("user_id = ? AND server IN ? AND username = ? AND port = ?", user.ID, validation.HostReferences(server), username, port).First(&existing)
 	if result.Error == nil {
 		return fmt.Errorf("personal access already exists for %s@%s:%d", username, server, port)
 	}

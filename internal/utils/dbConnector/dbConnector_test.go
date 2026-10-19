@@ -3,6 +3,7 @@ package dbConnector
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,6 +13,71 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestParseIPv6DBTarget(t *testing.T) {
+	for _, tc := range []struct {
+		target, user, host, protocol string
+		port                         int64
+	}{
+		{"2001:db8::1", "", "2001:db8::1", "", 0},
+		{"dbuser@2001:db8::1", "dbuser", "2001:db8::1", "", 0},
+		{"[2001:db8::1]", "", "2001:db8::1", "", 0},
+		{"[2001:db8::1]:5432", "", "2001:db8::1", "", 5432},
+		{"dbuser@[2001:db8::1]:5432:postgres", "dbuser", "2001:db8::1", "postgres", 5432},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			user, host, port, protocol, database := parseDBTarget(tc.target, []string{"--dbname", "app"})
+			if user != tc.user || host != tc.host || port != tc.port || protocol != tc.protocol || database != "app" {
+				t.Fatalf("got (%q, %q, %d, %q, %q)", user, host, port, protocol, database)
+			}
+		})
+	}
+}
+
+func TestResolveIPv6DBTargetAndAlias(t *testing.T) {
+	for _, stored := range []string{"2001:db8::1", "[2001:db8::1]"} {
+		t.Run(stored, func(t *testing.T) {
+			db := newAliasTestDB(t)
+			user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+			if err := db.Create(&user).Error; err != nil {
+				t.Fatal(err)
+			}
+			entry := models.SelfDBAccess{UserID: user.ID, Host: stored, Port: 5432,
+				Protocol: "postgres", Username: "dbuser", Database: "app"}
+			if err := db.Create(&entry).Error; err != nil {
+				t.Fatal(err)
+			}
+			alias := models.DatabaseAlias{UserID: &user.ID, ResolveFrom: "mydb", Host: stored,
+				Port: 5432, Protocol: "postgres"}
+			if err := db.Create(&alias).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, target := range []string{"2001:db8::1", "[2001:db8::1]", "dbuser@[2001:db8::1]:5432:postgres", "mydb"} {
+				got, err := ResolveTarget(db, user, target)
+				if err != nil {
+					t.Fatalf("%s: %v", target, err)
+				}
+				if got.ID != entry.ID || got.Host != "2001:db8::1" {
+					t.Fatalf("%s: unexpected access %+v", target, got)
+				}
+			}
+			if _, err := ResolveTarget(db, user, "[2001:db8::2]:5432:postgres"); err == nil {
+				t.Fatal("access to a different IPv6 target must be denied")
+			}
+		})
+	}
+}
+
+func TestIPv6DBClientArgs(t *testing.T) {
+	for _, protocol := range []string{"mysql", "postgres", "redis"} {
+		bare := models.DBAccessRight{Protocol: protocol, Host: "2001:db8::1", Port: 1234, Username: "dbuser"}
+		bracketed := bare
+		bracketed.Host = "[2001:db8::1]"
+		if got, want := buildClientArgs(bracketed), buildClientArgs(bare); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: bracketed args %v differ from bare args %v", protocol, got, want)
+		}
+	}
+}
 
 func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 	tmpDir := t.TempDir()

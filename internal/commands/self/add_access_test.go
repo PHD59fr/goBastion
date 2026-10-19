@@ -7,23 +7,29 @@ import (
 )
 
 func TestAddAccess_Success(t *testing.T) {
-	db := newTestDB(t)
-	user := newRegularUser(t, db, "alice")
+	for _, server := range []string{"1.2.3.4", "2001:db8::10", "[2001:db8::10]"} {
+		t.Run(server, func(t *testing.T) {
+			db := newTestDB(t)
+			user := newRegularUser(t, db, "alice")
 
-	err := AddAccess(db, user, []string{
-		"--server", "1.2.3.4",
-		"--username", "root",
-		"--port", "22",
-		"--force",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+			err := AddAccess(db, user, []string{
+				"--server", server,
+				"--username", "root",
+				"--port", "22",
+				"--force",
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	var count int64
-	db.Model(&models.SelfAccess{}).Where("user_id = ? AND server = ?", user.ID, "1.2.3.4").Count(&count)
-	if count != 1 {
-		t.Fatalf("expected 1 access entry, got %d", count)
+			var saved models.SelfAccess
+			if err := db.Where("user_id = ?", user.ID).First(&saved).Error; err != nil {
+				t.Fatalf("read persisted access: %v", err)
+			}
+			if saved.Server != server || saved.Port != 22 || saved.Username != "root" || saved.Protocol != "ssh" {
+				t.Fatalf("unexpected persisted access: %+v", saved)
+			}
+		})
 	}
 }
 

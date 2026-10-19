@@ -33,9 +33,10 @@ func buildHandlers(db *gorm.DB, user *models.User, log *slog.Logger, adapter osa
 		"selfReplaceKnownHost":         func() error { return cmdself.ReplaceKnownHost(db, user, args) },
 
 		// Self: Accesses
-		"selfListAccesses": func() error { return cmdself.ListAccesses(db, user) },
-		"selfAddAccess":    func() error { return cmdself.AddAccess(db, user, args) },
-		"selfDelAccess":    func() error { return cmdself.DelAccess(db, user, args) },
+		"selfListAllAccesses": func() error { return cmdself.ListAllAccesses(db, user, args) },
+		"selfListAccesses":    func() error { return cmdself.ListAccesses(db, user) },
+		"selfAddAccess":       func() error { return cmdself.AddAccess(db, user, args) },
+		"selfDelAccess":       func() error { return cmdself.DelAccess(db, user, args) },
 
 		// Self: Aliases
 		"selfListAliases": func() error { return cmdself.ListAliases(db, user) },

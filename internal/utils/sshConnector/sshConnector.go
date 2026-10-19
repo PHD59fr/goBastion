@@ -19,6 +19,7 @@ import (
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	bastionSync "goBastion/internal/utils/sync"
+	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -73,6 +74,7 @@ func isCleanInteractiveSessionExit(err error) bool {
 // For non-interactive binary protocols (sftp, scp, rsync) ttyrec is bypassed to avoid
 // PTY corruption of binary data. It performs TOFU host key verification before connecting.
 func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) error {
+	access.Server = validation.UnbracketHost(access.Server)
 	if err := CheckAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {
 		return err
 	}
@@ -339,6 +341,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 //
 // ssh-keyscan is only invoked when the host is unknown OR the stored entries are stale.
 func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port int64) error {
+	server = validation.UnbracketHost(server)
 	portStr := strconv.FormatInt(port, 10)
 
 	// Determine host token as stored in known_hosts.

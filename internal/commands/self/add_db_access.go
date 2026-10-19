@@ -129,7 +129,7 @@ func AddDBAccess(db *gorm.DB, user *models.User, args []string) error {
 	}
 
 	var existingAccess models.SelfDBAccess
-	result := db.Where("user_id = ? AND host = ? AND port = ? AND protocol = ?", user.ID, host, port, protocol).First(&existingAccess)
+	result := db.Where("user_id = ? AND host IN ? AND port = ? AND protocol = ?", user.ID, validation.HostReferences(host), port, protocol).First(&existingAccess)
 	if result.Error == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal DB Access",

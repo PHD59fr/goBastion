@@ -103,7 +103,7 @@ func AddAccess(db *gorm.DB, user *models.User, args []string) error {
 	// Network reachability can change after the access entry is saved.
 	// Restrict active checks to private/reserved targets to avoid scanner-like behavior.
 	if !force {
-		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
+		addr := net.JoinHostPort(validation.UnbracketHost(server), strconv.FormatInt(port, 10))
 		shouldCheck := validation.IsPrivateOrReservedTarget(server)
 		if shouldCheck {
 			conn, err := net.DialTimeout("tcp", addr, time.Duration(config.Get().Proxy.TCPConnectTimeout))
@@ -139,7 +139,7 @@ func AddAccess(db *gorm.DB, user *models.User, args []string) error {
 	}
 
 	var existingAccess models.SelfAccess
-	result := db.Where("user_id = ? AND server = ? AND username = ? AND port = ?", user.ID, server, username, port).First(&existingAccess)
+	result := db.Where("user_id = ? AND server IN ? AND username = ? AND port = ?", user.ID, validation.HostReferences(server), username, port).First(&existingAccess)
 	if result.Error == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Personal Access",

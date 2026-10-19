@@ -104,6 +104,29 @@ func IsValidHostReference(h string) bool {
 	return net.ParseIP(host) != nil || EntityNameRegexp.MatchString(host)
 }
 
+// UnbracketHost removes the brackets used to delimit an IPv6 literal in a
+// target. Network clients expect the bare address when the port is separate.
+func UnbracketHost(host string) string {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		inner := host[1 : len(host)-1]
+		if strings.Contains(inner, ":") && net.ParseIP(inner) != nil {
+			return inner
+		}
+	}
+	return host
+}
+
+// HostReferences includes both accepted spellings of an IPv6 host so existing
+// access entries remain usable regardless of whether they contain brackets.
+// Other hostnames and IP addresses retain their exact matching semantics.
+func HostReferences(host string) []string {
+	host = UnbracketHost(host)
+	if strings.Contains(host, ":") && net.ParseIP(host) != nil {
+		return []string{host, "[" + host + "]"}
+	}
+	return []string{host}
+}
+
 func isASCIIAlphanumeric(ch byte) bool {
 	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
 }

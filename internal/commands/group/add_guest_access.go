@@ -100,7 +100,7 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 	}
 
 	// TCP connectivity check (private targets only).
-	addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
+	addr := net.JoinHostPort(validation.UnbracketHost(server), strconv.FormatInt(port, 10))
 	if validation.IsPrivateOrReservedTarget(server) {
 		conn, err := net.DialTimeout("tcp", addr, time.Duration(config.Get().Proxy.TCPConnectTimeout))
 		if err != nil {
@@ -158,8 +158,8 @@ func AddGuestAccess(db *gorm.DB, currentUser *models.User, args []string) error 
 
 	// Check for duplicate.
 	var existing models.GroupGuestAccess
-	if err := db.Where("group_id = ? AND user_id = ? AND server = ? AND port = ? AND username = ? AND deleted_at IS NULL",
-		group.ID, targetUser.ID, server, port, remoteUser).First(&existing).Error; err == nil {
+	if err := db.Where("group_id = ? AND user_id = ? AND server IN ? AND port = ? AND username = ? AND deleted_at IS NULL",
+		group.ID, targetUser.ID, validation.HostReferences(server), port, remoteUser).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest Access",
 			BlockType: "error",
