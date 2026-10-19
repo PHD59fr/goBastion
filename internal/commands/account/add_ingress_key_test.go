@@ -1,6 +1,9 @@
 package account
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"strings"
 	"testing"
@@ -8,8 +11,77 @@ import (
 
 	"goBastion/internal/models"
 
+	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 )
+
+func TestCreateDBIngressKey_GeneratedKeys(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		pub  any
+		size int
+	}{
+		{"rsa4096", &rsaKey.PublicKey, 4096},
+		{"ed25519", edKey, 256},
+	} {
+		key, err := ssh.NewPublicKey(tt.pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, comment := range []string{"", "user@laptop with spaces"} {
+			t.Run(tt.name+"/"+comment, func(t *testing.T) {
+				db := newTestDB(t)
+				user := newRegularUser(t, db, "alice")
+				text := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+				if comment != "" {
+					text += " " + comment
+				}
+				if err := CreateDBIngressKey(db, user, text); err != nil {
+					t.Fatal(err)
+				}
+				var stored models.IngressKey
+				if err := db.Where("user_id = ?", user.ID).First(&stored).Error; err != nil {
+					t.Fatal(err)
+				}
+				if stored.Key != text || stored.Type != key.Type() || stored.Size != tt.size || stored.Comment != comment {
+					t.Fatalf("incorrect stored key: %+v", stored)
+				}
+			})
+		}
+	}
+}
+
+func TestCreateDBIngressKey_RejectsWeakRSA(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := newTestDB(t)
+	user := newRegularUser(t, db, "alice")
+	err = CreateDBIngressKey(db, user, string(ssh.MarshalAuthorizedKey(key)))
+	if err == nil || !strings.Contains(err.Error(), "at least 2048 bits") {
+		t.Fatalf("expected weak RSA rejection, got %v", err)
+	}
+	var count int64
+	if err := db.Model(&models.IngressKey{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("stored %d keys after weak RSA rejection", count)
+	}
+}
 
 func TestCreateDBIngressKey_Valid(t *testing.T) {
 	db := newTestDB(t)

@@ -215,11 +215,17 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 	if strings.HasPrefix(command, "-osh ") {
 		parts := strings.SplitN(command, " ", 2)
 		command = strings.TrimSpace(parts[1])
-		commandParts := strings.Fields(command)
-		if len(commandParts) > 0 {
-			command = commandParts[0]
-			args = commandParts[1:]
+		commandParts, err := parseCommandLine(command)
+		if err != nil {
+			fmt.Printf("Invalid command line: %v\n", err)
+			return
 		}
+		if len(commandParts) == 0 {
+			fmt.Println("Usage: -osh <command> <args>")
+			return
+		}
+		command = commandParts[0]
+		args = commandParts[1:]
 		_ = executeCommandJSONAware(db, currentUser, log, command, args)
 	} else if host, port, ok := parseTCPProxyRequest(command, args); ok {
 		if err := cmdssh.TCPProxy(db, *currentUser, *log, host, port); err != nil {
@@ -608,7 +614,11 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 	p := prompt.New(
 		func(in string) {
 			showCompletions = false
-			tokens := strings.Fields(in)
+			tokens, err := parseCommandLine(in)
+			if err != nil {
+				fmt.Printf("Invalid command line: %v\n", err)
+				return
+			}
 			if len(tokens) == 0 {
 				return
 			}
@@ -623,7 +633,6 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 			if len(filtered) == 0 {
 				return
 			}
-			var err error
 			if mode != oshJSONDisabled {
 				err = executeCommandJSONAware(db, currentUser, log, filtered[0], filtered[1:])
 			} else {

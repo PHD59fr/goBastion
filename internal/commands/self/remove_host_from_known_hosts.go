@@ -8,6 +8,7 @@ import (
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/validation"
 	"log/slog"
 
 	"goBastion/internal/osadapter"
@@ -49,6 +50,8 @@ func removeHostFromKnownHosts(db *gorm.DB, u *models.User, args []string, replac
 		})
 		return fmt.Errorf("missing required flag --host")
 	}
+
+	hostname = validation.UnbracketHost(hostname)
 
 	// Match entries for this host (port 22: "hostname keytype key", other ports: "[hostname]:port keytype key")
 	var entries []models.KnownHostsEntry

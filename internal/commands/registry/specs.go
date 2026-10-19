@@ -48,6 +48,11 @@ var commandRegistry = []CommandMeta{
 		Args:     []ArgSpec{{"--host", "Host whose key changed"}}},
 
 	// --- Self: Accesses ---
+	{Name: "selfListAllAccesses", Description: "List all your accesses", Permission: "selfListAllAccesses",
+		Category: "MANAGE YOUR ACCOUNT", SubCategory: "Access catalog",
+		Args: []ArgSpec{{"--search", "Search aliases, hosts, groups, usernames and comments"},
+			{"--group", "Filter by group"}, {"--type", "Access type: ssh or db"},
+			{"--details", "Show connection hints, expiry, source CIDRs and MFA"}, {"--all", "Include expired accesses"}}},
 	{Name: "selfListAccesses", Description: "List your personal accesses", Permission: "selfListAccesses",
 		Category: "MANAGE YOUR ACCOUNT", SubCategory: "Server accesses (personal)"},
 	{Name: "selfAddAccess", Description: "Add a personal access", Permission: "selfAddAccess",

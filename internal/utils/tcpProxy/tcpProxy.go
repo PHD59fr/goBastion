@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"os"
+
+	"goBastion/internal/utils/validation"
 )
 
 // Proxy opens a raw TCP connection to host:port and pipes stdin/stdout through it.
@@ -12,9 +14,9 @@ import (
 // Example client config:
 //
 //	Host target
-//	  ProxyCommand ssh -p 2222 %r@bastion -W %h:%p
+//	  ProxyCommand ssh -p 2222 -- %r@bastion "-W [%h]:%p"
 func Proxy(host, port string) error {
-	conn, err := net.Dial("tcp", net.JoinHostPort(host, port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(validation.UnbracketHost(host), port))
 	if err != nil {
 		return fmt.Errorf("cannot connect to %s:%s: %w", host, port, err)
 	}

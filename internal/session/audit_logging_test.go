@@ -73,6 +73,21 @@ func TestRedactAuditCommand(t *testing.T) {
 			command: "-osh  accountList   --json",
 			want:    "-osh  accountList   --json",
 		},
+		{
+			name:    "quoted password with spaces",
+			command: `-osh selfAddDBAccess --password "secret with spaces" --host db.example`,
+			want:    "-osh selfAddDBAccess --password [REDACTED] --host db.example",
+		},
+		{
+			name:    "quoted equals password",
+			command: `-osh selfAddDBAccess --password='secret with spaces'`,
+			want:    "-osh selfAddDBAccess --password=[REDACTED]",
+		},
+		{
+			name:    "unfinished quoted password",
+			command: `-osh selfAddDBAccess --password "secret with spaces`,
+			want:    auditRedactedValue,
+		},
 	}
 
 	for _, tt := range tests {

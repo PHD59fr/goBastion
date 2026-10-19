@@ -122,7 +122,7 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 	if forcedHost.Host != "" {
 		log.Info("alias_resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
-		sshHost = forcedHost.Host
+		sshHost = validation.UnbracketHost(forcedHost.Host)
 		effectiveTarget.host = sshHost
 		log = buildSSHLogger(logger, user.Username, sshFrom, protocol, requestedTarget, effectiveTarget, jumpChain)
 	}
@@ -152,9 +152,9 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 	loginHostname := user.Username + "@" + hostname
 	// Show host:port if target username not provided; otherwise show user@host:port
-	target := sshHost + ":" + sshPort
+	target := net.JoinHostPort(sshHost, sshPort)
 	if sshUser != "" {
-		target = sshUser + "@" + sshHost + ":" + sshPort
+		target = sshUser + "@" + net.JoinHostPort(sshHost, sshPort)
 	}
 	fmt.Printf("⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(target))
 
@@ -232,8 +232,8 @@ func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (s
 
 	// Self accesses first (higher priority than group).
 	var sa models.SelfAccess
-	if err := db.Where("user_id = ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
-		user.ID, host, port, now).
+	if err := db.Where("user_id = ? AND server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+		user.ID, validation.HostReferences(host), port, now).
 		Order("CASE WHEN username != '*' THEN 0 ELSE 1 END"). // exact before wildcard
 		First(&sa).Error; err == nil {
 		if u, ok := resolveAccessUsername(sa.Username); ok {
@@ -246,8 +246,8 @@ func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (s
 	if err := db.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).
 		Pluck("group_id", &groupIDs).Error; err == nil && len(groupIDs) > 0 {
 		var ga models.GroupAccess
-		if err := db.Where("group_id IN ? AND server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
-			groupIDs, host, port, now).
+		if err := db.Where("group_id IN ? AND server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+			groupIDs, validation.HostReferences(host), port, now).
 			Order("CASE WHEN username != '*' THEN 0 ELSE 1 END").
 			First(&ga).Error; err == nil {
 			if u, ok := resolveAccessUsername(ga.Username); ok {
@@ -259,14 +259,14 @@ func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (s
 	// Admin override: any access entry in the system for this host.
 	if user.Role == models.RoleAdmin {
 		var ga models.GroupAccess
-		if err := db.Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", host, port, now).
+		if err := db.Where("server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", validation.HostReferences(host), port, now).
 			First(&ga).Error; err == nil {
 			if u, ok := resolveAccessUsername(ga.Username); ok {
 				return u, true
 			}
 		}
 		var sa2 models.SelfAccess
-		if err := db.Where("server = ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", host, port, now).
+		if err := db.Where("server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", validation.HostReferences(host), port, now).
 			First(&sa2).Error; err == nil {
 			if u, ok := resolveAccessUsername(sa2.Username); ok {
 				return u, true
@@ -312,9 +312,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	// --- Self accesses (scores 2 and 4) ---
 	var selfAccesses []models.SelfAccess
 	if err = DB.Where(
-		"user_id = ? AND (username = ? OR username = '*') AND server = ? AND port = ? "+
+		"user_id = ? AND (username = ? OR username = '*') AND server IN ? AND port = ? "+
 			"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
-		user.ID, username, host, portInt, now, protocol,
+		user.ID, username, validation.HostReferences(host), portInt, now, protocol,
 	).Find(&selfAccesses).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving self accesses: %w", err)
 	}
@@ -348,9 +348,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	if len(groupIDs) > 0 {
 		var groupAccesses []models.GroupAccess
 		if err = DB.Where(
-			"group_id IN ? AND (username = ? OR username = '*') AND server = ? AND port = ? "+
+			"group_id IN ? AND (username = ? OR username = '*') AND server IN ? AND port = ? "+
 				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
-			groupIDs, username, host, portInt, now, protocol,
+			groupIDs, username, validation.HostReferences(host), portInt, now, protocol,
 		).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return nil, validation.WrapDBError(err, "error retrieving group accesses")
 		}
@@ -359,9 +359,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		var guestGrants []models.GroupGuestAccess
 		if hasGuestRole {
 			if err := DB.Where(
-				"user_id = ? AND server = ? AND port = ? AND username = ? AND "+
+				"user_id = ? AND server IN ? AND port = ? AND username = ? AND "+
 					"(protocol = 'ssh' OR protocol = ?) AND (expires_at IS NULL OR expires_at > ?)",
-				user.ID, host, portInt, username, protocol, now,
+				user.ID, validation.HostReferences(host), portInt, username, protocol, now,
 			).Find(&guestGrants).Error; err != nil {
 				return nil, fmt.Errorf("error retrieving guest grants: %w", err)
 			}
@@ -405,9 +405,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 	if user.Role == models.RoleAdmin && len(candidates) == 0 {
 		var adminSelfAccesses []models.SelfAccess
 		if err = DB.Where(
-			"(username = ? OR username = '*') AND server = ? AND port = ? "+
+			"(username = ? OR username = '*') AND server IN ? AND port = ? "+
 				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
-			username, host, portInt, now, protocol,
+			username, validation.HostReferences(host), portInt, now, protocol,
 		).Find(&adminSelfAccesses).Error; err == nil {
 			for i := range adminSelfAccesses {
 				candidates = append(candidates, accessCandidate{
@@ -419,9 +419,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 		}
 		var adminGroupAccesses []models.GroupAccess
 		if err = DB.Where(
-			"(username = ? OR username = '*') AND server = ? AND port = ? "+
+			"(username = ? OR username = '*') AND server IN ? AND port = ? "+
 				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
-			username, host, portInt, now, protocol,
+			username, validation.HostReferences(host), portInt, now, protocol,
 		).Preload("Group").Find(&adminGroupAccesses).Error; err == nil {
 			for i := range adminGroupAccesses {
 				candidates = append(candidates, accessCandidate{
@@ -498,7 +498,7 @@ func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess,
 		ID:             ga.ID,
 		Source:         sourcePrefix + "-" + ga.Group.Name,
 		Username:       ga.Username,
-		Server:         ga.Server,
+		Server:         validation.UnbracketHost(ga.Server),
 		Port:           ga.Port,
 		Type:           "group",
 		KeyId:          key.ID,
@@ -536,7 +536,7 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 		ID:             sa.ID,
 		Source:         sourcePrefix + "-" + sa.Username,
 		Username:       sa.Username,
-		Server:         sa.Server,
+		Server:         validation.UnbracketHost(sa.Server),
 		Port:           sa.Port,
 		Type:           "self",
 		KeyId:          key.ID,
@@ -706,21 +706,22 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 		target = target[idx+1:]
 	}
 
-	// [IPv6] or [IPv6]:port form — brackets must be stripped before the
-	// plain ":" split, otherwise an unbracketed IPv6 like [::1] breaks.
+	// A bare IPv6 literal is always a host; an attached port needs brackets.
 	if strings.HasPrefix(target, "[") {
 		if bracketEnd := strings.LastIndex(target, "]"); bracketEnd >= 0 {
 			host = target[1:bracketEnd]
-			rest := target[bracketEnd+1:]
-			if strings.HasPrefix(rest, ":") {
-				port = rest[1:]
+			suffix := target[bracketEnd+1:]
+			if suffix != "" {
+				if !strings.HasPrefix(suffix, ":") || len(suffix) == 1 {
+					return "", "", "", "", fmt.Errorf("invalid bracketed IPv6 host %q", target)
+				}
+				port = suffix[1:]
 			}
 		} else {
-			// Malformed (opening bracket without closing one); fall back to
-			// treating the whole token as the host so the caller reports a
-			// clean validation error instead of a broken host/port split.
-			host = target
+			return "", "", "", "", fmt.Errorf("invalid bracketed IPv6 host %q", target)
 		}
+	} else if net.ParseIP(target) != nil {
+		host = target
 	} else if idx := strings.LastIndex(target, ":"); idx >= 0 {
 		// host:port form
 		host = target[:idx]
@@ -813,6 +814,8 @@ func parseHop(s string) (SSHHop, error) {
 			}
 			hop.Port = suffix[1:]
 		}
+	} else if net.ParseIP(s) != nil {
+		hop.Host = s
 	} else if idx := strings.LastIndex(s, ":"); idx >= 0 {
 		hop.Host = s[:idx]
 		hop.Port = s[idx+1:]
@@ -976,7 +979,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 //
 // Host target
 //
-//	ProxyCommand ssh -p 2222 %r@bastion -W %h:%p
+//	ProxyCommand ssh -p 2222 -- %r@bastion "-W [%h]:%p"
 func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port string) error {
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
@@ -999,7 +1002,7 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 	}
 	if forcedHost.Host != "" {
 		log.Info("alias_resolved", slog.String("alias", host), slog.String("to", forcedHost.Host))
-		host = forcedHost.Host
+		host = validation.UnbracketHost(forcedHost.Host)
 	}
 
 	access, err := tcpProxyAccessFilter(db, log, user, host, portInt)
@@ -1056,7 +1059,7 @@ func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 	}
 	if forcedHost.Host != "" {
 		log.Info("alias_resolved", slog.String("alias", sshHost), slog.String("to", forcedHost.Host))
-		sshHost = forcedHost.Host
+		sshHost = validation.UnbracketHost(forcedHost.Host)
 		effectiveTarget.host = sshHost
 		log = buildSSHLogger(logger, user.Username, sshFrom, "", requestedTarget, effectiveTarget, "")
 	}
@@ -1105,8 +1108,8 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 
 	var selfAccesses []models.SelfAccess
 	if err := db.Where(
-		"user_id = ? AND server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
-		user.ID, host, port, now,
+		"user_id = ? AND server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+		user.ID, validation.HostReferences(host), port, now,
 	).Find(&selfAccesses).Error; err != nil {
 		return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve personal access: %w", err)
 	}
@@ -1128,8 +1131,8 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 	}
 	if len(groupIDs) > 0 {
 		if err := db.Where(
-			"group_id IN ? AND server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
-			groupIDs, host, port, now,
+			"group_id IN ? AND server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			groupIDs, validation.HostReferences(host), port, now,
 		).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve group access: %w", err)
 		}
@@ -1138,14 +1141,14 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 	if len(selfAccesses) == 0 && len(groupAccesses) == 0 && user.Role == models.RoleAdmin {
 		// Admin override, but still constrained by protocol, TTL and source CIDR.
 		if err := db.Where(
-			"server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
-			host, port, now,
+			"server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			validation.HostReferences(host), port, now,
 		).Find(&selfAccesses).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve admin self access: %w", err)
 		}
 		if err := db.Where(
-			"server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
-			host, port, now,
+			"server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			validation.HostReferences(host), port, now,
 		).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve admin group access: %w", err)
 		}
@@ -1166,8 +1169,8 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 	if hasGuestRole {
 		var guestGrants []models.GroupGuestAccess
 		if err := db.Where(
-			"user_id = ? AND server = ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
-			user.ID, host, port, now,
+			"user_id = ? AND server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
+			user.ID, validation.HostReferences(host), port, now,
 		).Find(&guestGrants).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("error retrieving guest grants: %w", err)
 		}

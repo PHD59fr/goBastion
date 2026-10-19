@@ -509,6 +509,13 @@ func TestParseSSHCommand(t *testing.T) {
 		{"ipv6 host", "[::1]", "", "::1", "22", "", ""},
 		{"ipv6 host with port", "deploy@[::1]:2222", "deploy", "::1", "2222", "", ""},
 		{"ipv6 host with cmd", "deploy@[::1] whoami", "deploy", "::1", "22", "whoami", ""},
+		{"bare ipv6", "2001:db8::1", "", "2001:db8::1", "22", "", ""},
+		{"bare ipv6 with user", "deploy@2001:db8::1", "deploy", "2001:db8::1", "22", "", ""},
+		{"bare ipv6 with explicit port", "deploy@2001:db8::1 -p 2222 whoami", "deploy", "2001:db8::1", "2222", "whoami", ""},
+		{"bare ipv6 ending in port-like segment", "deploy@2001:db8::1:2222", "deploy", "2001:db8::1:2222", "22", "", ""},
+		{"ipv6 missing bracket", "deploy@[::1", "", "", "", "", "invalid bracketed IPv6 host"},
+		{"ipv6 invalid suffix", "deploy@[::1]junk", "", "", "", "", "invalid bracketed IPv6 host"},
+		{"ipv6 empty port", "deploy@[::1]:", "", "", "", "", "invalid bracketed IPv6 host"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -571,6 +578,12 @@ func TestExtractForwardHops(t *testing.T) {
 			input:     "deploy@target --via jump@[2001:db8::1]:2222",
 			wantClean: "deploy@target",
 			wantHops:  []SSHHop{{User: "jump", Host: "2001:db8::1", Port: "2222"}},
+		},
+		{
+			name:      "bare IPv6 hop",
+			input:     "deploy@target --via jump@2001:db8::1",
+			wantClean: "deploy@target",
+			wantHops:  []SSHHop{{User: "jump", Host: "2001:db8::1", Port: "22"}},
 		},
 		{
 			name:    "missing --via argument",
@@ -773,5 +786,74 @@ func TestDetectProtocol(t *testing.T) {
 func init() {
 	if err := os.Unsetenv("SSH_CLIENT"); err != nil {
 		log.Printf("warning: unable to unset SSH_CLIENT in test init: %v", err)
+	}
+}
+
+// Brackets delimit a target's port; they must not change which access applies.
+func TestIPv6AccessResolution(t *testing.T) {
+	for _, kind := range []string{"self", "group", "guest", "admin"} {
+		for _, stored := range []string{"2001:db8::1", "[2001:db8::1]"} {
+			t.Run(kind+"/"+stored, func(t *testing.T) {
+				db := newTestDB(t)
+				user := mustCreateUser(t, db, "alice", models.RoleUser)
+				if kind == "self" {
+					mustCreateSelfAccess(t, db, user.ID, "deploy", stored, 2222)
+				} else {
+					group := mustCreateGroup(t, db, "prod")
+					mustCreateGroupAccess(t, db, group.ID, "deploy", stored, 2222)
+					if kind == "admin" {
+						user.Role = models.RoleAdmin
+					} else {
+						role := models.GroupRoleMember
+						if kind == "guest" {
+							role = models.GroupRoleGuest
+							// The grant deliberately uses the other accepted spelling.
+							grantHost := "2001:db8::1"
+							if stored == grantHost {
+								grantHost = "[2001:db8::1]"
+							}
+							grant := models.GroupGuestAccess{UserID: user.ID, GroupID: group.ID,
+								Server: grantHost, Port: 2222, Username: "deploy", Protocol: "ssh"}
+							if err := db.Create(&grant).Error; err != nil {
+								t.Fatal(err)
+							}
+						}
+						mustAddUserToGroup(t, db, user.ID, group.ID, role)
+					}
+				}
+				for _, requested := range []string{"2001:db8::1", "[2001:db8::1]"} {
+					for _, protocol := range []string{"ssh", "sftp"} {
+						got, err := accessFilter(db, user, "deploy", requested, "2222", protocol)
+						if err != nil || len(got) != 1 || got[0].Server != "2001:db8::1" {
+							t.Fatalf("%s %s: accesses=%+v, err=%v", protocol, requested, got, err)
+						}
+					}
+					got, err := tcpProxyAccessFilter(db, slog.Default(), user, requested, 2222)
+					if err != nil || got.Server != "2001:db8::1" {
+						t.Fatalf("TCP %s: access=%+v, err=%v", requested, got, err)
+					}
+					if kind != "guest" {
+						name, ok := inferSSHUsername(db, user, requested, 2222)
+						if !ok || name != "deploy" {
+							t.Fatalf("infer %s: username=%q, ok=%v", requested, name, ok)
+						}
+					}
+				}
+				if _, err := accessFilter(db, user, "deploy", "2001:db8::2", "2222", "ssh"); err == nil {
+					t.Fatal("access to a different IPv6 target must be denied")
+				}
+				if kind == "guest" {
+					if err := db.Where("user_id = ?", user.ID).Delete(&models.GroupGuestAccess{}).Error; err != nil {
+						t.Fatal(err)
+					}
+					if _, err := accessFilter(db, user, "deploy", "2001:db8::1", "2222", "ssh"); err == nil {
+						t.Fatal("guest without grant must be denied")
+					}
+					if _, err := tcpProxyAccessFilter(db, slog.Default(), user, "2001:db8::1", 2222); err == nil {
+						t.Fatal("guest TCP proxy without grant must be denied")
+					}
+				}
+			})
+		}
 	}
 }

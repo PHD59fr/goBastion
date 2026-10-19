@@ -7,29 +7,35 @@ import (
 )
 
 func TestAddAccess_Success(t *testing.T) {
-	db := newTestDB(t)
-	admin := newAdminUser(t, db, "admin")
+	for _, server := range []string{"10.0.0.1", "2001:db8::10", "[2001:db8::10]"} {
+		t.Run(server, func(t *testing.T) {
+			db := newTestDB(t)
+			admin := newAdminUser(t, db, "admin")
 
-	g := models.Group{Name: "mygroup"}
-	if err := db.Create(&g).Error; err != nil {
-		t.Fatalf("create group: %v", err)
-	}
+			g := models.Group{Name: "mygroup"}
+			if err := db.Create(&g).Error; err != nil {
+				t.Fatalf("create group: %v", err)
+			}
 
-	err := AddAccess(db, admin, []string{
-		"--group", "mygroup",
-		"--server", "10.0.0.1",
-		"--username", "deploy",
-		"--port", "22",
-		"--force",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+			err := AddAccess(db, admin, []string{
+				"--group", "mygroup",
+				"--server", server,
+				"--username", "deploy",
+				"--port", "22",
+				"--force",
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	var count int64
-	db.Model(&models.GroupAccess{}).Where("group_id = ? AND server = ?", g.ID, "10.0.0.1").Count(&count)
-	if count != 1 {
-		t.Fatalf("expected 1 group access entry, got %d", count)
+			var saved models.GroupAccess
+			if err := db.Where("group_id = ?", g.ID).First(&saved).Error; err != nil {
+				t.Fatalf("read persisted group access: %v", err)
+			}
+			if saved.Server != server || saved.Port != 22 || saved.Username != "deploy" || saved.Protocol != "ssh" {
+				t.Fatalf("unexpected persisted group access: %+v", saved)
+			}
+		})
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 
 // AddIngressKey adds a new ingress SSH key for the current user.
 func AddIngressKey(db *gorm.DB, user *models.User, args []string) error {
+	const usage = `selfAddIngressKey --key "<type> <base64> [comment]" [--expires <days>]`
 	fs := flag.NewFlagSet("selfAddIngressKey", flag.ContinueOnError)
 	var pubKey string
 	var expiresDays int
@@ -30,13 +31,24 @@ func AddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: selfAddIngressKey --key <ssh_public_key> [--expires <days>]"}},
+				{SubTitle: "Usage Error", Body: []string{"Error parsing flags. Usage: " + usage}},
 			},
 		})
 		return err
 	}
 	if expiresDays < 0 {
 		return fmt.Errorf("key expiry days cannot be negative")
+	}
+	if fs.NArg() != 0 {
+		msg := "Unexpected extra arguments. Quote the entire --key value. Usage: " + usage
+		console.DisplayBlock(console.ContentBlock{
+			Title:     "Add Ingress Key",
+			BlockType: "error",
+			Sections: []console.SectionContent{
+				{SubTitle: "Usage Error", Body: []string{msg}},
+			},
+		})
+		return fmt.Errorf("%s", msg)
 	}
 	// Get the public key from the parsed flags
 	pubKey = strings.TrimSpace(pubKey)
@@ -45,7 +57,7 @@ func AddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Usage", Body: []string{"selfAddIngressKey --key <ssh_public_key> [--expires <days>]"}},
+				{SubTitle: "Usage", Body: []string{usage}},
 			},
 		})
 		return fmt.Errorf("SSH public key is required")
@@ -56,7 +68,7 @@ func AddIngressKey(db *gorm.DB, user *models.User, args []string) error {
 			Title:     "Add Ingress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Error", Body: []string{"Invalid SSH public key."}},
+				{SubTitle: "Error", Body: []string{"Invalid SSH public key. Supply a complete OpenSSH public key (type and Base64 payload) and quote the entire --key value, including any comment."}},
 			},
 		})
 		return fmt.Errorf("invalid ssh key: %w", err)

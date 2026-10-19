@@ -267,7 +267,7 @@ func (u *User) CanDo(db *gorm.DB, right string, target string) bool {
 		return true
 	case "selfGenerateEgressKey":
 		return true
-	case "selfListAccesses":
+	case "selfListAccesses", "selfListAllAccesses":
 		return true
 	case "selfListAliases":
 		return true

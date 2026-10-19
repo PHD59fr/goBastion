@@ -19,7 +19,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 		&models.User{}, &models.IngressKey{}, &models.SelfEgressKey{},
 		&models.GroupEgressKey{}, &models.SelfAccess{}, &models.GroupAccess{},
 		&models.Group{}, &models.UserGroup{}, &models.Aliases{},
-		&models.KnownHostsEntry{}, &models.PIVTrustAnchor{},
+		&models.KnownHostsEntry{}, &models.PIVTrustAnchor{}, &models.GroupGuestAccess{},
 		&models.SelfDBAccess{}, &models.GroupDBAccess{},
 		&models.GroupGuestDBAccess{}, &models.DatabaseAlias{},
 	); err != nil {

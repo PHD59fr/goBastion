@@ -33,7 +33,11 @@ func redactAuditArgs(args []string) []string {
 // redactAuditCommand handles SSH_ORIGINAL_COMMAND, which can arrive as one
 // argument containing the complete command line.
 func redactAuditCommand(command string) string {
-	parts := strings.Fields(command)
+	parts, err := parseCommandLine(command)
+	if err != nil {
+		// Malformed quoting cannot be safely split to locate secret values.
+		return auditRedactedValue
+	}
 	redacted := redactAuditArgs(parts)
 	for i := range parts {
 		if parts[i] != redacted[i] {
