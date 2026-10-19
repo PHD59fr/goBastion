@@ -88,7 +88,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	// Network reachability can change after the access entry is saved.
 	// Restrict active checks to private/reserved targets to avoid scanner-like behavior.
 	if !force {
-		addr := net.JoinHostPort(server, strconv.FormatInt(port, 10))
+		addr := net.JoinHostPort(validation.UnbracketHost(server), strconv.FormatInt(port, 10))
 		shouldCheck := validation.IsPrivateOrReservedTarget(server)
 		if shouldCheck {
 			conn, err := net.DialTimeout("tcp", addr, time.Duration(config.Get().Proxy.TCPConnectTimeout))
@@ -152,7 +152,7 @@ func AddAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 	}
 
 	var existingAccess models.GroupAccess
-	if err := db.Where("group_id = ? AND server = ? AND port = ? AND username = ?", group.ID, server, port, username).First(&existingAccess).Error; err == nil {
+	if err := db.Where("group_id = ? AND server IN ? AND port = ? AND username = ?", group.ID, validation.HostReferences(server), port, username).First(&existingAccess).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group Access",
 			BlockType: "error",

@@ -15,12 +15,12 @@ import (
 // mockAdapter satisfies osadapter.SystemAdapter with no-ops.
 type mockAdapter struct{}
 
-func (m *mockAdapter) CreateUser(string) error                      { return nil }
-func (m *mockAdapter) DeleteUser(string) error                      { return nil }
-func (m *mockAdapter) UpdateSudoers(*models.User) error             { return nil }
-func (m *mockAdapter) ChownDir(models.User, string) error           { return nil }
+func (m *mockAdapter) CreateUser(string) error                       { return nil }
+func (m *mockAdapter) DeleteUser(string) error                       { return nil }
+func (m *mockAdapter) UpdateSudoers(*models.User) error              { return nil }
+func (m *mockAdapter) ChownDir(models.User, string) error            { return nil }
 func (m *mockAdapter) ExecCommand(string, ...string) (string, error) { return "", nil }
-func (m *mockAdapter) UserHomeExists(string) bool                   { return false }
+func (m *mockAdapter) UserHomeExists(string) bool                    { return false }
 
 var _ osadapter.SystemAdapter = (*mockAdapter)(nil)
 
@@ -135,4 +135,29 @@ func TestPromptArgs_UnknownCommand(t *testing.T) {
 	if args != nil {
 		t.Fatalf("expected nil args for unknown command, got %v", args)
 	}
+}
+
+func TestAccessCatalogIsAvailableToRegularUsers(t *testing.T) {
+	db := newTestDB(t)
+	user := &models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	cmds := BuildRegistry(db, user, slog.Default(), &mockAdapter{}, []string{"--type", "ssh"}, func() {})
+	for _, command := range cmds {
+		if command.Name != "selfListAllAccesses" {
+			continue
+		}
+		if !user.CanDo(db, command.Permission, "") {
+			t.Fatal("regular users must be able to discover their own accesses")
+		}
+		if command.Mutating || len(command.Features) != 0 {
+			t.Fatal("catalog must remain available in read-only mode and without optional features")
+		}
+		if err := command.Handler(); err != nil {
+			t.Fatalf("dispatch catalog: %v", err)
+		}
+		return
+	}
+	t.Fatal("selfListAllAccesses missing from registry")
 }

@@ -138,7 +138,7 @@ func AddDBAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 
 	// Check for duplicate.
 	var existingAccess models.GroupDBAccess
-	if err := db.Where("group_id = ? AND host = ? AND port = ? AND protocol = ?", group.ID, host, port, protocol).First(&existingAccess).Error; err == nil {
+	if err := db.Where("group_id = ? AND host IN ? AND port = ? AND protocol = ?", group.ID, validation.HostReferences(host), port, protocol).First(&existingAccess).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Group DB Access",
 			BlockType: "error",

@@ -14,6 +14,7 @@ import (
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/sshHostKey"
+	"goBastion/internal/utils/validation"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -43,7 +44,7 @@ func (c *stdinoutConn) SetWriteDeadline(_ time.Time) error { return nil }
 //
 //	Host myserver
 //	  User root
-//	  ProxyCommand ssh -p 2222 -- user@bastion "sftp-session root@%h:%p"
+//	  ProxyCommand ssh -p 2222 -- user@bastion "sftp-session root@[%h]:%p"
 func Proxy(db *gorm.DB, access models.AccessRight) error {
 	// 1. Connect to the target with the egress key.
 	signer, err := ssh.ParsePrivateKey([]byte(access.PrivateKey))
@@ -51,7 +52,7 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 		return fmt.Errorf("parse egress key: %w", err)
 	}
 
-	targetAddr := net.JoinHostPort(access.Server, fmt.Sprintf("%d", access.Port))
+	targetAddr := net.JoinHostPort(validation.UnbracketHost(access.Server), fmt.Sprintf("%d", access.Port))
 	netConn, err := net.DialTimeout("tcp", targetAddr, time.Duration(config.Get().Proxy.SFTPDialTimeout))
 	if err != nil {
 		return fmt.Errorf("connect to target %s: %w", targetAddr, err)
@@ -68,11 +69,6 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 		return fmt.Errorf("load known_hosts callback: %w", err)
 	}
 
-	sshServerAddr := targetAddr
-	if access.Port == config.Get().SSH.DefaultPort {
-		sshServerAddr = access.Server
-	}
-
 	clientConfig := &ssh.ClientConfig{
 		User:            access.Username,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
@@ -80,7 +76,7 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 		Timeout:         time.Duration(config.Get().Proxy.SFTPSSHTimeout),
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, sshServerAddr, clientConfig)
+	sshConn, chans, reqs, err := ssh.NewClientConn(netConn, targetAddr, clientConfig)
 	if err != nil {
 		return fmt.Errorf("ssh connect to %s: %w", targetAddr, err)
 	}

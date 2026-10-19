@@ -313,7 +313,7 @@ func ResolveTargetDetailed(db *gorm.DB, user models.User, target string, extraAr
 			details.AliasProtocol = alias.Protocol
 			target = alias.Host
 			if alias.Port > 0 {
-				target = fmt.Sprintf("%s:%d", target, alias.Port)
+				target = net.JoinHostPort(validation.UnbracketHost(target), strconv.FormatInt(alias.Port, 10))
 			}
 			if alias.Protocol != "" {
 				target = target + ":" + alias.Protocol
@@ -335,7 +335,7 @@ func ResolveTargetDetailed(db *gorm.DB, user models.User, target string, extraAr
 			details.AliasHost = alias.Host
 			details.AliasPort = alias.Port
 			details.AliasProtocol = alias.Protocol
-			host = alias.Host
+			host = validation.UnbracketHost(alias.Host)
 			port = alias.Port
 			protocol = alias.Protocol
 		}
@@ -511,7 +511,31 @@ func parseDBTarget(target string, args []string) (dbUser, host string, port int6
 		connectStr = target[idx+1:]
 	}
 
-	parts := strings.Split(connectStr, ":")
+	// A bare IPv6 literal has no attached port or protocol. Those suffixes
+	// require brackets, e.g. [2001:db8::1]:5432:postgres.
+	if net.ParseIP(connectStr) != nil {
+		host = connectStr
+		return
+	}
+	var parts []string
+	if strings.HasPrefix(connectStr, "[") {
+		end := strings.Index(connectStr, "]")
+		if end < 0 {
+			return
+		}
+		host = connectStr[1:end]
+		suffix := connectStr[end+1:]
+		if suffix == "" {
+			return
+		}
+		if !strings.HasPrefix(suffix, ":") {
+			host = ""
+			return
+		}
+		parts = append([]string{host}, strings.Split(suffix[1:], ":")...)
+	} else {
+		parts = strings.Split(connectStr, ":")
+	}
 	if len(parts) >= 1 {
 		host = parts[0]
 	}
@@ -589,8 +613,8 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 	// Step 1: Self accesses
 	var selfAccesses []models.SelfDBAccess
 	if err := db.Where(
-		"user_id = ? AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
-		user.ID, port, port, host, host, now,
+		"user_id = ? AND (port = ? OR ? = 0) AND (host IN ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
+		user.ID, port, port, validation.HostReferences(host), host, now,
 	).Find(&selfAccesses).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving self db accesses: %w", err)
 	}
@@ -599,7 +623,7 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 			continue
 		}
 		score := scoreDBSelfWildcard
-		if a.Host == host && (port == 0 || a.Port == port) {
+		if validation.UnbracketHost(a.Host) == validation.UnbracketHost(host) && (port == 0 || a.Port == port) {
 			score = scoreDBSelfExact
 		}
 		access, err := buildSelfDBAccessRight("account-"+user.Username, a)
@@ -630,8 +654,8 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 		var groupAccesses []models.GroupDBAccess
 		if len(groupIDs) > 0 {
 			if err := db.Where(
-				"group_id IN (?) AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
-				groupIDs, port, port, host, host, now,
+				"group_id IN (?) AND (port = ? OR ? = 0) AND (host IN ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
+				groupIDs, port, port, validation.HostReferences(host), host, now,
 			).Find(&groupAccesses).Error; err != nil {
 				return nil, fmt.Errorf("error retrieving group db accesses: %w", err)
 			}
@@ -641,7 +665,7 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 				continue
 			}
 			score := scoreDBGroupWildcard
-			if a.Host == host && (port == 0 || a.Port == port) {
+			if validation.UnbracketHost(a.Host) == validation.UnbracketHost(host) && (port == 0 || a.Port == port) {
 				score = scoreDBGroupExact
 			}
 			grpAccess, err := buildGroupDBAccessRight(db, a)
@@ -660,8 +684,8 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 		if len(guestGroupIDs) > 0 {
 			var grants []models.GroupGuestDBAccess
 			if err := db.Where(
-				"user_id = ? AND group_id IN (?) AND (port = ? OR ? = 0) AND (host = ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
-				user.ID, guestGroupIDs, port, port, host, host, now,
+				"user_id = ? AND group_id IN (?) AND (port = ? OR ? = 0) AND (host IN ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
+				user.ID, guestGroupIDs, port, port, validation.HostReferences(host), host, now,
 			).Preload("Group").Find(&grants).Error; err != nil {
 				return nil, fmt.Errorf("error retrieving guest db accesses: %w", err)
 			}
@@ -674,7 +698,7 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 					return nil, fmt.Errorf("decrypt guest database credentials: %w", err)
 				}
 				score := scoreDBGroupWildcard
-				if grant.Host == host && (port == 0 || grant.Port == port) {
+				if validation.UnbracketHost(grant.Host) == validation.UnbracketHost(host) && (port == 0 || grant.Port == port) {
 					score = scoreDBGroupExact
 				}
 				candidates = append(candidates, dbCandidate{access: access, score: score})
@@ -685,8 +709,8 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 	// Step 3: Admin override
 	if len(candidates) == 0 && user.IsAdmin() {
 		var allSelf []models.SelfDBAccess
-		if err := db.Where("(host = ? OR ? = '') AND (port = ? OR ? = 0) AND (expires_at IS NULL OR expires_at > ?)",
-			host, host, port, port, now).Find(&allSelf).Error; err != nil {
+		if err := db.Where("(host IN ? OR ? = '') AND (port = ? OR ? = 0) AND (expires_at IS NULL OR expires_at > ?)",
+			validation.HostReferences(host), host, port, port, now).Find(&allSelf).Error; err != nil {
 			return nil, fmt.Errorf("error retrieving admin db accesses: %w", err)
 		}
 		for _, a := range allSelf {
@@ -740,7 +764,7 @@ func buildSelfDBAccessRight(source string, a models.SelfDBAccess) (models.DBAcce
 	return models.DBAccessRight{
 		ID:          a.ID,
 		Source:      source,
-		Host:        a.Host,
+		Host:        validation.UnbracketHost(a.Host),
 		Port:        a.Port,
 		Protocol:    a.Protocol,
 		Username:    a.Username,
@@ -767,7 +791,7 @@ func buildGroupDBAccessRight(db *gorm.DB, a models.GroupDBAccess) (models.DBAcce
 	return models.DBAccessRight{
 		ID:          a.ID,
 		Source:      "group-" + group.Name,
-		Host:        a.Host,
+		Host:        validation.UnbracketHost(a.Host),
 		Port:        a.Port,
 		Protocol:    a.Protocol,
 		Username:    a.Username,
@@ -784,7 +808,7 @@ func buildGuestDBAccessRight(a models.GroupGuestDBAccess) (models.DBAccessRight,
 		return models.DBAccessRight{}, err
 	}
 	return models.DBAccessRight{
-		ID: a.ID, Source: "guest-group-" + a.Group.Name, Host: a.Host,
+		ID: a.ID, Source: "guest-group-" + a.Group.Name, Host: validation.UnbracketHost(a.Host),
 		Port: a.Port, Protocol: a.Protocol, Username: a.Username,
 		Password: password, Database: a.Database, AllowedFrom: a.AllowedFrom,
 		MFARequired: a.Group.MFARequired,
@@ -802,7 +826,7 @@ func buildClientArgs(access models.DBAccessRight) []string {
 	switch access.Protocol {
 	case "mysql":
 		args = append(args,
-			"-h", access.Host,
+			"-h", validation.UnbracketHost(access.Host),
 			"-P", strconv.FormatInt(access.Port, 10),
 			"-u", access.Username,
 			"--protocol=tcp",
@@ -813,7 +837,7 @@ func buildClientArgs(access models.DBAccessRight) []string {
 
 	case "postgres":
 		args = append(args,
-			"-h", access.Host,
+			"-h", validation.UnbracketHost(access.Host),
 			"-p", strconv.FormatInt(access.Port, 10),
 			"-U", access.Username,
 		)
@@ -823,7 +847,7 @@ func buildClientArgs(access models.DBAccessRight) []string {
 
 	case "redis":
 		args = append(args,
-			"-h", access.Host,
+			"-h", validation.UnbracketHost(access.Host),
 			"-p", strconv.FormatInt(access.Port, 10),
 		)
 	}

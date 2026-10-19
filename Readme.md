@@ -43,6 +43,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔑 `selfListEgressKeys`          | List your egress SSH keys (keys for connecting from the bastion to servers). |
 | 🔑 `selfGenerateEgressKey`       | Generate a new egress SSH key.                                               |
 | 📋 `selfListAccesses`            | List your personal server accesses.                                          |
+| 🔎 `selfListAllAccesses`         | List all your accesses.                                                      |
 | ➕ `selfAddAccess`                | Add access to a personal server (supports IP restriction, TTL, protocol).    |
 | ❌ `selfDelAccess`                | Remove access to a personal server.                                          |
 | 📋 `selfListAliases`             | List your personal SSH aliases.                                              |
@@ -66,6 +67,76 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔐 `selfShowBackupCodeCount`     | Show remaining backup codes count.                                          |
 
 ---
+
+### 🔎 **Personal Access Catalog**
+
+`selfListAllAccesses` brings your personal accesses, inherited group accesses,
+and individual guest grants into one searchable view. It includes SSH and
+transfer protocols (SFTP, SCP, rsync), plus MySQL, PostgreSQL and Redis when
+database access is enabled.
+
+```text
+selfListAllAccesses
+selfListAllAccesses --search prod
+selfListAllAccesses --group infra
+selfListAllAccesses --type ssh
+selfListAllAccesses --type db
+selfListAllAccesses --details
+selfListAllAccesses --all
+selfListAllAccesses --search prod --type db --details
+```
+
+| Option | Behavior |
+|--------|----------|
+| `--search <text>` | Case-insensitive search across aliases, hosts, groups, remote usernames, database names, protocols and comments. |
+| `--group <name>` | Show assignments from this group only, including your guest grants. |
+| `--type ssh` | Show SSH and transfer access assignments. |
+| `--type db` | Show database access assignments. |
+| `--details` | Include connection templates, expiry, source CIDRs, MFA requirements, comments and SSH egress-key presence. |
+| `--all` | Include expired assignments; these are hidden by default. |
+
+Example compact output:
+
+```text
+TYPE      TARGET                            ALIAS  SOURCE       ISSUES
+POSTGRES  reader@db01:5432/app               X      group:data   -
+SSH       deploy@[2001:db8::10]:22           X      group:prod   -
+SFTP      vendor@files01:22                  -      guest:files  Source IP blocked
+SSH       ops@10.0.0.5:22                    X      personal     Missing key
+```
+
+The `ALIAS` column contains `X` when at least one alias resolves to the target;
+alias names remain searchable but are not displayed. The `ISSUES` column is
+only displayed when at least one listed assignment has a detected issue. The
+catalogue retains separate rows when the same target has several assignments
+with different sources or rules.
+
+The detailed view provides SSH commands to run **from your workstation**.
+Replace `BASTION` with your workstation's SSH host alias, configured with the
+correct bastion username and port:
+
+```sh
+ssh -t BASTION -- 'deploy@[2001:db8::10]:22'
+ssh -t BASTION -- --db 'reader@db01:5432:postgres' --dbname 'app'
+```
+
+Transfer-only grants show the target and permitted protocol for use with your
+transfer client. The command does not launch a connection or probe targets.
+Normal connection checks and access-selection priorities still apply. Expired
+assignments, source-IP restrictions and missing SSH keys are labelled explicitly.
+
+Only your own assignments are included, even for administrators or superowners.
+Group entries and aliases respect `security.group_visibility.mode`; for example,
+`managers` hides a group's assignments from ordinary members and guests.
+An SSH guest grant must match an underlying group access, and both source-IP
+and expiry restrictions apply. Database guests see only their individual grants.
+Passwords and private keys are never displayed or decrypted by this command.
+It is available in read-only mode, help and autocomplete, and through `-osh`:
+
+```sh
+ssh -p 2222 user@bastion -- -osh selfListAllAccesses --search prod --details
+ssh -p 2222 user@bastion -- -osh selfListAllAccesses --type ssh --json-pretty
+```
 
 ### 🦸 **Admin Commands (Manage Other Accounts)**
 
@@ -121,7 +192,7 @@ In **goBastion**, **the database is the single source of truth** for SSH keys an
 | 🔑 `groupGenerateEgressKey` | Generate a new egress SSH key for the group.      |
 | 🔑 `groupListEgressKeys`    | List group egress SSH public keys (subject to `security.egress_key_visibility.mode`). |
 | 📋 `groupListAccesses`      | List all accesses assigned to a group (subject to `security.group_visibility.mode`). |
-| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restriction and optional `--guest` scope). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
+| ➕ `groupAddAccess`          | Grant access to a group (supports protocol restrictions, TTL and source CIDRs). The optional TCP connectivity check is restricted to private/reserved IP ranges to prevent network scanning. Use `--force` to skip. |
 | ❌ `groupDelAccess`          | Remove access from a group.                       |
 | 🔐 `groupSetMFA`            | Enable or disable JIT MFA requirement for a group (owner/admin only).       |
 | ➕ `groupAddGuestAccess`    | Grant guest access to a specific server in a group (gatekeeper+).            |
@@ -284,7 +355,7 @@ my-server-prod ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
 Host my-server
     HostName 192.168.1.10
     User myuser
-    ProxyCommand ssh -p 2222 -- bastion_user@bastion.example.com "sftp-session myuser@%h:%p"
+    ProxyCommand ssh -p 2222 -- bastion_user@bastion.example.com "sftp-session myuser@[%h]:%p"
 ```
 
 Then use SFTP normally:
@@ -296,25 +367,23 @@ sftp my-server
 ##### Operational notes
 
 - The bastion user in `ProxyCommand` is the **ingress account on goBastion**.
-- The `myuser@%h:%p` part is the **target account on the destination server**.
+- The `myuser@[%h]:%p` part is the **target account on the destination server**.
 - The host key presented by `sftp-session` is verified against the **client-side SSH host alias** being opened by the SFTP client.
 - Because the SFTP proxy host key is now stable, you should **not** use `StrictHostKeyChecking no` or `UserKnownHostsFile /dev/null` anymore.
 - Rotating the SFTP proxy host key invalidates the previously pinned client entry. Treat it like any other SSH host key rotation.
 
 #### Mode 2 — TCP proxy (requires your key on the target)
 
-Passes `-W %h:%p` **as a quoted string** after `--` so glibc does not treat it as a native SSH flag:
+Pass `-W [%h]:%p` **as a quoted remote command** after the bastion hostname:
 
 ```ssh-config
 Host my-server
     HostName 192.168.1.10
     User myuser
-    ProxyCommand ssh -p 2222 -- bastion_user@bastion "-W %h:%p"
+    ProxyCommand ssh -p 2222 -- bastion_user@bastion "-W [%h]:%p"
 ```
 
-> **Why `--` before the hostname?**  
-> On Linux (glibc), `ssh -W host:port` opens a raw `direct-tcpip` channel that bypasses goBastion's access controls — and is refused by the bastion's sshd.  
-> The `--` tells SSH's option parser to stop processing flags, so `-W %h:%p` becomes the **remote exec command** forwarded to goBastion, which handles it as a controlled TCP proxy via `parseTCPProxyRequest`.
+> Native `ssh -W host:port` requests an SSH forwarding channel, which the bastion's sshd refuses. The quoted `"-W [%h]:%p"` after the destination is instead a **remote command** processed by goBastion, where normal access checks apply. Bracketing `%h` works for hostnames, IPv4 and IPv6.
 
 This enables:
 - `scp file.txt user@my-server:/path/`
@@ -346,6 +415,48 @@ groupAddAccess --group backups --server 10.0.0.5 --username backup --protocol rs
 
 ---
 
+### 🌐 **Connecting to Servers and Databases**
+
+Targets can be hostnames, IPv4 addresses or IPv6 addresses. Access-management
+commands store the host and port separately:
+
+```text
+selfAddAccess --server server.example.com --username deploy --port 22
+groupAddAccess --group prod --server 2001:db8::10 --username deploy --port 2222
+```
+
+Both bare and bracketed IPv6 literals are accepted in access entries and aliases.
+When a connection target includes its port, use the following syntax:
+
+| Address type | Target |
+|--------------|--------|
+| Hostname | `deploy@server.example.com:22` |
+| IPv4 | `deploy@192.0.2.10:22` |
+| IPv6 | `deploy@[2001:db8::10]:2222` |
+
+Run connection commands **from your workstation**. In these examples, `BASTION`
+is your SSH host alias, configured with the bastion's ingress username and port:
+
+```sh
+ssh -t BASTION -- deploy@server.example.com:22
+ssh -t BASTION -- deploy@192.0.2.10:22
+ssh -t BASTION -- 'deploy@[2001:db8::10]:2222'
+
+# Alternatively, keep the entire IPv6 address bare and specify the port separately
+ssh -t BASTION -- deploy@2001:db8::10 -p 2222
+
+# Database targets also include the database protocol
+ssh -t BASTION -- --db 'reader@db.example.com:5432:postgres' --dbname app
+ssh -t BASTION -- --db 'reader@[2001:db8::20]:5432:postgres' --dbname app
+```
+
+A bare IPv6 literal always denotes the entire host address, including its last
+segment. Brackets delimit the address when appending a port. `ssh -6` forces
+IPv6 for a hostname; it is unnecessary for an explicit IPv6 address. On the
+workstation's SSH command, it affects the workstation-to-bastion connection.
+The bastion must itself have a route to the target's address, including from
+inside its container in Docker deployments.
+
 ### ⏱️ **Access TTL and IP Restriction**
 
 Every access entry (`selfAddAccess`, `accountAddAccess`, `groupAddAccess`) supports two optional constraints:
@@ -355,8 +466,8 @@ Every access entry (`selfAddAccess`, `accountAddAccess`, `groupAddAccess`) suppo
 | `--ttl <days>` | Access expires automatically after N days. Omit for permanent access. |
 | `--from <CIDRs>` | Restrict access to specific source IP ranges (comma-separated, e.g. `10.0.0.0/8,192.168.1.0/24`). Omit to allow all IPs. |
 
-For `groupAddAccess`, you can also add `--guest` to explicitly allow users with the `guest` role
-to use that specific access entry. Without `--guest`, guest members are denied for that entry.
+Guest users need an individual `groupAddGuestAccess` grant in addition to a matching
+group access. Both the group's access restrictions and the guest grant's restrictions apply.
 
 Both constraints are enforced at connection time - expired or out-of-range connections are denied.
 The `Expires` and `From` columns appear in all `listAccesses` outputs.
@@ -540,6 +651,12 @@ gobastion phd@192.1.1.2 --via phd@10.0.0.1 --via phd@1.3.2.1
 ```sh
 # Run a command on the final target via two hops
 ssh -tp 2222 user@bastion -- phd@192.1.1.2 --via phd@10.0.0.1 ls -la /etc
+```
+
+An IPv6 target and intermediate hop use the same bracketed address syntax:
+
+```sh
+ssh -t -p 2222 user@bastion -- 'deploy@[2001:db8::10]:22' --via 'jump@[2001:db8::1]:2222'
 ```
 
 > **Audit**: the full hop chain (`jump_chain`) is recorded in the structured audit log for every multi-hop connection.
@@ -809,6 +926,7 @@ The following commands require admin or superowner by default, but can be grante
 - `selfGenerateBackupCodes`
 - `selfGenerateEgressKey`
 - `selfListAccesses`
+- `selfListAllAccesses`
 - `selfListAliases`
 - `selfListDBAccesses`
 - `selfListDBAliases`
@@ -1044,6 +1162,7 @@ security:
   - `private`: only direct group members can view their own groups and list their shared resources; admins and superowners can still view any group; `groupList --all` becomes admin/superowner only
 
 Commands affected by `security.group_visibility.mode`:
+- `selfListAllAccesses` (group entries and group aliases)
 - `groupInfo`
 - `groupList --all`
 - `groupListAccesses`

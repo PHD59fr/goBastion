@@ -63,3 +63,28 @@ func newAutocompleteTestDB(t *testing.T) *gorm.DB {
 	}
 	return db
 }
+
+func TestCompletionIncludesAccessCatalogAndFilters(t *testing.T) {
+	db := newAutocompleteTestDB(t)
+	user := &models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	for _, tc := range []struct{ input, want string }{
+		{"selfListAll", "selfListAllAccesses"},
+		{"selfListAllAccesses --s", "--search"},
+		{"selfListAllAccesses --g", "--group"},
+		{"selfListAllAccesses --t", "--type"},
+		{"selfListAllAccesses --d", "--details"},
+		{"selfListAllAccesses --a", "--all"},
+	} {
+		buf := prompt.NewBuffer()
+		buf.InsertText(tc.input, false, true)
+		found := false
+		for _, suggestion := range Completion(*buf.Document(), user, db) {
+			if suggestion.Text == tc.want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q: missing suggestion %q", tc.input, tc.want)
+		}
+	}
+}

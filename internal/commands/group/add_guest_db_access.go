@@ -169,8 +169,8 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 
 	// Check for duplicate.
 	var existing models.GroupGuestDBAccess
-	if err := db.Where("group_id = ? AND user_id = ? AND host = ? AND port = ? AND protocol = ? AND deleted_at IS NULL",
-		group.ID, targetUser.ID, host, port, protocol).First(&existing).Error; err == nil {
+	if err := db.Where("group_id = ? AND user_id = ? AND host IN ? AND port = ? AND protocol = ? AND deleted_at IS NULL",
+		group.ID, targetUser.ID, validation.HostReferences(host), port, protocol).First(&existing).Error; err == nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest DB Access",
 			BlockType: "info",
