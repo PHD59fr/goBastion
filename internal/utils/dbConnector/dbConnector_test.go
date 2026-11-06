@@ -1,7 +1,9 @@
 package dbConnector
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -711,4 +713,40 @@ func stubClientBinary(t *testing.T, name string) {
 
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
+}
+
+func init() {
+	sandboxCommand = func(ctx context.Context, host string, port int64, bin string, args, env []string) (*exec.Cmd, func(), error) {
+		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Env = append(os.Environ(), env...)
+		return cmd, func() {}, nil
+	}
+}
+
+func TestPublishRecordingRejectsEscapingSymlinkAndOverwrite(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Paths.TtyrecDir = base
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	defer config.ResetForTesting()
+	source := filepath.Join(t.TempDir(), "recording.gz")
+	if err := os.WriteFile(source, []byte("recording"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRecording(source, "alice/db/session.gz"); err == nil {
+		t.Fatal("escaped recording tree")
+	}
+	if err := os.Remove(filepath.Join(base, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRecording(source, "alice/db/session.gz"); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRecording(source, "alice/db/session.gz"); err == nil {
+		t.Fatal("overwrote existing recording")
+	}
 }

@@ -1,10 +1,13 @@
 package osadapter
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
@@ -53,7 +56,7 @@ func (l *LinuxAdapter) UpdateSudoers(user *models.User) error {
 		return fmt.Errorf("invalid username: %s", username)
 	}
 	action := "remove"
-	if user.Role == models.RoleAdmin {
+	if user.Role == models.RoleAdmin && user.Enabled && !user.SystemUser {
 		action = "admin"
 	}
 	out, err := l.ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-sudoers", username, action)
@@ -61,6 +64,28 @@ func (l *LinuxAdapter) UpdateSudoers(user *models.User) error {
 		return fmt.Errorf("error updating sudoers for user '%s': %w, output: %s", username, err, out)
 	}
 	return nil
+}
+
+func (l *LinuxAdapter) TerminateUserSessions(username string) error {
+	if !validation.IsValidUsername(username) {
+		return fmt.Errorf("invalid username: %s", username)
+	}
+	account, err := user.Lookup(username)
+	if err != nil {
+		return err
+	}
+	uid, err := strconv.Atoi(account.Uid)
+	if err != nil || uid < 1000 {
+		return fmt.Errorf("refusing to terminate processes of system account %s", username)
+	}
+	// The sync process runs as root. Kill the whole account's process set,
+	// including SSH/ttyrec children, so an established connection cannot survive.
+	err = exec.Command("pkill", "-KILL", "-u", strconv.Itoa(uid)).Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return nil // No processes remain.
+	}
+	return err
 }
 
 func (l *LinuxAdapter) ChownDir(user models.User, dir string) error {

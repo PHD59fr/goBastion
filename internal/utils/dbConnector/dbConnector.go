@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -14,9 +13,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"goBastion/internal/config"
+	"goBastion/internal/dbsandbox"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/cryptokey"
@@ -66,8 +67,16 @@ type ResolutionDetails struct {
 }
 
 // Connect launches a database client wrapped in ttyrec for session recording.
+var sandboxCommand = dbsandbox.Command
+
 func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
-	runCtx := context.Background()
+	return ConnectContext(context.Background(), db, user, access)
+}
+func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access models.DBAccessRight) error {
+	if !config.Get().Database.Enabled {
+		return fmt.Errorf("database access is disabled")
+	}
+	runCtx := ctx
 	if d := config.Get().Session.MaxSessionDuration; d > 0 {
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(d))
@@ -80,13 +89,15 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	}
 
 	clientArgs := buildClientArgs(access)
+	sandbox, cleanup, err := sandboxCommand(runCtx, access.Host, access.Port, clientBin, clientArgs, clientEnv(access))
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	fmt.Print(connectionMessage(user, access))
 
 	if !config.Get().TTYRec.Enabled {
-		cmd := exec.CommandContext(runCtx, clientBin, clientArgs...)
-		if env := clientEnv(access); len(env) > 0 {
-			cmd.Env = append(os.Environ(), env...)
-		}
+		cmd := sandbox
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -113,13 +124,13 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	safeHost = strings.ReplaceAll(safeHost, "..", "_")
 	safeDatabase := strings.ReplaceAll(access.Database, "/", "_")
 	safeDatabase = strings.ReplaceAll(safeDatabase, "..", "_")
-	dir := fmt.Sprintf("%s/%s/%s/", config.Get().Paths.TtyrecDir, safeUser, safeHost)
-	if err := os.MkdirAll(dir, 02770); err != nil {
-		return fmt.Errorf("error creating ttyrec dir: %w", err)
+	// ttyrec runs as root. Keep its writable spool outside user-controlled paths.
+	spool, err := os.MkdirTemp("", "gobastion-db-record-")
+	if err != nil {
+		return err
 	}
-	if chmodErr := os.Chmod(dir, 02770); chmodErr != nil {
-		slog.Warn("ttyrec dir chmod failed", "dir", dir, "err", chmodErr)
-	}
+	defer func() { _ = os.RemoveAll(spool) }()
+	dir := spool + string(os.PathSeparator)
 
 	filenameSuffix := ""
 	if access.Protocol != "" {
@@ -132,7 +143,7 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 		filenameSuffix += "_sid-" + sessionID
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeDBUser, safeHost, access.Port, timestamp, filenameSuffix)
-	ttyrecGzFile := ttyrecFile + ".gz"
+	recordingName := filepath.Base(ttyrecFile) + ".gz"
 
 	tmpGz, err := os.CreateTemp(dir, "*.gz.tmp")
 	if err != nil {
@@ -142,9 +153,11 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 		_ = tmpGz.Close()
 		return fmt.Errorf("setting recording permissions: %w", err)
 	}
+	defer func() { _ = tmpGz.Close() }()
 	tmpGzPath := tmpGz.Name()
 	defer func() { _ = os.Remove(tmpGzPath) }()
 	gzipWriter := gzip.NewWriter(tmpGz)
+	defer func() { _ = gzipWriter.Close() }()
 
 	defer func() { _ = os.Remove(ttyrecFile) }()
 
@@ -209,12 +222,11 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 		}
 	}()
 
-	ttyrecArgs := []string{"-f", ttyrecFile, "--", clientBin}
-	ttyrecArgs = append(ttyrecArgs, clientArgs...)
+	ttyrecArgs := append([]string{"-f", ttyrecFile, "--", sandbox.Path}, sandbox.Args[1:]...)
 	cmd := exec.CommandContext(runCtx, "ttyrec", ttyrecArgs...)
-	if env := clientEnv(access); len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	cmd.Env = sandbox.Env
+	cmd.ExtraFiles = sandbox.ExtraFiles
+	cmd.SysProcAttr = sandbox.SysProcAttr
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -225,13 +237,16 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	if gzipErr != nil {
 		return fmt.Errorf("error compressing ttyrec output: %w", gzipErr)
 	}
-	_ = gzipWriter.Close()
-	_ = tmpGz.Close()
-
-	if err := os.Rename(tmpGzPath, ttyrecGzFile); err != nil {
-		return fmt.Errorf("error renaming gzip file: %w", err)
+	if err := gzipWriter.Close(); err != nil {
+		return fmt.Errorf("close compressed recording: %w", err)
 	}
-	tmpGzPath = ""
+	if err := tmpGz.Close(); err != nil {
+		return fmt.Errorf("close recording: %w", err)
+	}
+
+	if err := publishRecording(tmpGzPath, filepath.Join(safeUser, safeHost, recordingName)); err != nil {
+		return fmt.Errorf("publish DB recording: %w", err)
+	}
 
 	if cmdErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
@@ -905,4 +920,47 @@ func ipAllowed(clientIP string, allowedFrom string) bool {
 func tmpDirPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".tmp")
+}
+
+// os.Root confines every path resolution, including hostile symlinks, to the
+// configured recording tree. Exclusive creation prevents replacing other files.
+func publishRecording(source, relative string) error {
+	root, err := os.OpenRoot(config.Get().Paths.TtyrecDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(filepath.Dir(relative), 0770); err != nil {
+		return err
+	}
+	dir, err := root.Open(filepath.Dir(relative))
+	if err != nil {
+		return err
+	}
+	err = dir.Chmod(0770 | os.ModeSetgid)
+	_ = dir.Close()
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := root.OpenFile(relative, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+	if st, err := root.Stat("."); err == nil {
+		if stat, ok := st.Sys().(*syscall.Stat_t); ok {
+			if err := out.Chown(-1, int(stat.Gid)); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }

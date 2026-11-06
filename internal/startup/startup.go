@@ -246,7 +246,7 @@ func switchToAdmin(db *gorm.DB, adapter osadapter.SystemAdapter, username string
 	}
 	u.Role = models.RoleAdmin
 	u.SuperOwner = true
-	if err := db.Save(&u).Error; err != nil {
+	if err := db.Model(&u).Updates(map[string]any{"role": u.Role, "super_owner": u.SuperOwner}).Error; err != nil {
 		return fmt.Errorf("error updating role: %w", err)
 	}
 	return adapter.UpdateSudoers(&u)
@@ -275,7 +275,7 @@ func runDisableTOTP(db *gorm.DB, log *slog.Logger, username string) int {
 	u.TOTPSecret = ""
 	u.TOTPEnabled = false
 	u.BackupCodes = ""
-	if err := db.Save(&u).Error; err != nil {
+	if err := db.Model(&u).Updates(map[string]any{"totp_secret": "", "totp_enabled": false, "backup_codes": ""}).Error; err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to update user: %v\n", err)
 		return 1
 	}
@@ -306,7 +306,7 @@ func runDisablePassword(db *gorm.DB, log *slog.Logger, username string) int {
 	}
 
 	u.PasswordHash = ""
-	if err := db.Save(&u).Error; err != nil {
+	if err := db.Model(&u).Update("password_hash", "").Error; err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to update user: %v\n", err)
 		return 1
 	}

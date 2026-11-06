@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"gorm.io/gorm"
 
 	"goBastion/internal/models"
@@ -42,6 +44,13 @@ func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 		})
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
+	if strings.EqualFold(strings.TrimSpace(username), currentUser.Username) {
+		console.DisplayBlock(console.ContentBlock{
+			Title: "Account Delete", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Blocked", Body: []string{"You cannot delete your own account."}}},
+		})
+		return fmt.Errorf("cannot delete your own account")
+	}
 
 	if err := DeleteUser(db, adapter, username); err != nil {
 		console.DisplayBlock(console.ContentBlock{
@@ -67,18 +76,30 @@ func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) e
 	username = strings.ToLower(strings.TrimSpace(username))
 
 	var user models.User
-	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-		return fmt.Errorf("user not found: %w", err)
-	}
-
-	// DB first: soft-delete the audit trail before touching the OS.
-	if err := deleteDBUser(db, &user); err != nil {
+	var memberships []uuid.UUID
+	// Snapshot only active memberships in the same transaction as deletion.
+	if err := withAccountChange(db, func(tx *gorm.DB) error {
+		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+			return fmt.Errorf("user not found: %w", err)
+		}
+		if err := requireOtherAdmin(tx, &user); err != nil {
+			return err
+		}
+		if err := tx.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).Pluck("id", &memberships).Error; err != nil {
+			return err
+		}
+		if err := deleteDBUser(tx, &user); err != nil {
+			return err
+		}
+		// Reload the stored timestamp: SQL backends can round its precision.
+		return tx.Unscoped().First(&user, "id = ?", user.ID).Error
+	}); err != nil {
 		return fmt.Errorf("error deleting user from database: %w", err)
 	}
 
 	// Then remove the OS user. If this fails, restore the DB record.
 	if err := adapter.DeleteUser(username); err != nil {
-		if restoreErr := restoreDBUser(db, &user); restoreErr != nil {
+		if restoreErr := restoreDBUser(db, &user, memberships); restoreErr != nil {
 			return fmt.Errorf("OS deletion failed: %v; DB restore also failed: %v", err, restoreErr)
 		}
 		return fmt.Errorf("OS deletion failed, DB record restored: %w", err)
@@ -95,14 +116,21 @@ func deleteDBUser(db *gorm.DB, user *models.User) error {
 }
 
 // restoreDBUser un-deletes a soft-deleted user and their group memberships.
-func restoreDBUser(db *gorm.DB, user *models.User) error {
+func restoreDBUser(db *gorm.DB, user *models.User, memberships []uuid.UUID) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		// Un-delete the user record.
-		if err := tx.Unscoped().Model(&models.User{}).Where("id = ?", user.ID).Update("deleted_at", nil).Error; err != nil {
-			return fmt.Errorf("error restoring user: %w", err)
+		result := tx.Unscoped().Model(&models.User{}).Where("id = ? AND deleted_at = ?", user.ID, user.DeletedAt.Time).Update("deleted_at", nil)
+		if result.Error != nil {
+			return fmt.Errorf("error restoring user: %w", result.Error)
 		}
-		// Un-delete all UserGroup memberships that were cascade-soft-deleted.
-		if err := tx.Unscoped().Model(&models.UserGroup{}).Where("user_id = ?", user.ID).Update("deleted_at", nil).Error; err != nil {
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("account changed since deletion; refusing to restore its memberships")
+		}
+		// Previously revoked memberships must stay revoked.
+		if len(memberships) == 0 {
+			return nil
+		}
+		if err := tx.Unscoped().Model(&models.UserGroup{}).Where("user_id = ? AND id IN ?", user.ID, memberships).Update("deleted_at", nil).Error; err != nil {
 			return fmt.Errorf("error restoring group memberships: %w", err)
 		}
 		return nil

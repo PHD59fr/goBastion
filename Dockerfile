@@ -17,6 +17,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -ldflags "-s -w -X goBastion/version.Version=${VERSION}" \
       -o goBastion ./cmd/goBastion/ && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/db-worker ./cmd/dbworker/ && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/dbsandbox.test ./internal/dbsandbox && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/policy.test ./internal/models && \
     (upx --best --lzma goBastion || upx --best goBastion || upx goBastion || true)
 
 # ── ttyrec (compiled natively for target arch) ───────────────────────────────
@@ -38,10 +41,15 @@ RUN git init /tmp/ovh-ttyrec && \
      upx --best /usr/local/bin/ttyrec /usr/local/bin/ttyplay || \
      upx /usr/local/bin/ttyrec /usr/local/bin/ttyplay || true)
 
+FROM alpine:3.22 AS db-root
+RUN apk add --no-cache mariadb-client postgresql-client redis iproute2 ca-certificates && mkdir -p /home /tmp /proc /dev && touch /etc/db-hosts-template && rm -rf /var/cache/apk/*
+COPY --from=go-builder /app/db-worker /bin/db-worker
+
 # ── Runtime common image ─────────────────────────────────────────────────────
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runtime-common
 
 RUN apk add --no-cache \
+      nsjail=3.4-r7 \
       bash \
       gzip \
       jq \
@@ -70,6 +78,13 @@ RUN sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && echo 'Banner /etc/ssh/banner' >> /etc/ssh/sshd_config \
     && echo 'ForceCommand /usr/bin/sudo -n /usr/local/sbin/gobastion-session "$SSH_ORIGINAL_COMMAND"' >> /etc/ssh/sshd_config
 
+RUN mkdir -p /usr/local/sbin && ln -s /usr/bin/nsjail /usr/local/sbin/nsjail
+COPY --from=db-root / /opt/gobastion-db-root/
+COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/etc/hosts
+COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/dev/null
+COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/dev/urandom
+COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/dev/zero
+COPY scripts/sudo/gobastion-db-session.sh /usr/local/sbin/gobastion-db-session
 COPY --from=go-builder /app/goBastion /app/goBastion
 COPY --from=ttyrec-builder /usr/local/bin/ttyrec /usr/local/bin/ttyrec
 COPY --from=ttyrec-builder /usr/local/bin/ttyplay /usr/local/bin/ttyplay
@@ -87,6 +102,8 @@ RUN chown root:root /app/goBastion && chmod 0755 /app/goBastion && \
     printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-session *\n' > /etc/sudoers.d/gobastion-session && \
     printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-sync-user *\n' >> /etc/sudoers.d/gobastion-session && \
     printf 'Defaults!/usr/local/sbin/gobastion-session env_keep += "SSH_CLIENT SSH_CONNECTION SSH_TTY"\n' >> /etc/sudoers.d/gobastion-session && \
+    printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-db-session *\n' >> /etc/sudoers.d/gobastion-session && \
+    printf 'Defaults!/usr/local/sbin/gobastion-db-session env_keep += "SSH_CLIENT SSH_CONNECTION SSH_TTY"\n' >> /etc/sudoers.d/gobastion-session && \
     chmod 0440 /etc/sudoers.d/gobastion-session && \
     mkdir -p /var/lib/goBastion /app/ttyrec && \
     chown root:gobastion /var/lib/goBastion /app/ttyrec && \
@@ -100,10 +117,20 @@ EXPOSE 22
 
 CMD ["/entrypoint.sh"]
 
-# ── Full image (includes mosh) ───────────────────────────────────────────────
+# ── Legacy full image target ───────────────────────────────────────────────
 FROM runtime-common AS final-full
 
-RUN apk add --no-cache mosh && command -v mosh-server >/dev/null 2>&1
+# Legacy image target retained; local Mosh is deliberately unavailable.
 
-# ── Default image (lean, no mosh) ────────────────────────────────────────────
+# ── Disposable integration test image ───────────────────────────────────────
+FROM runtime-common AS isolation-test
+RUN apk add --no-cache postgresql mariadb mariadb-client openssl && mkdir -p /run/mysqld
+COPY --from=go-builder /app/dbsandbox.test /dbsandbox.test
+COPY --from=go-builder /app/dbsandbox.test /opt/gobastion-db-root/bin/caps-test
+COPY --from=go-builder /app/policy.test /policy.test
+COPY scripts/test-db-isolation.sh /test-db-isolation.sh
+COPY scripts/test-db-supervisor.sh /test-db-supervisor.sh
+ENTRYPOINT ["/bin/sh", "/test-db-isolation.sh"]
+
+# ── Default image ──────────────────────────────────────────────────────────
 FROM runtime-common AS final

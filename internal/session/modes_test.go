@@ -2,7 +2,10 @@ package session
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -124,5 +127,70 @@ func TestTCPProxyMFABlockMessage(t *testing.T) {
 	cfg.RequireMFA.Enabled = true
 	if msg := tcpProxyMFABlockMessage(models.User{}); msg == "" {
 		t.Fatal("expected global MFA block message")
+	}
+}
+
+func TestEnrollmentRequestIsExact(t *testing.T) {
+	for _, args := range [][]string{{"-osh selfSetupTOTP"}, {"-osh", "selfSetupTOTP"}} {
+		if !enrollmentRequest(args) {
+			t.Fatalf("valid enrollment rejected: %q", args)
+		}
+	}
+	for _, args := range [][]string{nil, {"--"}, {"-osh selfSetupTOTP extra"}, {"-osh selfSetupTOTP; accountList"}, {"-osh", "accountList"}} {
+		if enrollmentRequest(args) {
+			t.Fatalf("enrollment exception too broad: %q", args)
+		}
+	}
+}
+
+func TestLocalMoshNeverExecutes(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "executed")
+	if err := os.WriteFile(filepath.Join(dir, "mosh-server"), []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	cfg := config.DefaultConfig()
+	cfg.Mosh.Enabled = true
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	defer config.ResetForTesting()
+	for _, command := range []string{"mosh-server", "mosh-server new -s -l LANG=en_US.UTF-8"} {
+		runMoshServer(command, []string{"--", "/bin/sh"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("local Mosh executed")
+	}
+}
+
+func TestMandatoryMFAOnlyAllowsUnenrolledSetup(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RequireMFA.Enabled = true
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	defer config.ResetForTesting()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	u := models.User{Enabled: true}
+	if !checkMFAForRequest(nil, &u, log, []string{"-osh", "selfSetupTOTP"}) {
+		t.Fatal("enrollment blocked")
+	}
+	for _, args := range [][]string{nil, {"-osh", "accountList"}, {"-osh", "selfSetupTOTP", "extra"}, {"--db", "target"}} {
+		if checkMFAForRequest(nil, &u, log, args) {
+			t.Fatalf("MFA bypass: %q", args)
+		}
+	}
+	// A pipe is not an authenticated terminal password response.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	_ = w.Close()
+	original := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = original }()
+	u.PasswordHash = "configured-password-factor"
+	if checkMFAForRequest(nil, &u, log, []string{"-osh", "selfSetupTOTP"}) {
+		t.Fatal("enrollment bypassed password factor")
 	}
 }

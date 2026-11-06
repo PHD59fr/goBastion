@@ -20,6 +20,7 @@ import (
 	"goBastion/internal/osadapter"
 	bastionSync "goBastion/internal/utils/sync"
 	"goBastion/internal/utils/validation"
+	"goBastion/internal/utils/transfer"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -33,11 +34,8 @@ const (
 // (sftp, scp, rsync) that must not run through ttyrec — a PTY-based recorder
 // that would corrupt binary data.
 func isNonInteractiveCmd(cmd string) bool {
-	c := strings.ToLower(strings.TrimSpace(cmd))
-	return strings.Contains(c, "sftp-server") ||
-		strings.HasPrefix(c, "scp ") ||
-		strings.HasPrefix(c, "rsync ") ||
-		strings.Contains(c, "rsync --server")
+	protocol, _, err := transfer.Prepare(cmd)
+	return err == nil && protocol != "ssh"
 }
 
 // isExpectedSessionStop reports exit statuses used when a user deliberately

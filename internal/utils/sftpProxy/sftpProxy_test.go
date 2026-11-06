@@ -137,3 +137,28 @@ func TestIPv6TargetHostKeyVerification(t *testing.T) {
 		})
 	}
 }
+
+func TestClientHandshakeTimeout(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ssh.ServerConfig{NoClientAuth: true}
+	cfg.AddHostKey(signer)
+	local, remote := net.Pipe()
+	defer func() { _ = remote.Close() }()
+	done := make(chan error, 1)
+	go func() { _, _, _, e := serverHandshake(local, cfg, 100*time.Millisecond); done <- e }()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("stalled handshake accepted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handshake did not expire")
+	}
+}

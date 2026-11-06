@@ -38,6 +38,8 @@ import (
 	"goBastion/internal/utils/totp"
 )
 
+var connectDB = dbConnector.Connect
+
 // Run is the main entry point after DB init: it looks up the current user,
 // runs the pre-connection checks, then dispatches to interactive or non-interactive mode.
 func Run(db *gorm.DB, log *slog.Logger) {
@@ -69,24 +71,29 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		return
 	}
 
+	if len(os.Args) > 1 {
+		if args, ok := parseDBRequest(os.Args[1], os.Args[2:]); ok {
+			cmd := exec.Command("/usr/bin/sudo", "-n", "/usr/local/sbin/gobastion-db-session")
+			cmd.Args = append(cmd.Args, args...)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				log.Warn("db_supervisor_failed", "error", err)
+			}
+			return
+		}
+	}
 	if !preConnectionCheck(db, currentUser, log) {
 		return
 	}
 
 	if len(os.Args) == 1 {
-		if currentUser.OSHOnly {
-			fmt.Println("⛔ This account is limited to -osh commands only. Interactive mode is disabled.")
+		if msg := interactiveBlockMessage(&currentUser); msg != "" {
+			fmt.Println(msg)
 			return
 		}
-		if !config.Get().Interactive.Enabled {
-			fmt.Println("⛔ Interactive shell is disabled by configuration.")
-			return
-		}
-		if config.Get().ForceOSHOnly.Enabled {
-			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
-			return
-		}
-		if !checkMFA(db, &currentUser, log) {
+		if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
 			return
 		}
 		releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
@@ -104,20 +111,20 @@ func Run(db *gorm.DB, log *slog.Logger) {
 
 		isInteractive := strings.TrimSpace(cmd) == "" || cmd == "--"
 
-		if config.Get().ForceOSHOnly.Enabled && !isInteractive && !strings.HasPrefix(strings.TrimSpace(cmd), "-osh") {
+		if config.Get().ForceOSHOnly.Enabled && !isInteractive && !isOSHCommand(cmd) {
 			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
 			return
 		}
-		if currentUser.OSHOnly && !isInteractive && !strings.HasPrefix(strings.TrimSpace(cmd), "-osh") {
+		if currentUser.OSHOnly && !isInteractive && !isOSHCommand(cmd) {
 			fmt.Println("⛔ This account is limited to -osh commands only.")
 			return
 		}
 		if isInteractive {
-			if !config.Get().Interactive.Enabled {
-				fmt.Println("⛔ Interactive shell is disabled by configuration.")
+			if msg := interactiveBlockMessage(&currentUser); msg != "" {
+				fmt.Println(msg)
 				return
 			}
-			if !checkMFA(db, &currentUser, log) {
+			if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
 				return
 			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
@@ -140,8 +147,13 @@ func Run(db *gorm.DB, log *slog.Logger) {
 					fmt.Println(msg)
 					return
 				}
-			} else if !isSftpSession {
-				if !checkMFA(db, &currentUser, log) {
+			} else if isSftpSession {
+				if err := mfa.OpaqueTransportError(currentUser, "SFTP proxy (sftp-session)"); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return
+				}
+			} else {
+				if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
 					return
 				}
 			}
@@ -161,20 +173,14 @@ func Run(db *gorm.DB, log *slog.Logger) {
 }
 
 func tcpProxyMFABlockMessage(user models.User) string {
-	switch {
-	case user.PasswordHash != "":
-		return "⛔ TCP proxy (-W) is unavailable when password MFA is enabled on your account."
-	case user.TOTPEnabled && user.TOTPSecret != "":
-		return "⛔ TCP proxy (-W) is unavailable when TOTP MFA is enabled on your account."
-	case config.Get().RequireMFA.Enabled:
-		return "⛔ TCP proxy (-W) is unavailable while global MFA enforcement is enabled."
-	default:
-		return ""
+	if err := mfa.OpaqueTransportError(user, "TCP proxy (-W)"); err != nil {
+		return "⛔ " + err.Error()
 	}
+	return ""
 }
 
 func classifySessionKind(cmd string, args []string) string {
-	if strings.HasPrefix(strings.TrimSpace(cmd), "-osh") || cmd == "-osh" {
+	if isOSHCommand(cmd) {
 		return "osh"
 	}
 	if _, ok := parseDBRequest(cmd, args); ok {
@@ -194,7 +200,7 @@ func classifySessionKind(cmd string, args []string) string {
 
 // runNonInteractiveMode executes a single bastion command passed via -osh flag.
 func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, command string, args []string) {
-	if currentUser.OSHOnly && !strings.HasPrefix(strings.TrimSpace(command), "-osh") {
+	if (currentUser.OSHOnly || config.Get().ForceOSHOnly.Enabled) && !isOSHCommand(command) {
 		fmt.Println("⛔ This account is limited to -osh commands only.")
 		return
 	}
@@ -202,8 +208,6 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 	if command == "-osh" {
 		if len(args) < 1 {
 			fmt.Println("Usage: -osh <command> <args>")
-			fmt.Println("Entering interactive mode.")
-			runInteractiveMode(db, currentUser, log, nil)
 			return
 		}
 		command = args[0]
@@ -243,16 +247,12 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			fmt.Fprintln(os.Stderr, "SFTP session failed. Check the target host and your access rights.")
 		}
 	} else if isMoshServerRequest(command, args) {
-		if !config.Get().Mosh.Enabled {
-			fmt.Fprintln(os.Stderr, "⛔ Mosh is disabled.")
-			return
-		}
-		if !config.MoshAvailable() {
-			fmt.Fprintln(os.Stderr, "⛔ Mosh is not installed in this image. Use the full image variant.")
-			return
-		}
 		runMoshServer(command, args, log)
 	} else if dbArgs, ok := parseDBRequest(command, args); ok {
+		if !config.Get().Database.Enabled {
+			fmt.Fprintln(os.Stderr, "⛔ Database access is disabled.")
+			return
+		}
 		if len(dbArgs) < 1 {
 			fmt.Fprintln(os.Stderr, "⛔ Usage: bastion --db|-db [user@]host[:port[:protocol]] [--mysql|--pg|--redis] [--dbname name]")
 			return
@@ -290,8 +290,13 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 			slog.String("access_source", details.AccessSource),
 		)
 		dbLog.Info("db_target_resolved")
+		if access.MFARequired && (!currentUser.TOTPEnabled || currentUser.TOTPSecret == "") {
+			if !cmdssh.CheckJITMFA(db, currentUser, dbLog) {
+				return
+			}
+		}
 		dbLog.Info("db_session_start")
-		if err := dbConnector.Connect(db, *currentUser, access); err != nil {
+		if err := connectDB(db, *currentUser, access); err != nil {
 			dbLog.Warn("db_session_failed", slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, err)
 			return
@@ -480,6 +485,10 @@ func emitJSONPayload(mode oshJSONMode, payload map[string]any) {
 
 // runInteractiveMode starts the interactive prompt loop for the user session.
 func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, forceRelease func()) {
+	if msg := interactiveBlockMessage(currentUser); msg != "" {
+		fmt.Println(msg)
+		return
+	}
 	defer resetStdIn()
 	fmt.Println(utils.FgBlueB("Type 'help' to display available commands, 'tab' to autocomplete, 'exit' to quit."))
 
@@ -759,6 +768,10 @@ func featureDenied(found *registry.CommandSpec, user *models.User) string {
 
 // executeCommand looks up and runs a command from the central registry, enforcing permission checks.
 func executeCommand(db *gorm.DB, currentUser *models.User, log *slog.Logger, cmd string, args []string) error {
+	if err := refreshSessionUser(db, currentUser); err != nil {
+		fmt.Fprintln(os.Stderr, "⛔ Your account is unavailable. Reconnect or contact your administrator.")
+		return fmt.Errorf("%w: %v", ErrPermissionDenied, err)
+	}
 	resetStdIn() // Mandatory: prevents the terminal from being left in a broken state.
 
 	log = log.With(slog.String("user", currentUser.Username))
@@ -972,62 +985,8 @@ func isMoshServerRequest(command string, args []string) bool {
 	return command == "mosh-server" || strings.HasPrefix(command, "mosh-server ")
 }
 
-// allowedMoshFlags is the set of flags that mosh-server is permitted to receive.
-// Any other flag is rejected to prevent argument injection.
-// `-l` is sent by every real mosh client as `-l LANG=<locale>` to set the
-// locale; omitting it from the allowlist made every legitimate session be
-// rejected as an "unsafe argument".
-var allowedMoshFlags = map[string]bool{
-	"-s": true,
-	"-c": true,
-	"-l": true,
-	"-":  true,
-}
-
-// runMoshServer exec's mosh-server directly, passing through validated arguments.
-// stdin/stdout/stderr are inherited so the mosh client can negotiate the UDP port.
+// Local Mosh servers would bypass the bastion command boundary.
 func runMoshServer(command string, extraArgs []string, log *slog.Logger) {
-	// Reconstruct the full argument list from the original command string + extra args.
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
-		fmt.Fprintln(os.Stderr, "mosh-server: empty command")
-		return
-	}
-	// parts[0] is "mosh-server", parts[1:] are inline args from the command string.
-	cmdArgs := append(parts[1:], extraArgs...)
-
-	// Validate arguments to prevent injection of unexpected flags.
-	// Only known-safe flags (-s, -c, -l, -) and positional arguments (host,
-	// port) are allowed. Flags that take a value consume their value, which is
-	// therefore never validated as if it were a flag.
-	for i := 0; i < len(cmdArgs); i++ {
-		arg := cmdArgs[i]
-		if arg == "--" {
-			// End-of-options marker; everything after this is positional and safe.
-			break
-		}
-		if strings.HasPrefix(arg, "-") && !allowedMoshFlags[arg] {
-			log.Error("mosh_server_rejected",
-				slog.String("reason", "unexpected flag"),
-				slog.String("flag", arg),
-			)
-			fmt.Fprintf(os.Stderr, "mosh-server: rejected unsafe argument %q\n", arg)
-			return
-		}
-		// Flags -s, -c and -l expect a value: consume it so it is not
-		// re-interpreted as a flag.
-		if allowedMoshFlags[arg] && arg != "-" && i+1 < len(cmdArgs) {
-			i++
-		}
-	}
-
-	log.Info("mosh_server")
-
-	cmd := exec.Command("mosh-server", cmdArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Error("mosh_server", slog.String("error", err.Error()))
-	}
+	fmt.Fprintln(os.Stderr, "Local mosh-server execution is disabled. Connect to an authorized SSH target instead.")
+	log.Warn("local_mosh_denied")
 }

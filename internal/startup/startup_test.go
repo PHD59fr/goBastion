@@ -191,6 +191,7 @@ type noopAdapter struct{}
 
 func (noopAdapter) CreateUser(string) error                       { return nil }
 func (noopAdapter) DeleteUser(string) error                       { return nil }
+func (noopAdapter) TerminateUserSessions(string) error            { return nil }
 func (noopAdapter) UpdateSudoers(*models.User) error              { return nil }
 func (noopAdapter) ChownDir(models.User, string) error            { return nil }
 func (noopAdapter) ExecCommand(string, ...string) (string, error) { return "", nil }

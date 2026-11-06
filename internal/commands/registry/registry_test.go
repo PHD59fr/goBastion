@@ -17,6 +17,7 @@ type mockAdapter struct{}
 
 func (m *mockAdapter) CreateUser(string) error                       { return nil }
 func (m *mockAdapter) DeleteUser(string) error                       { return nil }
+func (m *mockAdapter) TerminateUserSessions(string) error            { return nil }
 func (m *mockAdapter) UpdateSudoers(*models.User) error              { return nil }
 func (m *mockAdapter) ChownDir(models.User, string) error            { return nil }
 func (m *mockAdapter) ExecCommand(string, ...string) (string, error) { return "", nil }

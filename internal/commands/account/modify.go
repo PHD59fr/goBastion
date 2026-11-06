@@ -72,23 +72,6 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
-	// Prevent demoting the last admin (count all admins, not just enabled ones)
-	// because a disabled admin can be re-enabled and still has admin role.
-	if newRole != "" && u.Role == models.RoleAdmin && newRole == models.RoleUser {
-		var adminCount int64
-		if err := db.Model(&models.User{}).Where("role = ? AND deleted_at IS NULL", models.RoleAdmin).Count(&adminCount).Error; err != nil {
-			return fmt.Errorf("error counting admins: %w", err)
-		}
-		if adminCount <= 1 {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "Account Modify",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"Cannot demote the last remaining admin."}}},
-			})
-			return fmt.Errorf("cannot demote the last remaining admin")
-		}
-	}
-
 	if newRole != "" {
 		u.Role = newRole
 	}
@@ -117,11 +100,35 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 		u.SuperOwner = v
 	}
 
-	if err := db.Save(&u).Error; err != nil {
+	if err := withAccountChange(db, func(tx *gorm.DB) error {
+		var fresh models.User
+		if err := tx.First(&fresh, "id = ?", u.ID).Error; err != nil {
+			return err
+		}
+		if fresh.IsAdmin() && newRole == models.RoleUser {
+			if err := requireOtherAdmin(tx, &fresh); err != nil {
+				return err
+			}
+		}
+		changes := map[string]any{}
+		if newRole != "" {
+			changes["role"] = newRole
+		}
+		if strings.TrimSpace(oshOnlyRaw) != "" {
+			changes["osh_only"] = u.OSHOnly
+		}
+		if strings.TrimSpace(superOwnerRaw) != "" {
+			changes["super_owner"] = u.SuperOwner
+		}
+		if err := tx.Model(&fresh).Updates(changes).Error; err != nil {
+			return err
+		}
+		u = fresh
+		return nil
+	}); err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Account Modify",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to update user system role."}}},
+			Title: "Account Modify", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Blocked", Body: []string{err.Error()}}},
 		})
 		return err
 	}
