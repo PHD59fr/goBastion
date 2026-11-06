@@ -1,7 +1,9 @@
 package dbConnector
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -9,10 +11,33 @@ import (
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
+	"goBastion/internal/utils"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestConnectionMessageShowsSelectedAccessSource(t *testing.T) {
+	for _, source := range []string{"group-PLEX", "account-alice", "guest-group-PLEX", "admin-override", ""} {
+		t.Run(source, func(t *testing.T) {
+			access := models.DBAccessRight{Source: source, Host: "db.example", Port: 3306,
+				Protocol: "mysql", Username: "reader", Database: "app", Password: "DO_NOT_DISPLAY"}
+			message := connectionMessage(models.User{Username: "alice"}, access)
+			if !strings.Contains(message, "reader@db.example:3306/app (mysql)") {
+				t.Fatalf("connection target missing: %q", message)
+			}
+			if source != "" && !strings.Contains(message, "Authenticating ...\n- "+utils.BgGreenB(source)+"\n") {
+				t.Fatalf("selected source missing: %q", message)
+			}
+			if source == "" && strings.Contains(message, "Authenticating ...") {
+				t.Fatalf("empty source displayed: %q", message)
+			}
+			if strings.Contains(message, access.Password) {
+				t.Fatal("connection message exposes the database password")
+			}
+		})
+	}
+}
 
 func TestParseIPv6DBTarget(t *testing.T) {
 	for _, tc := range []struct {
@@ -573,7 +598,7 @@ func TestBuildClientArgsAndEnvKeepPasswordOutOfArgv(t *testing.T) {
 					t.Fatalf("password leaked into argv: %q", args)
 				}
 			}
-			env := clientEnv(access)
+			env := brokerEnv(access)
 			found := false
 			for _, e := range env {
 				if e == tt.wantEnv {
@@ -587,7 +612,7 @@ func TestBuildClientArgsAndEnvKeepPasswordOutOfArgv(t *testing.T) {
 	}
 
 	// No password → no env vars set at all.
-	if env := clientEnv(models.DBAccessRight{Protocol: "mysql", Host: "h", Port: 3306}); len(env) != 0 {
+	if env := brokerEnv(models.DBAccessRight{Protocol: "mysql", Host: "h", Port: 3306}); len(env) != 0 {
 		t.Fatalf("expected no env for empty password, got %v", env)
 	}
 }
@@ -711,4 +736,40 @@ func stubClientBinary(t *testing.T, name string) {
 
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
+}
+
+func init() {
+	sandboxCommand = func(ctx context.Context, host string, port int64, bin string, args, env []string) (*exec.Cmd, func(), error) {
+		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Env = append(os.Environ(), env...)
+		return cmd, func() {}, nil
+	}
+}
+
+func TestPublishRecordingRejectsEscapingSymlinkAndOverwrite(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Paths.TtyrecDir = base
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	defer config.ResetForTesting()
+	source := filepath.Join(t.TempDir(), "recording.gz")
+	if err := os.WriteFile(source, []byte("recording"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRecording(source, "alice/db/session.gz"); err == nil {
+		t.Fatal("escaped recording tree")
+	}
+	if err := os.Remove(filepath.Join(base, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRecording(source, "alice/db/session.gz"); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishRecording(source, "alice/db/session.gz"); err == nil {
+		t.Fatal("overwrote existing recording")
+	}
 }

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/sshHostKey"
+	"goBastion/internal/utils/validation"
 )
 
 // Syncer handles DB → OS synchronisation operations.
@@ -38,6 +40,11 @@ func New(db *gorm.DB, os osadapter.SystemAdapter, log slog.Logger) *Syncer {
 func (s *Syncer) CreateUserFromDB(user models.User) error {
 	if os.Geteuid() != 0 {
 		if _, ok := s.os.(*osadapter.LinuxAdapter); ok {
+			// The sync helper accepts only existing OS accounts. Administrators
+			// must first create the account through the constrained sudo wrapper.
+			if err := s.os.CreateUser(user.Username); err != nil {
+				return fmt.Errorf("error creating system user for %s: %w", user.Username, err)
+			}
 			out, err := s.os.ExecCommand("/usr/bin/sudo", "/usr/local/sbin/gobastion-sync-user", user.Username)
 			if err != nil {
 				return fmt.Errorf("privileged user sync failed: %w, output: %s", err, out)
@@ -145,8 +152,10 @@ func (s *Syncer) IngressKeyFromDB(user models.User) error {
 		}
 	}
 	var keys []models.IngressKey
-	if err := s.db.Where("user_id = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, time.Now()).Find(&keys).Error; err != nil {
-		return fmt.Errorf("error retrieving keys for %s: %w", user.Username, err)
+	if user.Enabled {
+		if err := s.db.Where("user_id = ? AND (expires_at IS NULL OR expires_at > ?)", user.ID, time.Now()).Find(&keys).Error; err != nil {
+			return fmt.Errorf("error retrieving keys for %s: %w", user.Username, err)
+		}
 	}
 
 	sshDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(user.Username), ".ssh")
@@ -386,6 +395,11 @@ func (s *Syncer) EnforceFromDB() error {
 		if err := s.os.UpdateSudoers(&u); err != nil {
 			s.log.Error("sync_sudoers_failed", slog.String("user", u.Username), slog.Any("error", err))
 		}
+		if !u.Enabled {
+			if err := s.os.TerminateUserSessions(u.Username); err != nil {
+				s.log.Error("sync_session_revocation_failed", slog.String("user", u.Username), slog.Any("error", err))
+			}
+		}
 	}
 
 	homeEntries, err := os.ReadDir(config.Get().Paths.HomeBaseDir)
@@ -400,15 +414,17 @@ func (s *Syncer) EnforceFromDB() error {
 		if dbUsernames[osUser] {
 			continue
 		}
-		// Use "--" to prevent osUser from being interpreted as a flag.
-		out, pErr := exec.Command("pgrep", "-u", "--", osUser).Output()
+		if !validation.IsValidUsername(osUser) {
+			continue
+		}
+		active, pErr := s.userHasProcesses(osUser)
 		if pErr != nil {
 			// Fail closed: if we cannot confirm the user has no active sessions,
 			// do NOT remove the account or its home directory.
 			s.log.Warn("sync_rogue_user_pgrep_failed", slog.String("user", osUser), slog.Any("error", pErr))
 			continue
 		}
-		if len(strings.TrimSpace(string(out))) > 0 {
+		if active {
 			s.log.Warn("sync_rogue_user_session_active", slog.String("user", osUser))
 			continue
 		}
@@ -422,6 +438,18 @@ func (s *Syncer) EnforceFromDB() error {
 	return nil
 }
 
+func (s *Syncer) userHasProcesses(username string) (bool, error) {
+	out, err := s.os.ExecCommand("pgrep", "-u", username)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil // pgrep: no matching processes (also on BusyBox).
+		}
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 // disableInactiveUsers disables accounts that haven't logged in within the
 // configured MaxInactiveDays window. Accounts that have never logged in
 // (zero LastLoginAt) are excluded.
@@ -431,22 +459,24 @@ func (s *Syncer) disableInactiveUsers() error {
 		return nil
 	}
 
-	cutoff := time.Now().AddDate(0, 0, -maxDays)
-	result := s.db.Model(&models.User{}).
-		Where(internaldb.BoolFalseExpr(s.db, "system_user")).
-		Where("enabled = ?", true).
-		Where("last_login_at != ?", time.Time{}).
-		Where("last_login_at < ?", cutoff).
-		Where("deleted_at IS NULL").
-		Update("enabled", false)
-	if result.Error != nil {
-		return fmt.Errorf("error disabling inactive users: %w", result.Error)
-	}
-	if result.RowsAffected > 0 {
-		s.log.Warn("sync_disabled_inactive_users",
-			slog.Int64("count", result.RowsAffected),
-			slog.Int("max_inactive_days", maxDays),
-		)
-	}
-	return nil
+	return models.WithAccountChange(s.db, func(tx *gorm.DB) error {
+		cutoff := time.Now().AddDate(0, 0, -maxDays)
+		var candidates []models.User
+		if err := tx.Where(map[string]any{"system_user": false, "enabled": true}).Where("last_login_at < ? AND last_login_at != ?", cutoff, time.Time{}).Order("last_login_at ASC").Order("id ASC").Find(&candidates).Error; err != nil {
+			return err
+		}
+		for _, u := range candidates {
+			if err := models.RequireOtherAdmin(tx, &u); err != nil {
+				if errors.Is(err, models.ErrLastAdmin) {
+					s.log.Warn("sync_preserved_last_admin", "user", u.Username)
+					continue
+				}
+				return err
+			}
+			if err := tx.Model(&u).Update("enabled", false).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

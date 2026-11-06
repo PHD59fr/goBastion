@@ -42,11 +42,11 @@ func hasArg(name string) bool {
 }
 
 func shouldRunMigrate() bool {
-	return os.Getuid() == 0 && !hasArg("--sync") && !hasArg("--syncUser")
+	return os.Getuid() == 0 && !hasArg("--sync") && !hasArg("--syncUser") && !hasArg("--dbSession")
 }
 
 func shouldBootstrapInstanceConfig() bool {
-	return !hasArg("--dbImport")
+	return (len(os.Args) > 1 && os.Args[1] == "--dbSession") || !hasArg("--dbImport")
 }
 
 func main() {
@@ -96,6 +96,12 @@ func main() {
 		log.Info("config_loaded", slog.Duration("took", time.Since(tCfg)))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "--dbSession" {
+		_ = cryptokey.Enabled()
+		_ = os.Unsetenv("DB_DSN")
+		_ = os.Unsetenv("EGRESS_ENC_KEY")
+		os.Exit(session.RunDBSupervisor(db, log, os.Args[2:]))
+	}
 	adapter := osadapter.NewLinuxAdapter()
 
 	if isRootNonSSH() {

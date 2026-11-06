@@ -30,7 +30,7 @@ jobs:
       # always matches the module's target version.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.15.0
           install-mode: goinstall
           args: --timeout=5m
 

@@ -163,6 +163,8 @@ ssh -p 2222 user@bastion -- -osh selfListAllAccesses --type ssh --json-pretty
 | ⚙️ `bastionConfig`         | Interactive configuration manager (view/edit bastion config stored in DB).    |
 | 🔐 `bastionShowSFTPHostKey` | Show the stable public host key used by `sftp-session` for client distribution. |
 
+Administrative roles and account state are reloaded before each bastion command. Disabling an account blocks new commands and logins; the next periodic sync removes its ingress keys and administrator delegation and terminates its remaining processes. Account deletion, demotion and manual locking protect the last usable administrator, and an administrator cannot delete their own account.
+
 ---
 
 ### 🚧 **Restricted Operations**
@@ -269,7 +271,9 @@ goBastion supports multiple second-factor authentication methods that stack: pas
 | `selfDisableTOTP`     | Disable TOTP for your own account.                                     |
 | `accountDisableTOTP`  | *(admin)* Disable TOTP for any user account.                           |
 
-Once TOTP is enabled, the bastion will prompt for a 6-digit code at every interactive or passthrough login.
+Once TOTP is enabled, the bastion prompts for a 6-digit code at interactive and one-shot command logins. Opaque SFTP and TCP proxy streams cannot carry an MFA prompt: these modes refuse connections when account password MFA, account TOTP, or global `require_mfa` is enabled. They also refuse accesses requiring group JIT MFA.
+
+Global mandatory MFA permits only the explicit command `-osh selfSetupTOTP` for an unenrolled account, after checking the independent password factor if configured. After enrollment, reconnect normally.
 
 #### Backup Codes
 
@@ -298,6 +302,8 @@ Password MFA is independent of TOTP — both can be active simultaneously.
 
 When a group has JIT MFA enabled via `groupSetMFA`, any user connecting via that group must pass a TOTP challenge at connection time, even if global TOTP is not enabled for their account. The user must have a TOTP secret configured (`selfSetupTOTP`) for this to work.
 
+This also applies to database connections, including guest database grants. A TOTP challenge already completed at login satisfies the group requirement. SFTP/TCP proxy modes refuse JIT-protected accesses because their protocol streams cannot carry this challenge.
+
 | Command         | Description                                              |
 |-----------------|----------------------------------------------------------|
 | `groupSetMFA`   | *(owner/admin)* Enable or disable JIT MFA for a group.                   |
@@ -319,7 +325,7 @@ This mode now uses a **stable per-instance SSH host key** for the fake in-band S
 1. Display the stable SFTP proxy host key from the bastion:
 
 ```sh
-ssh -tp 2222 admin@bastion -- bastionShowSFTPHostKey
+ssh -tp 2222 admin@bastion -- -osh bastionShowSFTPHostKey
 ```
 
 2. Copy the displayed public key (or fingerprint) into your internal client documentation / configuration management.
@@ -371,6 +377,7 @@ sftp my-server
 - The host key presented by `sftp-session` is verified against the **client-side SSH host alias** being opened by the SFTP client.
 - Because the SFTP proxy host key is now stable, you should **not** use `StrictHostKeyChecking no` or `UserKnownHostsFile /dev/null` anymore.
 - Rotating the SFTP proxy host key invalidates the previously pinned client entry. Treat it like any other SSH host key rotation.
+- `sftp-session` refuses account/global MFA and group JIT MFA requirements. Use an interactive SSH flow when MFA is required; the proxy never silently skips a required second factor.
 
 #### Mode 2 — TCP proxy (requires your key on the target)
 
@@ -392,9 +399,11 @@ This enables:
 
 Operational notes:
 - This mode requires the client's own SSH key to be trusted directly on the target host.
-- This mode is **not suitable when account-level MFA must prompt interactively**. If password MFA, TOTP MFA, or global `require_mfa` are enabled on the bastion account, prefer `sftp-session`.
+- This mode refuses password MFA, account TOTP, global `require_mfa`, and group JIT MFA requirements. Use an interactive SSH flow when MFA is required.
 
 All passthrough connections are subject to the same access control rules as interactive SSH sessions.
+
+SFTP and TCP proxies enforce the configured session duration and traffic inactivity limits.
 
 #### Protocol Restriction
 
@@ -412,6 +421,8 @@ Example: grant a user rsync-only access to a backup server:
 ```
 groupAddAccess --group backups --server 10.0.0.5 --username backup --protocol rsync
 ```
+
+Transfer-only accesses accept validated SCP server (`-t`/`-f`), SFTP server, and rsync `--server` invocations. Shell pipelines, command chaining, substitutions, client-side execution options, and rsync daemon mode are rejected. Arguments are passed literally, preserving quoted spaces and apostrophes; shell expansion of paths is not supported. An unsupported transfer option produces an explicit error instead of falling back to a shell.
 
 ---
 
@@ -457,6 +468,20 @@ workstation's SSH command, it affects the workstation-to-bastion connection.
 The bastion must itself have a route to the target's address, including from
 inside its container in Docker deployments.
 
+#### Database client isolation
+
+`--db` sessions use a root-owned supervisor which independently verifies sudo's caller, access rights, CIDR, expiry, maintenance restrictions and MFA. Authentication happens once in this supervisor. Target credentials stay in the privileged broker: native clients receive no password in their environment, command arguments, files, memory or worker configuration. Commands such as MariaDB's `system env` cannot retrieve the stored DB password.
+
+Each client runs in a separate NsJail filesystem, PID, IPC, user and network namespace. The root filesystem is read-only; the temporary home and `/tmp` are private writable mounts. Procfs is absent, and the client has no Linux capabilities. Clients cannot see the bastion database, SSH keys, bootstrap secrets, sudo helpers, control sockets or other sessions. A shell opened by a DB client remains confined. A private broker can open at most 128 connections per session, all to the IP/port pinned when the session starts; reconnecting to another host is not allowed. Original hostnames and numeric IPv4/IPv6 addresses are retained for TLS validation.
+
+Recordings stay outside the sandbox. Account disable/removal is checked every second by the supervisor; revocation and duration expiry stop the sandbox. The root supervisor handles the DB session registry. No existing access or credential migration is required.
+
+The broker authenticates upstream using TLS 1.2 or newer and verifies the server certificate against the container's CA store and the original target hostname/IP. Targets must support TLS with a trusted certificate; there is no plaintext or unverifiable fallback. The native client's connection is a private relay inside the sandbox, so its local SSL status describes that relay, not the verified upstream connection. `Target TLS: verification required` shows the upstream policy.
+
+PostgreSQL reconnects and query cancellation retain the selected account; MySQL account switching is refused. Redis requires `COMMAND` permission for command metadata; administrative commands (including renamed aliases and subcommands), `AUTH` and `HELLO ... AUTH` are refused to prevent credential disclosure or account switching. The DB account's server-side privileges still apply: use dedicated accounts with appropriate rights, rather than granting database administration to people who must not manage server credentials.
+
+See [installation requirements](#database-client-isolation-runtime) for the Docker capabilities and security profiles.
+
 ### ⏱️ **Access TTL and IP Restriction**
 
 Every access entry (`selfAddAccess`, `accountAddAccess`, `groupAddAccess`) supports two optional constraints:
@@ -472,6 +497,10 @@ group access. Both the group's access restrictions and the guest grant's restric
 Both constraints are enforced at connection time - expired or out-of-range connections are denied.
 The `Expires` and `From` columns appear in all `listAccesses` outputs.
 
+> **Security note (IP restrictions):** If a `--from` CIDR restriction is set on an access entry
+> and the bastion cannot determine the client IP (e.g. missing `SSH_CLIENT`), the connection
+> is **denied** (fail-closed policy). This prevents accidental bypass of IP-based access controls.
+
 ### ⏳ **Account Inactivity Lockout (MaxInactiveDays)**
 
 Admins can configure a maximum number of inactive days via `bastionConfig`. If a user hasn't logged in for more than `MaxInactiveDays`, the account is automatically disabled during the sync cycle.
@@ -484,22 +513,19 @@ Admins can configure a maximum number of inactive days via `bastionConfig`. If a
 - Disabled accounts can be re-enabled by an admin using `accountUnexpire`.
 - Admins can also **immediately lock** an account using `accountExpire` (e.g. when a collaborator leaves).
 - The inactivity check runs during every sync cycle (every 5 minutes by default).
+- Automatic inactivity expiry preserves the most recently connected usable administrator.
 
 ```sh
 # Set max inactive days to 90 via the interactive config
-ssh -tp 2222 admin@bastion -- bastionConfig
+ssh -tp 2222 admin@bastion -- -osh bastionConfig
 # → Navigate to account.max_inactive_days, Enter, type 90
 
 # Immediately lock a departing collaborator's account
 ssh -tp 2222 admin@bastion -- -osh accountExpire --user alice
 
 # Re-enable a locked-out account
-ssh -tp 2222 admin@bastion -- -osh accountUnexpire --account alice
+ssh -tp 2222 admin@bastion -- -osh accountUnexpire --user alice
 ```
-
-> **Security note (IP restrictions):** If a `--from` CIDR restriction is set on an access entry
-> and the bastion cannot determine the client IP (e.g. missing `SSH_CLIENT`), the connection
-> is **denied** (fail-closed policy). This prevents accidental bypass of IP-based access controls.
 
 ---
 
@@ -531,23 +557,9 @@ Keys added via PIV attestation are marked `PIV` in `selfListIngressKeys`.
 
 ---
 
-### 🐚 **Mosh Support**
+### 🐚 **Mosh**
 
-goBastion can transparently pass through `mosh-server` invocations, enabling [Mosh](https://mosh.org/)
-sessions through the bastion when the runtime image includes `mosh`.
-
-The default image is built **without** `mosh` to keep it smaller.
-Use the full image variant if you need Mosh support.
-
-```bash
-# Standard mosh usage through the full image variant
-mosh --ssh="ssh -J user@bastion:2222" user@my-server
-```
-
-The bastion detects the `mosh-server` command in `SSH_ORIGINAL_COMMAND` and exec's it directly.
-UDP ports 60001-61000 must be open on the **target server** (not the bastion) for the Mosh UDP connection.
-
----
+Local `mosh-server` execution on the bastion is disabled. The `final-full` Docker build target remains as a compatibility alias and no longer installs Mosh. A stored `mosh.enabled` value cannot re-enable local execution.
 
 ### 📜 **TTY Session Recording**
 
@@ -729,10 +741,10 @@ An OSH-only account can **only run `-osh` commands** — it cannot open interact
 
 ```sh
 # Create an automation account
-ssh -tp 2222 admin@bastion -- -osh accountCreate --account ci-bot --osh-only
+ssh -tp 2222 admin@bastion -- -osh accountCreate --user ci-bot --osh-only
 
 # Modify an existing account
-ssh -tp 2222 admin@bastion -- -osh accountModify --account ci-bot --oshOnly true
+ssh -tp 2222 admin@bastion -- -osh accountModify --user ci-bot --oshOnly true
 ```
 
 Behavior:
@@ -746,10 +758,10 @@ A SuperOwner account has **implicit owner privileges on every group** without be
 
 ```sh
 # Create a superowner account
-ssh -tp 2222 admin@bastion -- -osh accountCreate --account sre-lead --superowner
+ssh -tp 2222 admin@bastion -- -osh accountCreate --user sre-lead --superowner
 
 # Grant superowner to an existing account
-ssh -tp 2222 admin@bastion -- -osh accountModify --account sre-lead --superOwner true
+ssh -tp 2222 admin@bastion -- -osh accountModify --user sre-lead --superOwner true
 ```
 
 Behavior:
@@ -972,7 +984,7 @@ The same explicit disambiguation rule applies to database aliases when multiple 
    docker build -t gobastion .
    ```
 
-   Build the full image variant with Mosh support:
+   Build the legacy full image target (compatibility alias):
 
    ```sh
    docker build --target final-full -t gobastion:full .
@@ -980,20 +992,22 @@ The same explicit disambiguation rule applies to database aliases when multiple 
 
 3. Run the Docker container:
 
+   On hosts using AppArmor, first load `profiles/gobastion-db.apparmor` with `sudo apparmor_parser -r profiles/gobastion-db.apparmor`, and add `--security-opt apparmor=gobastion-db` to the run commands below. See [database client isolation runtime](#database-client-isolation-runtime) for the runtime requirements.
+
    ```sh
-   docker run --name gobastion --hostname goBastion -it -p 2222:22 gobastion:latest
+   docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json --name gobastion --hostname goBastion -it -p 2222:22 gobastion:latest
    ```
 
    You can also use the official **Docker Hub** image:
 
    ```sh
-   docker run --name gobastion --hostname goBastion -it -p 2222:22 phd59fr/gobastion:latest
+   docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json --name gobastion --hostname goBastion -it -p 2222:22 phd59fr/gobastion:latest
    ```
 
    (optional) 3a. Launch the container with a volume to persist the database and ttyrec:
 
    ```sh
-   docker run --name gobastion --hostname goBastion -it -p 2222:22 \
+   docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json --name gobastion --hostname goBastion -it -p 2222:22 \
      -v /path/to/your/dbvolume:/var/lib/goBastion \
      -v /path/to/your/ttyvolume:/app/ttyrec gobastion:latest
    ```
@@ -1001,7 +1015,7 @@ The same explicit disambiguation rule applies to database aliases when multiple 
    (optional) 3b. Use an external database (see [Environment Variables](#-environment-variables)):
 
    ```sh
-   docker run --name gobastion --hostname goBastion -it -p 2222:22 \
+   docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json --name gobastion --hostname goBastion -it -p 2222:22 \
      -e DB_DRIVER=postgres \
      -e DB_DSN="host=db user=gobastion password=secret dbname=gobastion port=5432 sslmode=disable" \
      gobastion:latest
@@ -1016,19 +1030,22 @@ The same explicit disambiguation rule applies to database aliases when multiple 
 5. Connect to the bastion host (interactive mode):
 
    ```sh
-   ssh -tp 2222 user@localhost (or alias gobastion)
+   ssh -tp 2222 user@localhost
+   # Or: gobastion
    ```
 
    (optional) 5a. Connect to the bastion host with a command (non-interactive mode):
 
    ```sh
-   ssh -tp 2222 user@localhost -- -osh selfListIngressKeys (or alias gobastion -osh selfListIngressKeys)
+   ssh -tp 2222 user@localhost -- -osh selfListIngressKeys
+   # Or: gobastion -osh selfListIngressKeys
    ```
 
    (optional) 5b. Connect to the target host through the bastion:
 
    ```sh
-   ssh -tp 2222 user@localhost -- user@targethost (ssh options supported) (or alias gobastion user@targethost)
+   ssh -tp 2222 user@localhost -- user@targethost
+   # Or: gobastion user@targethost
    ```
 
    (optional) 5b-bis. Connect through multiple bastions (bastion-to-bastion chaining):
@@ -1041,6 +1058,16 @@ The same explicit disambiguation rule applies to database aliases when multiple 
    → See the **[Bastion-to-Bastion Chaining](#-bastion-to-bastion-chaining-multi-hop-ssh)** section for full documentation, realm integration, and advanced examples.
 
    (optional) 5c. Use SFTP / SCP / rsync through the bastion — see [SCP / SFTP / rsync Passthrough](#-scp--sftp--rsync-passthrough) for full configuration details.
+
+### Database client isolation runtime
+
+A Linux host supporting user/mount/PID/network namespaces and seccomp is required. Start the container with `--cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json`. Do not use `--privileged` or mount the Docker socket. The vendored seccomp profile derives from https://github.com/moby/profiles/blob/main/seccomp/default.json and adds namespace operations conditional on `CAP_SYS_ADMIN`. On AppArmor hosts, first load the dedicated profile on the host:
+
+```sh
+sudo apparmor_parser -r profiles/gobastion-db.apparmor
+```
+
+Then add `--security-opt apparmor=gobastion-db` to the container command. The profile retains Docker's filesystem restrictions while allowing the mounts needed for NsJail. Other host LSM policies may require equivalent rules. If namespace setup is forbidden, DB connections fail closed; do not disable confinement as a workaround.
 
 ---
 
@@ -1141,7 +1168,7 @@ In practice:
 - session settings are scoped to the current bastion instance
 - `max_concurrent_sessions` limits concurrent authenticated sessions on that instance
 - `idle_timeout` and `max_session_duration` accept `0` to disable the limit, or a duration of at least `30s`
-- `splash.enabled=false` hides the goBastion ASCII login logo without changing the SSH server banner (it lives in `Access & Login`, next to the other settings evaluated during the login sequence)
+- `splash.enabled` is the master switch for the ASCII login logo. `splash.ssh_enabled`, `splash.db_enabled` and `splash.interactive_enabled` independently control SSH connections, DB connections and the interactive OSH shell/one-shot OSH commands. All default to `true`, including when loading older saved configurations; the master switch takes precedence. These settings live in `Access & Login` and do not change the SSH server banner. DB connections also show the selected access source, such as `group-PLEX`, `account-alice`, or `guest-group-PLEX`.
 - `interactive.enabled=false` disables the interactive shell (only one-shot `-osh` commands remain), as `force_osh_only` does instance-wide. It was named `interactive.allow` before, and existing instances are migrated automatically on read.
 - group discovery and group egress-key discovery are controlled by `security.group_visibility.mode` and `security.egress_key_visibility.mode`
 
@@ -1242,7 +1269,7 @@ export EGRESS_ENC_KEY=$(cat egress_key.txt)
 - If `EGRESS_ENC_KEY` is **not set**, keys and stored database passwords remain in plaintext (backward-compatible).
 
 ```sh
-docker run --name gobastion --hostname goBastion -it -p 2222:22 \
+docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json --name gobastion --hostname goBastion -it -p 2222:22 \
   -e EGRESS_ENC_KEY="$(openssl rand -base64 32)" \
   gobastion:latest
 ```
@@ -1334,6 +1361,20 @@ To contribute:
 4. Push to the branch (`git push origin feature/YourFeature`)
 5. Open a pull request
 
+### Integration tests
+
+Integration check (disposable container with real PostgreSQL, MariaDB and Redis servers; also checks the complete `--db` supervisor path and compressed recordings):
+
+```sh
+docker build --target isolation-test -t gobastion-isolation-test .
+docker run --rm --tmpfs /tmp:rw,nosuid,nodev,size=768m \
+  --cap-add SYS_ADMIN --cap-add NET_ADMIN \
+  --security-opt seccomp=profiles/db-isolation-seccomp.json \
+  --security-opt apparmor=gobastion-db gobastion-isolation-test
+```
+
+The AppArmor option requires the profile to be loaded on the Docker host; omit that option on hosts without AppArmor. The integration target also checks simultaneous administrator removal on real PostgreSQL and MariaDB databases.
+
 ---
 
 ## 📄 **License**
@@ -1346,5 +1387,3 @@ This project is licensed under the [MIT License](https://opensource.org/licenses
 
 A simple star on this project repo is enough to keep me motivated for days. If you’re excited about this project, let me know with a tweet.
 If you have any questions, feel free to reach out to me on [X](https://x.com/xxPHDxx).
-
----

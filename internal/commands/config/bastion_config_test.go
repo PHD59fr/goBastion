@@ -61,6 +61,17 @@ func TestApplyValueUpdatesConfig(t *testing.T) {
 	if appconfig.Get().Splash.Enabled {
 		t.Fatal("splash enabled = true, want false")
 	}
+	for _, key := range []string{"splash.ssh_enabled", "splash.db_enabled", "splash.interactive_enabled"} {
+		if err := applyValue(db, key, "false"); err != nil {
+			t.Fatal(err)
+		}
+		if err := appconfig.LoadFromDB(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg := appconfig.Get().Splash; cfg.SSHEnabled || cfg.DBEnabled || cfg.InteractiveEnabled {
+		t.Fatalf("splash switches were not persisted: %+v", cfg)
+	}
 }
 
 // TestConfigDiffKeysAreCategorized guards the section -> category mapping used

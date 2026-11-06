@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/totp"
@@ -79,7 +80,8 @@ func SetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 
 	user.TOTPSecret = secret
 	user.TOTPEnabled = true
-	if err := db.Save(user).Error; err != nil {
+	user.BackupCodes = ""
+	if err := mfa.UpdateTOTP(db, user).Error; err != nil {
 		return fmt.Errorf("failed to save TOTP settings: %w", err)
 	}
 

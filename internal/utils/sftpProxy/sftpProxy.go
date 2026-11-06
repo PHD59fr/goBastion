@@ -13,6 +13,7 @@ import (
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/sessionlimit"
 	"goBastion/internal/utils/sshHostKey"
 	"goBastion/internal/utils/validation"
 
@@ -25,11 +26,23 @@ import (
 // Any bytes written by goBastion before this point (welcome banner, logo) are
 // skipped by the SSH client per RFC 4253 §4.2: clients MUST discard lines that
 // do not begin with "SSH-" before the version exchange.
-type stdinoutConn struct{}
+type stdinoutConn struct{ watch *sessionlimit.Watch }
 
-func (c *stdinoutConn) Read(p []byte) (n int, err error)   { return os.Stdin.Read(p) }
-func (c *stdinoutConn) Write(p []byte) (n int, err error)  { return os.Stdout.Write(p) }
-func (c *stdinoutConn) Close() error                       { return nil }
+func (c *stdinoutConn) Read(p []byte) (n int, err error) {
+	n, err = os.Stdin.Read(p)
+	if n > 0 && c.watch != nil {
+		c.watch.Touch()
+	}
+	return
+}
+func (c *stdinoutConn) Write(p []byte) (n int, err error) {
+	n, err = os.Stdout.Write(p)
+	if n > 0 && c.watch != nil {
+		c.watch.Touch()
+	}
+	return
+}
+func (c *stdinoutConn) Close() error                       { _ = os.Stdin.Close(); return os.Stdout.Close() }
 func (c *stdinoutConn) LocalAddr() net.Addr                { return &net.UnixAddr{Name: "stdin", Net: "unix"} }
 func (c *stdinoutConn) RemoteAddr() net.Addr               { return &net.UnixAddr{Name: "stdout", Net: "unix"} }
 func (c *stdinoutConn) SetDeadline(_ time.Time) error      { return nil }
@@ -58,6 +71,13 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 		return fmt.Errorf("connect to target %s: %w", targetAddr, err)
 	}
 	defer func() { _ = netConn.Close() }()
+	rawConn := netConn
+	watch := sessionlimit.Start(func() { _ = rawConn.Close(); _ = os.Stdin.Close(); _ = os.Stdout.Close() })
+	defer watch.Stop()
+	netConn = &sessionlimit.Conn{Conn: netConn, Watch: watch}
+	if timeout := time.Duration(config.Get().Proxy.SFTPSSHTimeout); timeout > 0 {
+		_ = netConn.SetDeadline(time.Now().Add(timeout))
+	}
 
 	currentUser, err := user.Current()
 	if err != nil {
@@ -80,6 +100,7 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 	if err != nil {
 		return fmt.Errorf("ssh connect to %s: %w", targetAddr, err)
 	}
+	_ = netConn.SetDeadline(time.Time{})
 	client := ssh.NewClient(sshConn, chans, reqs)
 	defer func() { _ = client.Close() }()
 
@@ -120,7 +141,7 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 	}
 	serverConfig.AddHostKey(hostSigner)
 
-	serverConn, newChans, globalReqs, err := ssh.NewServerConn(&stdinoutConn{}, serverConfig)
+	serverConn, newChans, globalReqs, err := serverHandshake(&stdinoutConn{watch: watch}, serverConfig, time.Duration(config.Get().Proxy.SFTPSSHTimeout))
 	if err != nil {
 		return fmt.Errorf("ssh server handshake: %w", err)
 	}
@@ -167,4 +188,13 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 		return nil
 	}
 	return nil
+}
+
+func serverHandshake(conn net.Conn, cfg *ssh.ServerConfig, timeout time.Duration) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+	if timeout <= 0 {
+		return ssh.NewServerConn(conn, cfg)
+	}
+	timer := time.AfterFunc(timeout, func() { _ = conn.Close() })
+	defer timer.Stop()
+	return ssh.NewServerConn(conn, cfg)
 }

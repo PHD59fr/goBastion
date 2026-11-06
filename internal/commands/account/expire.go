@@ -78,32 +78,19 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("cannot lock your own account")
 	}
 
-	// Prevent locking the last remaining admin.
-	if u.IsAdmin() {
-		var adminCount int64
-		if err := db.Model(&models.User{}).Where("role = ? AND deleted_at IS NULL", models.RoleAdmin).Count(&adminCount).Error; err != nil {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "Account Expire",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to check admin count."}}},
-			})
+	if err := withAccountChange(db, func(tx *gorm.DB) error {
+		var fresh models.User
+		if err := tx.First(&fresh, "id = ?", u.ID).Error; err != nil {
 			return err
 		}
-		if adminCount <= 1 {
-			console.DisplayBlock(console.ContentBlock{
-				Title:     "Account Expire",
-				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"Cannot lock the last remaining admin account."}}},
-			})
-			return fmt.Errorf("cannot lock the last remaining admin account")
+		if err := requireOtherAdmin(tx, &fresh); err != nil {
+			return err
 		}
-	}
-
-	if err := db.Model(&u).Update("enabled", false).Error; err != nil {
+		return tx.Model(&fresh).Update("enabled", false).Error
+	}); err != nil {
 		console.DisplayBlock(console.ContentBlock{
-			Title:     "Account Expire",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to lock user account."}}},
+			Title: "Account Expire", BlockType: "error",
+			Sections: []console.SectionContent{{SubTitle: "Blocked", Body: []string{err.Error()}}},
 		})
 		return err
 	}

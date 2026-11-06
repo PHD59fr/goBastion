@@ -769,7 +769,7 @@ func TestDetectProtocol(t *testing.T) {
 		{"scp -t /tmp/file", "scpupload"},
 		{"scp -f /tmp/file", "scpdownload"},
 		{"sftp-server -e", "sftp"},
-		{"rsync --server --daemon .", "rsync"},
+		{"rsync --server -vlogDtpre.iLsfxCIvu . /tmp", "rsync"},
 		{"ls -la", "ssh"},
 	}
 	for _, tc := range tests {

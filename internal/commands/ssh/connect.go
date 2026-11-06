@@ -16,12 +16,14 @@ import (
 	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
+	"goBastion/internal/utils/commandline"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sftpProxy"
 	"goBastion/internal/utils/sshConnector"
 	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/tcpProxy"
 	totpUtil "goBastion/internal/utils/totp"
+	"goBastion/internal/utils/transfer"
 	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
@@ -74,10 +76,10 @@ func buildSSHLogger(base slog.Logger, sessionUser, sshFrom, protocol string, req
 
 // Connect resolves the target and establishes an SSH connection through the bastion.
 func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
-	// Extract -F forwarding hops before parsing the main target.
+	// Extract --via forwarding hops before parsing the main target.
 	cleanParams, hops, err := extractForwardHops(params)
 	if err != nil {
-		return fmt.Errorf("invalid -F hop: %w", err)
+		return fmt.Errorf("invalid --via hop: %w", err)
 	}
 
 	sshUser, sshHost, sshPort, remoteCmd, err := parseSSHCommand(cleanParams)
@@ -87,7 +89,10 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 	sshFrom := system.ClientIPFromEnv()
 	hostname, _ := os.Hostname()
-	protocol := detectProtocol(remoteCmd)
+	protocol, remoteCmd, err := transfer.Prepare(remoteCmd)
+	if err != nil {
+		return fmt.Errorf("invalid transfer command: %w", err)
+	}
 	requestedTarget := sshLogTarget{user: sshUser, host: sshHost, port: sshPort}
 	effectiveTarget := requestedTarget
 
@@ -99,6 +104,10 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 	// Protocol feature gates.
 	switch protocol {
+	case "sftp":
+		if !config.Get().SFTP.Enabled {
+			return fmt.Errorf("SFTP transfers are disabled")
+		}
 	case "scpupload", "scpdownload":
 		if !config.Get().SCP.Enabled {
 			return fmt.Errorf("⛔ SCP transfers are disabled")
@@ -186,14 +195,8 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 			// JIT MFA: if the group requires MFA and the user hasn't done global TOTP,
 			// prompt for a TOTP code now.
-			if access.MFARequired && !user.TOTPEnabled {
-				if user.TOTPSecret == "" {
-					fmt.Println("⛔ This group requires MFA but you have no TOTP secret configured.")
-					fmt.Println("   Run selfSetupTOTP first, then ask your admin to enable JIT MFA for this group.")
-					log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
-					return fmt.Errorf("⛔ MFA required but no TOTP secret configured")
-				}
-				if !promptTOTP(db, &user, log) {
+			if access.MFARequired && (!user.TOTPEnabled || user.TOTPSecret == "") {
+				if !CheckJITMFA(db, &user, log) {
 					return fmt.Errorf("⛔ MFA validation failed")
 				}
 			}
@@ -599,26 +602,24 @@ func normalizeWildcardUsername(stored, requested string) string {
 // detectProtocol inspects the remote command string to determine the access protocol.
 // Returns "ssh" for interactive sessions, or the specific protocol otherwise.
 func detectProtocol(remoteCmd string) string {
-	if remoteCmd == "" {
+	protocol, _, err := transfer.Prepare(remoteCmd)
+	if err != nil {
 		return "ssh"
 	}
-	cmd := strings.ToLower(strings.TrimSpace(remoteCmd))
-	switch {
-	case strings.HasPrefix(cmd, "scp ") && strings.Contains(cmd, " -t "):
-		return "scpupload"
-	case strings.HasPrefix(cmd, "scp ") && strings.Contains(cmd, " -f "):
-		return "scpdownload"
-	case strings.Contains(cmd, "sftp-server"):
-		return "sftp"
-	case strings.HasPrefix(cmd, "rsync ") || strings.Contains(cmd, "rsync --server"):
-		return "rsync"
-	default:
-		return "ssh"
-	}
+	return protocol
 }
 
-// promptTOTP reads a TOTP code or backup code from stdin and verifies it.
-// Used for JIT MFA enforcement at connection time.
+// CheckJITMFA requires enrollment and verifies a TOTP or backup code before an
+// SSH or database connection whose group requires MFA.
+func CheckJITMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
+	if user.TOTPSecret == "" {
+		log.Warn("mfa_failure", slog.String("reason", "no totp secret"))
+		fmt.Fprintln(os.Stderr, "⛔ This access requires MFA. Configure TOTP before connecting.")
+		return false
+	}
+	return promptTOTP(db, user, log)
+}
+
 func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
 		fmt.Printf("🔐 This group requires MFA. Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
@@ -691,13 +692,16 @@ func ipAllowed(clientIP, allowedFrom string) bool {
 //	user@host -p port command args...
 func parseSSHCommand(command string) (user, host, port, remoteCmd string, err error) {
 	command = strings.TrimSpace(command)
-	tokens := strings.Fields(command)
+	tokens, err := commandline.Scan(command)
+	if err != nil {
+		return "", "", "", "", err
+	}
 	if len(tokens) == 0 {
 		return "", "", "", "", errors.New("empty command")
 	}
 
 	// First token must be [user@]host or [user@]host:port
-	target := tokens[0]
+	target := tokens[0].Value
 	rest := tokens[1:]
 
 	// Extract user and host[:port]
@@ -732,11 +736,11 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 
 	// Parse remaining tokens for -p flag and remote command
 	for i := 0; i < len(rest); i++ {
-		if rest[i] == "-p" && i+1 < len(rest) {
-			port = rest[i+1]
+		if rest[i].Value == "-p" && i+1 < len(rest) {
+			port = rest[i+1].Value
 			i++
 		} else {
-			remoteCmd = strings.Join(rest[i:], " ")
+			remoteCmd = command[rest[i].Start:]
 			break
 		}
 	}
@@ -750,8 +754,8 @@ func parseSSHCommand(command string) (user, host, port, remoteCmd string, err er
 		return "", "", "", "", fmt.Errorf("invalid port: %q (must be 1-65535)", port)
 	}
 
-	// Do not default the username here. If the caller omitted a username, SSHConnect
-	// will attempt to infer it from stored accesses and fall back to "root" when needed.
+	// Connect infers an omitted username from stored accesses, or rejects it if
+	// no username can be resolved.
 	if host == "" {
 		return "", "", "", "", errors.New("invalid format: missing host")
 	}
@@ -768,26 +772,38 @@ type SSHHop struct {
 	Port string
 }
 
-// extractForwardHops pulls out all -F user@host[:port] flags from params.
+// extractForwardHops pulls out --via user@host[:port] flags before the remote command.
 // Returns the cleaned command string (without -F tokens) and the ordered hop slice.
 // Hop order follows the user-specified order (outermost to innermost).
 func extractForwardHops(params string) (string, []SSHHop, error) {
-	tokens := strings.Fields(params)
+	tokens, err := commandline.Scan(params)
+	if err != nil {
+		return "", nil, err
+	}
 	var clean []string
 	var hops []SSHHop
 	for i := 0; i < len(tokens); i++ {
-		if tokens[i] == "--via" {
+		if i > 0 && tokens[i].Value == "--via" {
 			if i+1 >= len(tokens) {
 				return "", nil, fmt.Errorf("--via requires an argument (user@host[:port])")
 			}
 			i++
-			hop, err := parseHop(tokens[i])
+			hop, err := parseHop(tokens[i].Value)
 			if err != nil {
-				return "", nil, fmt.Errorf("invalid --via hop %q: %w", tokens[i], err)
+				return "", nil, fmt.Errorf("invalid --via hop %q: %w", tokens[i].Value, err)
 			}
 			hops = append(hops, hop)
+		} else if i == 0 || tokens[i].Value == "-p" {
+			clean = append(clean, params[tokens[i].Start:tokens[i].End])
+			if i > 0 && i+1 < len(tokens) {
+				i++
+				clean = append(clean, params[tokens[i].Start:tokens[i].End])
+			}
 		} else {
-			clean = append(clean, tokens[i])
+			// Everything after the remote executable belongs to that command,
+			// including quoted paths or arguments named --via.
+			clean = append(clean, params[tokens[i].Start:])
+			break
 		}
 	}
 	return strings.Join(clean, " "), hops, nil
@@ -981,6 +997,9 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 //
 //	ProxyCommand ssh -p 2222 -- %r@bastion "-W [%h]:%p"
 func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port string) error {
+	if err := mfa.OpaqueTransportError(user, "TCP proxy (-W)"); err != nil {
+		return err
+	}
 	portInt, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid port: %w", err)
@@ -1036,6 +1055,12 @@ func TCPProxy(db *gorm.DB, user models.User, logger slog.Logger, host, port stri
 // SSH host alias used on the client side (e.g. "my-server"), not for the
 // bastion hostname used inside ProxyCommand.
 func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params string) error {
+	if !config.Get().SFTP.Enabled {
+		return fmt.Errorf("SFTP transfers are disabled")
+	}
+	if err := mfa.OpaqueTransportError(user, "SFTP proxy (sftp-session)"); err != nil {
+		return err
+	}
 	sshUser, sshHost, sshPort, _, err := parseSSHCommand(params)
 	if err != nil {
 		return fmt.Errorf("invalid sftp-session command: %w", err)
@@ -1075,14 +1100,8 @@ func SFTPSession(db *gorm.DB, user models.User, logger slog.Logger, params strin
 	}
 
 	access := accesses[0]
-	if access.MFARequired && !user.TOTPEnabled {
-		if user.TOTPSecret == "" {
-			log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("reason", "no totp secret"), slog.String("to", access.Source))
-			return fmt.Errorf("⛔ This access requires MFA but no TOTP secret is configured. Run selfSetupTOTP first")
-		}
-		if !promptTOTP(db, &user, log) {
-			return fmt.Errorf("⛔ Access denied: MFA validation failed")
-		}
+	if access.MFARequired {
+		return fmt.Errorf("SFTP proxy is unavailable when this access requires JIT MFA; use an interactive SSH flow")
 	}
 
 	if err := sshConnector.CheckAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {

@@ -8,6 +8,8 @@ type SystemAdapter interface {
 	CreateUser(username string) error
 	// DeleteUser removes a system OS user and their home directory.
 	DeleteUser(username string) error
+	// TerminateUserSessions stops all processes of a disabled bastion account.
+	TerminateUserSessions(username string) error
 	// UpdateSudoers writes or removes the sudoers entry for a user based on their role.
 	UpdateSudoers(user *models.User) error
 	// ChownDir recursively changes ownership of a directory to the given user.

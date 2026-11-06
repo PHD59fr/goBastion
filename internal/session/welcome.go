@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"goBastion/internal/config"
@@ -37,17 +38,11 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 		return false
 	}
 
-	displaySplash()
-
-	fmt.Print(utils.FgGreenB("▶") + " Welcome to goBastion, " + utils.FgYellowB(currentUser.Username) + "!\n")
-
-	if !currentUser.LastLoginAt.IsZero() {
-		msg := "Last login: " + currentUser.LastLoginAt.Format("Mon Jan 2 15:04:05 2006")
-		if currentUser.LastLoginFrom != "" {
-			msg += " from " + currentUser.LastLoginFrom
-		}
-		fmt.Println(msg)
+	mode := welcomeSSH
+	if len(os.Args) == 1 || strings.TrimSpace(os.Args[1]) == "" || os.Args[1] == "--" || isOSHCommand(os.Args[1]) {
+		mode = welcomeInteractive
 	}
+	displayWelcome(currentUser, mode)
 
 	now := time.Now()
 	if err := db.Model(&currentUser).Updates(map[string]any{
@@ -62,8 +57,32 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 	return true
 }
 
-func displaySplash() {
-	if !config.Get().Splash.Enabled {
+type welcomeMode int
+
+const (
+	welcomeSSH welcomeMode = iota
+	welcomeDB
+	welcomeInteractive
+)
+
+// displayWelcome renders the same greeting for SSH and DB sessions. Account
+// checks and login updates belong to each caller, including the root DB supervisor.
+func displayWelcome(currentUser models.User, mode welcomeMode) {
+	displaySplash(mode)
+	fmt.Print(utils.FgGreenB("▶") + " Welcome to goBastion, " + utils.FgYellowB(currentUser.Username) + "!\n")
+	if !currentUser.LastLoginAt.IsZero() {
+		msg := "Last login: " + currentUser.LastLoginAt.Format("Mon Jan 2 15:04:05 2006")
+		if currentUser.LastLoginFrom != "" {
+			msg += " from " + currentUser.LastLoginFrom
+		}
+		fmt.Println(msg)
+	}
+}
+
+func displaySplash(mode welcomeMode) {
+	cfg := config.Get().Splash
+	enabled := (mode == welcomeSSH && cfg.SSHEnabled) || (mode == welcomeDB && cfg.DBEnabled) || (mode == welcomeInteractive && cfg.InteractiveEnabled)
+	if !cfg.Enabled || !enabled {
 		return
 	}
 	fmt.Println(utils.FgYellow(logo))

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +70,32 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if !cfg.Splash.Enabled {
 		t.Error("Splash.Enabled = false, want true")
+	}
+	if !cfg.Splash.SSHEnabled || !cfg.Splash.DBEnabled || !cfg.Splash.InteractiveEnabled {
+		t.Error("per-mode splash defaults must be enabled")
+	}
+}
+
+func TestLegacySplashPreservesMasterSwitchAndEnablesNewModes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.BastionInstance{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`{"splash":{"enabled":false}}`, `{"splash":{"enabled":true}}`} {
+		row := models.BastionInstance{InstanceID: raw, Role: "master", Config: raw}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := readConfigFromDB(db, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Splash.Enabled != strings.Contains(raw, "true") || !cfg.Splash.SSHEnabled || !cfg.Splash.DBEnabled || !cfg.Splash.InteractiveEnabled {
+			t.Fatalf("legacy splash configuration changed: %+v", cfg.Splash)
+		}
 	}
 }
 

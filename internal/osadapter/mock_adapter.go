@@ -8,7 +8,8 @@ type MockAdapter struct {
 	// ErrCreateUser, if non-nil, is returned by CreateUser.
 	ErrCreateUser error
 	// ErrDeleteUser, if non-nil, is returned by DeleteUser.
-	ErrDeleteUser error
+	ErrDeleteUser            error
+	ErrTerminateUserSessions error
 	// ErrUpdateSudoers, if non-nil, is returned by UpdateSudoers.
 	ErrUpdateSudoers error
 	// ErrChownDir, if non-nil, is returned by ChownDir.
@@ -23,7 +24,8 @@ type MockAdapter struct {
 	// CreatedUsers records every username passed to CreateUser.
 	CreatedUsers []string
 	// DeletedUsers records every username passed to DeleteUser.
-	DeletedUsers []string
+	DeletedUsers    []string
+	TerminatedUsers []string
 	// UpdatedSudoers records every user passed to UpdateSudoers.
 	UpdatedSudoers []*models.User
 }
@@ -46,6 +48,14 @@ func (m *MockAdapter) DeleteUser(username string) error {
 		return m.ErrDeleteUser
 	}
 	m.DeletedUsers = append(m.DeletedUsers, username)
+	return nil
+}
+
+func (m *MockAdapter) TerminateUserSessions(username string) error {
+	if m.ErrTerminateUserSessions != nil {
+		return m.ErrTerminateUserSessions
+	}
+	m.TerminatedUsers = append(m.TerminatedUsers, username)
 	return nil
 }
 

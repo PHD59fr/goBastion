@@ -57,12 +57,13 @@ func TestDeleteUser_AdapterError(t *testing.T) {
 		t.Fatal("expected error from adapter, got nil")
 	}
 
-	// User should NOT be soft-deleted in DB when adapter fails
 	var count int64
-	db.Unscoped().Model(&models.User{}).Where("username = ? AND deleted_at IS NOT NULL", "carol").Count(&count)
-	// The DB deletion happens before adapter call in deleteDBUser, so the user IS soft-deleted in DB.
-	// The important thing is that the error is propagated.
-	_ = count
+	if err := db.Model(&models.User{}).Where("username = ?", "carol").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("OS failure must restore the active database account")
+	}
 }
 
 func TestDelete_MissingUsernameIsError(t *testing.T) {
