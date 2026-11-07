@@ -3,6 +3,13 @@
 .idea/
 .agents/
 .codex/
+.aws/
+.claude/
+.env
+.env.*
+!.env.example
+*.test
+*.log
 goBastion
 coverage.out
 coverage.html
