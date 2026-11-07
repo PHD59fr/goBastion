@@ -1064,6 +1064,12 @@ The same explicit disambiguation rule applies to database aliases when multiple 
    docker build --target final-full -t gobastion:full .
    ```
 
+   Production builds compile only the application and its sandbox worker. Test
+   executables are built separately for the `isolation-test` target. The sandbox
+   keeps the interactive database clients and their libraries, but omits MariaDB
+   maintenance tools and the Redis server; the integration image provides its
+   own database servers outside the sandbox.
+
 3. Run the Docker container:
 
    On hosts using AppArmor, first load `profiles/gobastion-db.apparmor` with `sudo apparmor_parser -r profiles/gobastion-db.apparmor`, and add `--security-opt apparmor=gobastion-db` to the run commands below. See [database client isolation runtime](#database-client-isolation-runtime) for the runtime requirements.

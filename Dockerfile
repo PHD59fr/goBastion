@@ -1,9 +1,10 @@
 # ── Go binary (cross-compiled from build platform, no QEMU) ──────────────────
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS go-source
 
 ARG TARGETARCH
 ARG TARGETOS=linux
-ARG VERSION=dev
+
+ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
 
 WORKDIR /app
 
@@ -12,17 +13,27 @@ RUN apk add --no-cache upx
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY version/ ./version/
 
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+FROM go-source AS go-builder
+ARG VERSION=dev
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go build \
       -ldflags "-s -w -X goBastion/version.Version=${VERSION}" \
       -o goBastion ./cmd/goBastion/ && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/db-worker ./cmd/dbworker/ && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/dbsandbox.test ./internal/dbsandbox && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/policy.test ./internal/models && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/session.test ./internal/session && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/recording.test ./internal/recording && \
+    go build -ldflags "-s -w" -o /app/db-worker ./cmd/dbworker/ && \
     (upx --best --lzma goBastion || upx --best goBastion || upx goBastion || true)
+
+# Only the integration target needs test executables.
+FROM go-source AS go-test-builder
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go test -c -o /app/dbsandbox.test ./internal/dbsandbox && \
+    go test -c -o /app/policy.test ./internal/models && \
+    go test -c -o /app/session.test ./internal/session && \
+    go test -c -o /app/recording.test ./internal/recording
 
 # ── ttyrec (compiled natively for target arch) ───────────────────────────────
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS ttyrec-builder
@@ -43,9 +54,16 @@ RUN git init /tmp/ovh-ttyrec && \
      upx --best /usr/local/bin/ttyrec /usr/local/bin/ttyplay || \
      upx /usr/local/bin/ttyrec /usr/local/bin/ttyplay || true)
 
-FROM alpine:3.22 AS db-root
-RUN apk add --no-cache mariadb-client postgresql-client redis iproute2 ca-certificates && mkdir -p /home /tmp /proc /dev && touch /etc/db-hosts-template && rm -rf /var/cache/apk/*
-COPY --from=go-builder /app/db-worker /bin/db-worker
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS db-root
+# The jail needs interactive clients, not MariaDB maintenance tools or a Redis
+# server. Prune before copying this rootfs into the runtime image.
+RUN apk add --no-cache mariadb-client postgresql-client redis iproute2 ca-certificates && \
+    find /usr/bin -maxdepth 1 \
+      \( -name 'mariadb-*' -o -name 'mysql*' -o -name 'myisam_ftdump' -o -name 'redis-*' \) \
+      ! -name mysql ! -name redis-cli -delete && \
+    mkdir -p /home /tmp /proc /dev && \
+    touch /etc/db-hosts-template
+COPY --from=go-builder --chown=0:0 --chmod=0755 /app/db-worker /bin/db-worker
 
 # ── Runtime common image ─────────────────────────────────────────────────────
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runtime-common
@@ -86,22 +104,20 @@ COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/etc/hosts
 COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/dev/null
 COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/dev/urandom
 COPY --from=db-root /etc/db-hosts-template /opt/gobastion-db-root/dev/zero
-COPY scripts/sudo/gobastion-db-session.sh /usr/local/sbin/gobastion-db-session
-COPY --from=go-builder /app/goBastion /app/goBastion
+COPY --chmod=0755 scripts/sudo/gobastion-db-session.sh /usr/local/sbin/gobastion-db-session
+COPY --from=go-builder --chown=0:0 --chmod=0755 /app/goBastion /app/goBastion
 COPY --from=ttyrec-builder /usr/local/bin/ttyrec /usr/local/bin/ttyrec
 COPY --from=ttyrec-builder /usr/local/bin/ttyplay /usr/local/bin/ttyplay
 COPY banner.txt /etc/ssh/banner
-COPY scripts/sudo/gobastion-adduser.sh /usr/local/sbin/gobastion-adduser
-COPY scripts/sudo/gobastion-passwd-delete.sh /usr/local/sbin/gobastion-passwd-delete
-COPY scripts/sudo/gobastion-deluser.sh /usr/local/sbin/gobastion-deluser
-COPY scripts/sudo/gobastion-chown-ssh.sh /usr/local/sbin/gobastion-chown-ssh
-COPY scripts/sudo/gobastion-session.sh /usr/local/sbin/gobastion-session
-COPY scripts/sudo/gobastion-sync-user.sh /usr/local/sbin/gobastion-sync-user
-COPY scripts/sudo/gobastion-sudoers.sh /usr/local/sbin/gobastion-sudoers
+COPY --chmod=0755 scripts/sudo/gobastion-adduser.sh /usr/local/sbin/gobastion-adduser
+COPY --chmod=0755 scripts/sudo/gobastion-passwd-delete.sh /usr/local/sbin/gobastion-passwd-delete
+COPY --chmod=0755 scripts/sudo/gobastion-deluser.sh /usr/local/sbin/gobastion-deluser
+COPY --chmod=0755 scripts/sudo/gobastion-chown-ssh.sh /usr/local/sbin/gobastion-chown-ssh
+COPY --chmod=0755 scripts/sudo/gobastion-session.sh /usr/local/sbin/gobastion-session
+COPY --chmod=0755 scripts/sudo/gobastion-sync-user.sh /usr/local/sbin/gobastion-sync-user
+COPY --chmod=0755 scripts/sudo/gobastion-sudoers.sh /usr/local/sbin/gobastion-sudoers
 
-RUN chown root:root /app/goBastion && chmod 0755 /app/goBastion && \
-    chmod 0755 /usr/local/sbin/gobastion-* && \
-    printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-session *\n' > /etc/sudoers.d/gobastion-session && \
+RUN printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-session *\n' > /etc/sudoers.d/gobastion-session && \
     printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-sync-user *\n' >> /etc/sudoers.d/gobastion-session && \
     printf 'Defaults!/usr/local/sbin/gobastion-session env_keep += "SSH_CLIENT SSH_CONNECTION SSH_TTY"\n' >> /etc/sudoers.d/gobastion-session && \
     printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-db-session *\n' >> /etc/sudoers.d/gobastion-session && \
@@ -112,8 +128,7 @@ RUN chown root:root /app/goBastion && chmod 0755 /app/goBastion && \
     chmod 2770 /var/lib/goBastion /app/ttyrec && \
     touch /goBastion.log && chown root:gobastion /goBastion.log && chmod 0620 /goBastion.log
 
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
 EXPOSE 22
 
@@ -127,11 +142,11 @@ FROM runtime-common AS final-full
 # ── Disposable integration test image ───────────────────────────────────────
 FROM runtime-common AS isolation-test
 RUN apk add --no-cache postgresql mariadb mariadb-client openssl && mkdir -p /run/mysqld
-COPY --from=go-builder /app/dbsandbox.test /dbsandbox.test
-COPY --from=go-builder /app/dbsandbox.test /opt/gobastion-db-root/bin/caps-test
-COPY --from=go-builder /app/policy.test /policy.test
-COPY --from=go-builder /app/session.test /session.test
-COPY --from=go-builder /app/recording.test /recording.test
+COPY --from=go-test-builder /app/dbsandbox.test /dbsandbox.test
+COPY --from=go-test-builder /app/dbsandbox.test /opt/gobastion-db-root/bin/caps-test
+COPY --from=go-test-builder /app/policy.test /policy.test
+COPY --from=go-test-builder /app/session.test /session.test
+COPY --from=go-test-builder /app/recording.test /recording.test
 COPY scripts/test-db-isolation.sh /test-db-isolation.sh
 COPY scripts/test-db-supervisor.sh /test-db-supervisor.sh
 ENTRYPOINT ["/bin/sh", "/test-db-isolation.sh"]
