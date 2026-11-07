@@ -16,6 +16,7 @@ import (
 	internaldb "goBastion/internal/db"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
+	"goBastion/internal/recording"
 	"goBastion/internal/utils/sshHostKey"
 	gosync "goBastion/internal/utils/sync"
 	"goBastion/internal/utils/validation"
@@ -74,6 +75,7 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) int {
 		return runDisablePassword(db, log, *disablePasswordUser)
 
 	case *syncFlag:
+		recording.Recover(config.Get().Paths.TtyrecDir, log)
 		fmt.Fprintln(os.Stderr, "Syncing database state to OS...")
 		if err := syncer.EnforceFromDB(); err != nil {
 			log.Error("sync_failed", slog.Any("error", err))
@@ -139,6 +141,7 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) int {
 		}
 	}
 
+	recording.Recover(config.Get().Paths.TtyrecDir, log)
 	var adminCount int64
 	expr := internaldb.BoolFalseExpr(db, "system_user") + " AND role = ?"
 	if err := db.Model(&models.User{}).Where(expr, models.RoleAdmin).Count(&adminCount).Error; err != nil {

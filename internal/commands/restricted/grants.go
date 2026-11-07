@@ -2,6 +2,8 @@ package restricted
 
 import (
 	"bytes"
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"goBastion/internal/utils/console"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func normalizeCommandName(cmd string) string {
@@ -52,7 +55,35 @@ func GrantAdd(db *gorm.DB, currentUser *models.User, args []string) error {
 		Command:     normalizeCommandName(command),
 		GrantedByID: currentUser.ID,
 	}
-	if err := db.Create(&grant).Error; err != nil {
+	err := db.Transaction(func(tx *gorm.DB) error {
+		// Serialize grants for this account even on legacy schemas whose
+		// unique index includes nullable deleted_at. Never create a second
+		// active grant, and never require deleting audit/history rows.
+		var owner models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&owner, "id = ?", user.ID).Error; err != nil {
+			return err
+		}
+		var existing models.RestrictedCommandGrant
+		err := tx.Unscoped().Where("user_id = ? AND command = ?", user.ID, grant.Command).
+			Order("deleted_at ASC").First(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return tx.Create(&grant).Error
+		}
+		if err != nil {
+			return err
+		}
+		// Explicitly check active rows: NULL ordering differs between engines.
+		var active int64
+		if err := tx.Model(&models.RestrictedCommandGrant{}).Where("user_id = ? AND command = ?", user.ID, grant.Command).Count(&active).Error; err != nil {
+			return err
+		}
+		if active != 0 {
+			return fmt.Errorf("command is already granted to this user")
+		}
+		return tx.Unscoped().Model(&existing).Where("deleted_at IS NOT NULL").
+			Updates(map[string]any{"deleted_at": nil, "granted_by_id": currentUser.ID}).Error
+	}, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Restricted Grant Add",
 			BlockType: "error",

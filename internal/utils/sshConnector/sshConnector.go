@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"log/slog"
@@ -18,9 +20,10 @@ import (
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
+	"goBastion/internal/recording"
 	bastionSync "goBastion/internal/utils/sync"
-	"goBastion/internal/utils/validation"
 	"goBastion/internal/utils/transfer"
+	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -79,7 +82,8 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 
 	// Session duration limit (0 = unlimited). Applies to both the direct ssh
 	// path and the ttyrec-wrapped path below.
-	runCtx := context.Background()
+	runCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
+	defer stopSignals()
 	if d := config.Get().Session.MaxSessionDuration; d > 0 {
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(d))
@@ -120,13 +124,19 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 	// SSH ProxyJump chain: -J hop1,hop2,... (bastion-to-bastion forwarding)
 	if len(access.JumpHosts) > 0 {
-		sshArgs = append(sshArgs, "-J", strings.Join(access.JumpHosts, ","))
+		configuration, aliases, err := jumpConfig(db, user, access.JumpHosts, tmpFilePath, knownHostsFile)
+		if err != nil {
+			return fmt.Errorf("prepare SSH jumps: %w", err)
+		}
+		defer func() { _ = os.Remove(configuration) }()
+		sshArgs = append(sshArgs, "-F", configuration, "-J", strings.Join(aliases, ","))
 	}
 	sshArgs = append(sshArgs,
-		access.Username+"@"+access.Server, "-p", strconv.FormatInt(access.Port, 10),
+		"-p", strconv.FormatInt(access.Port, 10), "-l", access.Username,
+		"--", access.Server,
 	)
 	if access.RemoteCmd != "" {
-		sshArgs = append(sshArgs, "--", access.RemoteCmd)
+		sshArgs = append(sshArgs, access.RemoteCmd)
 	}
 
 	// Binary protocols must not go through ttyrec: the PTY would corrupt the data stream.
@@ -171,6 +181,9 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	sessionID := os.Getenv("GOB_SESSION_ID")
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
 	// Sanitize path components to prevent directory traversal.
 	safeUser := strings.ReplaceAll(user.Username, "/", "_")
 	safeUser = strings.ReplaceAll(safeUser, "..", "_")
@@ -197,22 +210,46 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeAccessUser, safeServer, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
+	spool, err := os.MkdirTemp(dir, ".ssh-record-*")
+	if err != nil {
+		return fmt.Errorf("creating recording spool: %w", err)
+	}
+	ttyrecFile = filepath.Join(spool, filepath.Base(ttyrecFile))
+	published := false
+	var lock *os.File
+	defer func() {
+		defer func() {
+			if lock != nil {
+				_ = lock.Close()
+			}
+		}()
+		if !published {
+			if info, err := os.Stat(ttyrecFile); err == nil && info.Size() > 0 {
+				slog.Error("ssh_recording_retained", "user", user.Username, "spool", spool, "destination", ttyrecGzFile)
+				return
+			}
+		}
+		_ = os.RemoveAll(spool)
+	}()
+
+	lock, err = recording.Prepare(spool, filepath.Join(safeUser, safeServer, filepath.Base(ttyrecGzFile)), ttyrecFile)
+	if err != nil {
+		return fmt.Errorf("prepare SSH recording: %w", err)
+	}
 
 	// Create gzip output via temp file + atomic rename to prevent symlink attacks.
-	tmpGz, err := os.CreateTemp(dir, "*.gz.tmp")
+	tmpGz, err := os.CreateTemp(spool, "*.gz.tmp")
 	if err != nil {
 		return fmt.Errorf("error creating temp gzip file: %w", err)
 	}
+	defer func() { _ = tmpGz.Close() }()
 	if err = tmpGz.Chmod(0640); err != nil {
 		_ = tmpGz.Close()
 		return fmt.Errorf("setting recording permissions: %w", err)
 	}
 	tmpGzPath := tmpGz.Name()
-	defer func() { _ = os.Remove(tmpGzPath) }() // cleanup on failure
 	gzipWriter := gzip.NewWriter(tmpGz)
-
-	// Always remove the intermediate .ttyrec file on exit
-	defer func() { _ = os.Remove(ttyrecFile) }()
+	defer func() { _ = gzipWriter.Close() }()
 
 	// cmdDone is signaled when ttyrec exits, so the gzip goroutine knows
 	// no more data will be written and can drain to EOF.
@@ -283,6 +320,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}()
 
 	cmd := exec.CommandContext(runCtx, "ttyrec", append([]string{"-f", ttyrecFile, "--", "ssh"}, sshArgs...)...)
+	recording.ConfigureRecorder(cmd, lock)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -295,11 +333,11 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	close(cmdDone)
 	gzipErr := <-done
 
-	if cerr := gzipWriter.Close(); cerr != nil {
-		return fmt.Errorf("gzip close error: %w", cerr)
-	}
-	if err := tmpGz.Close(); err != nil {
-		return fmt.Errorf("temp file close error: %w", err)
+	gzipCloseErr := gzipWriter.Close()
+	syncErr := tmpGz.Sync()
+	closeErr := tmpGz.Close()
+	if err := errors.Join(gzipCloseErr, syncErr, closeErr); err != nil {
+		return fmt.Errorf("finalizing SSH recording: %w", err)
 	}
 
 	if gzipErr != nil {
@@ -307,11 +345,10 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 
 	// Atomic rename from temp to final path
-	if err := os.Rename(tmpGzPath, ttyrecGzFile); err != nil {
-		return fmt.Errorf("error renaming gzip file: %w", err)
+	if err := recording.Publish(config.Get().Paths.TtyrecDir, tmpGzPath, filepath.Join(safeUser, safeServer, filepath.Base(ttyrecGzFile)), os.Geteuid()); err != nil {
+		return fmt.Errorf("error publishing gzip file: %w", err)
 	}
-	// Prevent defer cleanup of successfully renamed temp file
-	tmpGzPath = ""
+	published = true
 
 	if cmdErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {

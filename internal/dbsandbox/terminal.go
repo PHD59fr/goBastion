@@ -49,8 +49,12 @@ func terminalPeer(masterFD int) (*os.File, error) {
 	return os.NewFile(fd, "client-tty"), nil
 }
 
-func runClient(cmd *exec.Cmd, master *os.File) error {
+func runClient(cmd *exec.Cmd, master *os.File, touch func()) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		if touch != nil {
+			cmd.Stdout = activityWriter{Writer: cmd.Stdout, touch: touch}
+			cmd.Stderr = activityWriter{Writer: cmd.Stderr, touch: touch}
+		}
 		return cmd.Run()
 	}
 	slave, err := terminalPeer(int(master.Fd()))
@@ -101,10 +105,10 @@ func runClient(cmd *exec.Cmd, master *os.File) error {
 			}
 		}
 	}()
-	go func() { _, _ = io.Copy(master, os.Stdin) }()
+	go func() { _, _ = io.Copy(master, activityReader{Reader: os.Stdin, touch: touch}) }()
 	output := make(chan error, 1)
 	go func() {
-		err := copyTerminalOutput(master, os.Stdout, done)
+		err := copyTerminalOutput(master, activityWriter{Writer: os.Stdout, touch: touch}, done)
 		if err != nil {
 			_ = cmd.Process.Kill()
 		}

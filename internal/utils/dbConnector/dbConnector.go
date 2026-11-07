@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -13,14 +14,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"goBastion/internal/config"
 	"goBastion/internal/dbsandbox"
 	"goBastion/internal/models"
+	"goBastion/internal/recording"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/cryptokey"
+	"goBastion/internal/utils/sessionlimit"
 	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/validation"
 
@@ -69,6 +71,18 @@ type ResolutionDetails struct {
 // Connect launches a database client wrapped in ttyrec for session recording.
 var sandboxCommand = dbsandbox.Command
 
+var errIdleTimeout = errors.New("DB session idle timeout")
+
+func sessionLimitError(ctx context.Context) error {
+	if errors.Is(context.Cause(ctx), errIdleTimeout) {
+		return fmt.Errorf("⛔ Session ended: idle timeout reached")
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("⛔ Session ended: maximum session duration reached")
+	}
+	return nil
+}
+
 func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	return ConnectContext(context.Background(), db, user, access)
 }
@@ -81,6 +95,14 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(d))
 		defer cancel()
+	}
+	if idle := time.Duration(config.Get().Session.IdleTimeout); idle > 0 {
+		var cancel context.CancelCauseFunc
+		runCtx, cancel = context.WithCancelCause(runCtx)
+		defer cancel(nil)
+		watch := sessionlimit.StartWith(idle, 0, func() { cancel(errIdleTimeout) })
+		defer watch.Stop()
+		runCtx = dbsandbox.WithActivity(runCtx, watch.Touch)
 	}
 
 	clientBin := validation.DBProtocolClient(access.Protocol)
@@ -101,10 +123,11 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
-			}
+		err := cmd.Run()
+		if limitErr := sessionLimitError(runCtx); limitErr != nil {
+			return limitErr
+		}
+		if err != nil {
 			return fmt.Errorf("db client execution error: %v", err)
 		}
 		updateLastConnection(db, access)
@@ -113,6 +136,9 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	sessionID := os.Getenv("GOB_SESSION_ID")
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
 	safeUser := strings.ReplaceAll(user.Username, "/", "_")
 	safeUser = strings.ReplaceAll(safeUser, "..", "_")
 	safeDBUser := strings.ReplaceAll(access.Username, "/", "_")
@@ -124,12 +150,13 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	safeHost = strings.ReplaceAll(safeHost, "..", "_")
 	safeDatabase := strings.ReplaceAll(access.Database, "/", "_")
 	safeDatabase = strings.ReplaceAll(safeDatabase, "..", "_")
-	// ttyrec runs as root. Keep its writable spool outside user-controlled paths.
-	spool, err := os.MkdirTemp("", "gobastion-db-record-")
+	// ttyrec runs as root. Pin its private spool through an open directory descriptor.
+	dbSpool, err := recording.NewDBSpool(config.Get().Paths.TtyrecDir)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(spool) }()
+	defer dbSpool.Close()
+	spool := dbSpool.WorkPath
 	dir := spool + string(os.PathSeparator)
 
 	filenameSuffix := ""
@@ -144,6 +171,32 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeDBUser, safeHost, access.Port, timestamp, filenameSuffix)
 	recordingName := filepath.Base(ttyrecFile) + ".gz"
+	published := false
+	var lock *os.File
+	defer func() {
+		defer func() {
+			if lock != nil {
+				_ = lock.Close()
+			}
+		}()
+		if !published {
+			if st, err := os.Stat(ttyrecFile); err == nil && st.Size() > 0 {
+				// The root-owned 0700 spool stays outside the jail and the
+				// shared archive. Keep both the raw and compressed copies
+				// so an administrator can recover after an archive failure.
+				slog.Error("db_recording_retained", "spool", dbSpool.Path, "user", user.Username, "target", access.Host)
+				return
+			}
+		}
+		if err := os.RemoveAll(dbSpool.Path); err != nil {
+			slog.Warn("db_recording_cleanup_failed", "spool", spool, "error", err)
+		}
+	}()
+
+	lock, err = recording.Prepare(spool, filepath.Join(safeUser, safeHost, recordingName), ttyrecFile)
+	if err != nil {
+		return fmt.Errorf("prepare DB recording: %w", err)
+	}
 
 	tmpGz, err := os.CreateTemp(dir, "*.gz.tmp")
 	if err != nil {
@@ -155,11 +208,8 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	}
 	defer func() { _ = tmpGz.Close() }()
 	tmpGzPath := tmpGz.Name()
-	defer func() { _ = os.Remove(tmpGzPath) }()
 	gzipWriter := gzip.NewWriter(tmpGz)
 	defer func() { _ = gzipWriter.Close() }()
-
-	defer func() { _ = os.Remove(ttyrecFile) }()
 
 	cmdDone := make(chan struct{})
 	done := make(chan error, 1)
@@ -227,6 +277,7 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	cmd.Env = sandbox.Env
 	cmd.ExtraFiles = sandbox.ExtraFiles
 	cmd.SysProcAttr = sandbox.SysProcAttr
+	recording.ConfigureRecorder(cmd, lock)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -247,11 +298,12 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	if err := publishRecording(tmpGzPath, filepath.Join(safeUser, safeHost, recordingName)); err != nil {
 		return fmt.Errorf("publish DB recording: %w", err)
 	}
+	published = true
 
+	if limitErr := sessionLimitError(runCtx); limitErr != nil {
+		return limitErr
+	}
 	if cmdErr != nil {
-		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("⛔ Session ended: maximum session duration reached")
-		}
 		switch cmdErr.Error() {
 		case "exit status 100", "exit status 130", "signal: interrupt":
 			return nil
@@ -582,10 +634,10 @@ func resolveDBAlias(db *gorm.DB, user models.User, target string) (models.Databa
 
 	// Tier 2: group aliases
 	var userGroupIDs []uuid.UUID
-	db.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).Pluck("group_id", &userGroupIDs)
+	db.Model(&models.UserGroup{}).Scopes(models.ActiveGroup).Where("user_id = ?", user.ID).Pluck("group_id", &userGroupIDs)
 	if len(userGroupIDs) > 0 {
 		var aliases []models.DatabaseAlias
-		if err := db.Preload("Group").Where("group_id IN (?) AND deleted_at IS NULL",
+		if err := db.Scopes(models.ActiveGroup).Preload("Group").Where("group_id IN (?) AND deleted_at IS NULL",
 			userGroupIDs).Find(&aliases).Error; err != nil {
 			return models.DatabaseAlias{}, err
 		}
@@ -659,7 +711,7 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 
 	// Step 2: Group accesses
 	var userGroups []models.UserGroup
-	if err := db.Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
+	if err := db.Scopes(models.ActiveGroup).Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving user groups: %w", err)
 	}
 	if len(userGroups) > 0 {
@@ -706,7 +758,7 @@ func dbAccessFilter(db *gorm.DB, user models.User, host string, port int64, prot
 			if err := db.Where(
 				"user_id = ? AND group_id IN (?) AND (port = ? OR ? = 0) AND (host IN ? OR ? = '') AND (expires_at IS NULL OR expires_at > ?)",
 				user.ID, guestGroupIDs, port, port, validation.HostReferences(host), host, now,
-			).Preload("Group").Find(&grants).Error; err != nil {
+			).Scopes(models.ActiveGroup).Preload("Group").Find(&grants).Error; err != nil {
 				return nil, fmt.Errorf("error retrieving guest db accesses: %w", err)
 			}
 			for _, grant := range grants {
@@ -823,6 +875,9 @@ func buildGroupDBAccessRight(db *gorm.DB, a models.GroupDBAccess) (models.DBAcce
 }
 
 func buildGuestDBAccessRight(a models.GroupGuestDBAccess) (models.DBAccessRight, error) {
+	if a.Group.ID == uuid.Nil || a.Group.DeletedAt.Valid {
+		return models.DBAccessRight{}, fmt.Errorf("guest database access group is no longer available")
+	}
 	password, err := cryptokey.DecryptOrPassThrough(a.Password)
 	if err != nil {
 		return models.DBAccessRight{}, err
@@ -927,42 +982,5 @@ func tmpDirPath() string {
 // os.Root confines every path resolution, including hostile symlinks, to the
 // configured recording tree. Exclusive creation prevents replacing other files.
 func publishRecording(source, relative string) error {
-	root, err := os.OpenRoot(config.Get().Paths.TtyrecDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	if err := root.MkdirAll(filepath.Dir(relative), 0770); err != nil {
-		return err
-	}
-	dir, err := root.Open(filepath.Dir(relative))
-	if err != nil {
-		return err
-	}
-	err = dir.Chmod(0770 | os.ModeSetgid)
-	_ = dir.Close()
-	if err != nil {
-		return err
-	}
-	in, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := root.OpenFile(relative, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-	if st, err := root.Stat("."); err == nil {
-		if stat, ok := st.Sys().(*syscall.Stat_t); ok {
-			if err := out.Chown(-1, int(stat.Gid)); err != nil {
-				return err
-			}
-		}
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
+	return recording.Publish(config.Get().Paths.TtyrecDir, source, relative, -1)
 }

@@ -31,6 +31,7 @@ type broker struct {
 	mu        sync.Mutex
 	first     net.Conn
 	pgCancels map[uint64]func(context.Context) error
+	touch     func()
 }
 
 func newBroker(ctx context.Context, host, address, binary string, args, env []string, first net.Conn) (*broker, []string, []string) {
@@ -106,13 +107,27 @@ func (b *broker) tlsConfig() *tls.Config {
 
 func (b *broker) serve(control *os.File) {
 	defer func() { _ = control.Close() }()
+	rawControl, err := control.SyscallConn()
+	if err != nil {
+		return
+	}
 	stop := context.AfterFunc(b.ctx, func() { _ = control.Close() })
 	defer stop()
-	for count := 0; count < 128; count++ {
+	for count := 0; count < 128; {
 		var request [1]byte
 		if _, err := control.Read(request[:]); err != nil {
 			return
 		}
+		if request[0] == 'A' {
+			if b.touch != nil {
+				b.touch()
+			}
+			continue
+		}
+		if request[0] != 1 {
+			return
+		}
+		count++
 		pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 		if err != nil {
 			return
@@ -124,7 +139,25 @@ func (b *broker) serve(control *os.File) {
 			_ = peer.Close()
 			return
 		}
-		err = unix.Sendmsg(int(control.Fd()), []byte{1}, unix.UnixRights(int(peer.Fd())), nil, 0)
+		if b.touch != nil {
+			conn = &activityConn{Conn: conn, touch: b.touch}
+		}
+		// Hold the descriptor through the syscall, even if cancellation closes
+		// control concurrently. RawConn also preserves its nonblocking mode.
+		rights := unix.UnixRights(int(peer.Fd()))
+		var sendErr error
+		err = rawControl.Write(func(fd uintptr) bool {
+			for {
+				sendErr = unix.Sendmsg(int(fd), []byte{1}, rights, nil, unix.MSG_DONTWAIT)
+				if errors.Is(sendErr, unix.EINTR) {
+					continue
+				}
+				return !errors.Is(sendErr, unix.EAGAIN) && !errors.Is(sendErr, unix.EWOULDBLOCK)
+			}
+		})
+		if err == nil {
+			err = sendErr
+		}
 		_ = peer.Close()
 		if err != nil {
 			_ = conn.Close()

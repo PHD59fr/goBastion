@@ -58,13 +58,33 @@ func (b *broker) redis(native net.Conn) error {
 	if commands.kind != '*' {
 		return fmt.Errorf("redis COMMAND permission is required for protected sessions")
 	}
-	allowed := make(map[string]bool)
+	var names []string
 	for _, command := range commands.children {
 		if len(command.children) >= 3 {
-			allowed[strings.ToLower(string(command.children[0].text))] = !redisAdmin(command)
+			names = append(names, strings.ToLower(string(command.children[0].text)))
 		}
 	}
-	allowed["auth"] = false // The supervisor's account cannot be changed.
+	if len(names) == 0 {
+		return fmt.Errorf("redis command metadata is empty")
+	}
+	// COMMAND lists canonical names even after rename-command. Resolve those
+	// names again so an administrative/identity command renamed to GET or PING
+	// cannot inherit the permission of the original command with that name.
+	if err := writeRedisCommand(upstream, append([]string{"COMMAND", "INFO"}, names...)...); err != nil {
+		return err
+	}
+	budget = 16 * 1024 * 1024
+	resolved, err := readRedisValue(r, &budget, 0)
+	if err != nil {
+		return err
+	}
+	if resolved.kind != '*' || len(resolved.children) != len(names) {
+		return fmt.Errorf("redis COMMAND INFO permission is required for protected sessions")
+	}
+	allowed := make(map[string]bool, len(names))
+	for i, name := range names {
+		allowed[name] = redisCommandAllowed(name, resolved.children[i])
+	}
 	_ = native.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
 	stop := context.AfterFunc(b.ctx, func() { _ = native.Close(); _ = upstream.Close() })
@@ -83,6 +103,12 @@ func (b *broker) redis(native net.Conn) error {
 		return inputErr
 	}
 	return outputErr
+}
+
+func redisCommandAllowed(name string, metadata redisValue) bool {
+	// AUTH and RESET can change the identity selected by the supervisor.
+	return name != "auth" && name != "reset" && len(metadata.children) >= 3 &&
+		strings.EqualFold(string(metadata.children[0].text), name) && !redisAdmin(metadata)
 }
 
 func copyRedisCommands(dst io.Writer, src *bufio.Reader, allowed map[string]bool) error {

@@ -188,16 +188,18 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 		t.Fatalf("mariadb password leaked into client argv, args=%q", clientArgsStr)
 	}
 
-	// It must instead be forwarded through the client env.
+	// This test replaces the sandbox/broker with a direct process, whose
+	// environment represents broker input, not the jailed native client's env.
+	// Real client credential isolation is covered by the dbsandbox integration tests.
 	clientEnv, err := os.ReadFile(clientEnvLog)
 	if err != nil {
-		t.Fatalf("read client env log: %v", err)
+		t.Fatalf("read broker input log: %v", err)
 	}
 	if got := strings.TrimSpace(string(clientEnv)); got != "MYSQL_PWD=secret" {
-		t.Fatalf("expected MYSQL_PWD in client env, got %q", got)
+		t.Fatalf("expected MYSQL_PWD in broker input, got %q", got)
 	}
 
-	recordings, err := filepath.Glob(filepath.Join(ttyrecDir, "alice", "db.example.internal", "dbuser.db.example.internal:3306_*_mysql_appdb.ttyrec.gz"))
+	recordings, err := filepath.Glob(filepath.Join(ttyrecDir, "alice", "db.example.internal", "dbuser.db.example.internal:3306_*_mysql_appdb*.ttyrec.gz"))
 	if err != nil {
 		t.Fatalf("glob ttyrec recordings: %v", err)
 	}
@@ -577,10 +579,10 @@ func TestResolveTargetDetailedReportsRequestedAndEffectiveTargets(t *testing.T) 
 	}
 }
 
-func TestBuildClientArgsAndEnvKeepPasswordOutOfArgv(t *testing.T) {
+func TestBuildClientArgsAndBrokerInputKeepPasswordOutOfArgv(t *testing.T) {
 	tests := []struct {
 		protocol string
-		wantEnv  string // exact env var line expected in clientEnv
+		wantEnv  string // in-process broker input, never the native client's env
 	}{
 		{protocol: "mysql", wantEnv: "MYSQL_PWD=secret"},
 		{protocol: "postgres", wantEnv: "PGPASSWORD=secret"},
@@ -606,12 +608,12 @@ func TestBuildClientArgsAndEnvKeepPasswordOutOfArgv(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Fatalf("clientEnv missing %q, got %v", tt.wantEnv, env)
+				t.Fatalf("brokerEnv missing %q, got %v", tt.wantEnv, env)
 			}
 		})
 	}
 
-	// No password → no env vars set at all.
+	// No password means no credential is sent to the broker.
 	if env := brokerEnv(models.DBAccessRight{Protocol: "mysql", Host: "h", Port: 3306}); len(env) != 0 {
 		t.Fatalf("expected no env for empty password, got %v", env)
 	}
@@ -739,6 +741,9 @@ func stubClientBinary(t *testing.T, name string) {
 }
 
 func init() {
+	// Only recording and access metadata are exercised here. This direct
+	// process stands in for the privileged broker, including its credential input.
+	// dbsandbox integration tests exercise the actual isolated native clients.
 	sandboxCommand = func(ctx context.Context, host string, port int64, bin string, args, env []string) (*exec.Cmd, func(), error) {
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = append(os.Environ(), env...)

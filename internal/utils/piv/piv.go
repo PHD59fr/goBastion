@@ -20,6 +20,8 @@ import (
 	"encoding/pem"
 	"fmt"
 
+	"goBastion/internal/utils/sshkey"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -65,7 +67,7 @@ func VerifyAttestation(anchorPEM, intermediatePEM, attestCertPEM, sshPubKeyText 
 	}
 
 	// Verify that the public key in the attestation cert matches the SSH key.
-	sshKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(sshPubKeyText))
+	sshKey, _, _, err := sshkey.ParseIngressKey(sshPubKeyText, true)
 	if err != nil {
 		return fmt.Errorf("parsing SSH public key: %w", err)
 	}

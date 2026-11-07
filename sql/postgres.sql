@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS groups (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_groupname_deletedat ON groups (name, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_groups_deleted_at ON groups (deleted_at);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM groups WHERE deleted_at IS NULL GROUP BY name HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'cannot create active group-name unique index: duplicate active group names exist; resolve them manually (no data was deleted)';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_groups_name ON groups (name) WHERE deleted_at IS NULL;
 
 -- ── user_groups ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS user_groups (

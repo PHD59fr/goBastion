@@ -21,6 +21,24 @@ su-exec postgres pg_ctl -D /tmp/pgdata -o '-c ssl=on -c client_connection_check_
 mariadb-install-db --user=mysql --datadir=/tmp/mydata --auth-root-authentication-method=normal >/tmp/mysql-init.log
 mariadbd --no-defaults --user=mysql --datadir=/tmp/mydata --port=53306 --bind-address=127.0.0.1 --socket=/run/mysqld/test.sock --ssl-cert=/tmp/db-server.crt --ssl-key=/tmp/db-server.key >/tmp/my.log 2>&1 &
 redis-server --port 0 --tls-port 56379 --tls-cert-file /tmp/db-server.crt --tls-key-file /tmp/db-server.key --tls-auth-clients no --bind 127.0.0.1 --requirepass sandbox-secret --rename-command CONFIG HIDDENCONFIG --daemonize yes
+# A restricted authenticated user must never RESET into the broader, passwordless
+# default account. Also cover RESET renamed to the canonical name of a safe command.
+for redis_port in 56380 56381; do
+ if [ "$redis_port" = 56381 ]; then
+  set -- --rename-command PING ORIGINALPING --rename-command RESET PING
+ else
+  set --
+ fi
+ redis-server --port 0 --tls-port "$redis_port" --tls-cert-file /tmp/db-server.crt --tls-key-file /tmp/db-server.key --tls-auth-clients no --bind 127.0.0.1 --pidfile "/tmp/redis-$redis_port.pid" --logfile "/tmp/redis-$redis_port.log" --daemonize yes "$@"
+ redis_ready=no
+ for attempt in $(seq 1 50); do
+  if redis-cli --tls --cacert /tmp/db-server.crt -h 127.0.0.1 -p "$redis_port" ECHO READY >/dev/null 2>&1; then redis_ready=yes; break; fi
+  sleep 0.1
+ done
+ [ "$redis_ready" = yes ] || { cat "/tmp/redis-$redis_port.log" >&2; exit 1; }
+ redis-cli --tls --cacert /tmp/db-server.crt -h 127.0.0.1 -p "$redis_port" SET forbidden:key FORBIDDEN_DATA >/dev/null
+ redis-cli --tls --cacert /tmp/db-server.crt -h 127.0.0.1 -p "$redis_port" ACL SETUSER limited on '>sandbox-secret' '~allowed:*' '+get' '+auth' '+reset' '+ping' '+echo' '+command' >/dev/null
+done
 mysql_ready=no
 for attempt in $(seq 1 200); do
  if mariadb-admin --protocol=tcp -h127.0.0.1 -P53306 -uroot ping >/dev/null 2>&1; then mysql_ready=yes; break; fi
@@ -30,7 +48,9 @@ done
 psql -h127.0.0.1 -p55432 -Upostgres -dpostgres -c 'CREATE DATABASE policytest' >/dev/null
 mariadb --protocol=tcp -h127.0.0.1 -P53306 -uroot -e 'CREATE DATABASE policytest'
 mariadb --protocol=tcp -h127.0.0.1 -P53306 -uroot -e "CREATE USER 'credentialuser'@'127.0.0.1' IDENTIFIED BY 'sandbox-secret'"
-GOB_POLICY_INTEGRATION=1 /policy.test -test.run TestConcurrentAdministratorRemoval -test.v
+GOB_POLICY_INTEGRATION=1 /policy.test -test.run 'TestConcurrentAdministratorRemoval|TestCommandLifecycleIntegration' -test.v
+/recording.test -test.v
+GOB_POLICY_INTEGRATION=1 /session.test -test.run '^TestLoginHistoryIntegration$' -test.v
 psql -h127.0.0.1 -p55432 -Upostgres -dpostgres -c "CREATE ROLE credentialuser LOGIN PASSWORD 'sandbox-secret'" >/dev/null
 printf 'host all credentialuser 127.0.0.1/32 scram-sha-256\nhost all credentialuser ::1/128 scram-sha-256\n' > /tmp/new-hba
 cat /tmp/pgdata/pg_hba.conf >> /tmp/new-hba

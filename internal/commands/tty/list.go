@@ -90,9 +90,12 @@ func List(db *gorm.DB, u *models.User, args []string) error {
 	}
 
 	var output []string
-	err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(baseDir, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if info.IsDir() && internalRecordingDir(info.Name()) {
+			return filepath.SkipDir
 		}
 		if info.IsDir() && path != baseDir {
 			serverIP := filepath.Base(path)

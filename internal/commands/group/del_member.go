@@ -2,6 +2,7 @@ package group
 
 import (
 	"bytes"
+	"database/sql"
 	"flag"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"goBastion/internal/utils/console"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // DelMember removes a user from a group.
@@ -39,61 +41,78 @@ func DelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
-	var g models.Group
-	if err := db.Where("name = ?", groupName).First(&g).Error; err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Member",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
-		})
-		return err
-	}
-
 	var u models.User
-	if err := db.Where("username = ?", username).First(&u).Error; err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Member",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User \"" + username + "\" not found. Check spelling or run accountList."}}},
-		})
-		return err
-	}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		db := tx
 
-	// Check membership exists
-	var membership models.UserGroup
-	if err := db.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&membership).Error; err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Member",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' is not a member of group '%s'.", username, groupName)}}},
-		})
-		return err
-	}
-
-	// Prevent removing the last owner
-	if membership.Role == models.GroupRoleOwner {
-		var ownerCount int64
-		if err := db.Model(&models.UserGroup{}).Where("group_id = ? AND role = ? AND deleted_at IS NULL", g.ID, models.GroupRoleOwner).Count(&ownerCount).Error; err != nil {
-			return fmt.Errorf("failed to count group owners: %w", err)
-		}
-		if ownerCount <= 1 {
+		var g models.Group
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("name = ?", groupName).First(&g).Error; err != nil {
 			console.DisplayBlock(console.ContentBlock{
 				Title:     "Remove Member",
 				BlockType: "error",
-				Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"Cannot remove the last owner of the group. Promote another member to owner first."}}},
+				Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("Group '%s' not found. Check spelling or run groupList.", groupName)}}},
 			})
-			return fmt.Errorf("cannot remove the last owner of group '%s'", groupName)
+			return err
 		}
-	}
 
-	if err := db.Delete(&membership).Error; err != nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Remove Member",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to remove member from group."}}},
-		})
+		var actor models.User
+		if err := db.First(&actor, "id = ?", currentUser.ID).Error; err != nil {
+			return err
+		}
+		if !actor.Enabled || actor.SystemUser || !actor.CanDo(db, "groupDelMember", groupName) {
+			return fmt.Errorf("group membership authority was revoked")
+		}
+
+		if err := db.Where("username = ?", username).First(&u).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Remove Member",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{"User \"" + username + "\" not found. Check spelling or run accountList."}}},
+			})
+			return err
+		}
+
+		// Check membership exists
+		var membership models.UserGroup
+		if err := db.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&membership).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Remove Member",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Not Found", Body: []string{fmt.Sprintf("User '%s' is not a member of group '%s'.", username, groupName)}}},
+			})
+			return err
+		}
+
+		// Prevent removing the last owner
+		if membership.Role == models.GroupRoleOwner {
+			var ownerCount int64
+			if err := db.Model(&models.UserGroup{}).Where("group_id = ? AND role = ? AND deleted_at IS NULL", g.ID, models.GroupRoleOwner).Count(&ownerCount).Error; err != nil {
+				return fmt.Errorf("failed to count group owners: %w", err)
+			}
+			if ownerCount <= 1 {
+				console.DisplayBlock(console.ContentBlock{
+					Title:     "Remove Member",
+					BlockType: "error",
+					Sections:  []console.SectionContent{{SubTitle: "Blocked", Body: []string{"Cannot remove the last owner of the group. Promote another member to owner first."}}},
+				})
+				return fmt.Errorf("cannot remove the last owner of group '%s'", groupName)
+			}
+		}
+
+		if err := db.Delete(&membership).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Remove Member",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to remove member from group."}}},
+			})
+			return err
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
 		return err
 	}
+
 	models.InvalidateGroupsCache(currentUser.ID)
 	models.InvalidateGroupsCache(u.ID)
 

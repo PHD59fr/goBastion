@@ -44,16 +44,21 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 	}
 	displayWelcome(currentUser, mode)
 
-	now := time.Now()
-	if err := db.Model(&currentUser).Updates(map[string]any{
-		"last_login_at":   now,
-		"last_login_from": ip,
-	}).Error; err != nil {
-		log.Warn("last_login_update_failed", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
+	return true
+}
+
+// Record a login only after authentication and session admission. Keep the
+// caller's previous-login snapshot for the welcome message.
+func recordAuthenticatedLogin(db *gorm.DB, currentUser models.User, log *slog.Logger) bool {
+	ip := system.ClientIPFromEnv()
+	result := db.Model(&models.User{}).
+		Where(map[string]any{"id": currentUser.ID, "enabled": true, "system_user": false}).
+		Updates(map[string]any{"last_login_at": time.Now(), "last_login_from": ip})
+	if result.Error != nil || result.RowsAffected != 1 {
+		log.Warn("last_login_update_failed", "user", currentUser.Username, "error", result.Error, "rows", result.RowsAffected)
+		return false
 	}
-
-	log.Info("login", slog.String("user", currentUser.Username), slog.String("from", ip), slog.String("role", currentUser.Role))
-
+	log.Info("login", "user", currentUser.Username, "from", ip, "role", currentUser.Role)
 	return true
 }
 

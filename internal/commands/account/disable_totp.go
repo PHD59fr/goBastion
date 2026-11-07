@@ -55,11 +55,15 @@ func DisableTOTP(db *gorm.DB, currentUser *models.User, log *slog.Logger, args [
 		return err
 	}
 
-	target.TOTPSecret = ""
-	target.TOTPEnabled = false
-	target.BackupCodes = ""
-	if err := db.Save(&target).Error; err != nil {
+	// Update only MFA fields; the account may have been revoked since the read.
+	result := db.Model(&models.User{}).Where("id = ?", target.ID).Updates(map[string]any{
+		"totp_secret": "", "totp_enabled": false, "backup_codes": "",
+	})
+	if err := result.Error; err != nil {
 		return fmt.Errorf("failed to save: %w", err)
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("account was removed during MFA reset")
 	}
 
 	log.Info("totp_admin_disabled", slog.String("target", username), slog.String("by", currentUser.Username))

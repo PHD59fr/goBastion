@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"goBastion/internal/config"
@@ -105,23 +106,17 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 	defer func() { _ = client.Close() }()
 
 	// 2. Request the sftp subsystem on the target.
-	session, err := client.NewSession()
+	target, targetRequests, err := client.OpenChannel("session", nil)
 	if err != nil {
 		return fmt.Errorf("open ssh session: %w", err)
 	}
-	defer func() { _ = session.Close() }()
-
-	if err = session.RequestSubsystem("sftp"); err != nil {
+	defer func() { _ = target.Close() }()
+	ok, err := target.SendRequest("subsystem", true, ssh.Marshal(struct{ Name string }{"sftp"}))
+	if err != nil {
 		return fmt.Errorf("request sftp subsystem: %w", err)
 	}
-
-	targetIn, err := session.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("target stdin pipe: %w", err)
-	}
-	targetOut, err := session.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("target stdout pipe: %w", err)
+	if !ok {
+		return fmt.Errorf("request sftp subsystem: target rejected request")
 	}
 
 	// 3. Load the stable host key used by the fake SSH server presented to the
@@ -160,34 +155,69 @@ func Proxy(db *gorm.DB, access models.AccessRight) error {
 			return fmt.Errorf("accept channel: %w", err)
 		}
 
-		// Acknowledge subsystem and other requests silently.
+		// Only the SFTP subsystem is supported on this authenticated transport.
+		requestsDone := make(chan struct{})
 		go func(reqs <-chan *ssh.Request) {
+			defer close(requestsDone)
+			started := false
 			for req := range reqs {
-				_ = req.Reply(req.Type == "subsystem", nil)
+				var payload struct{ Name string }
+				accept := !started && req.Type == "subsystem" && ssh.Unmarshal(req.Payload, &payload) == nil && payload.Name == "sftp"
+				if accept {
+					started = true
+				}
+				_ = req.Reply(accept, nil)
 			}
 		}(requests)
 
 		// 6. Pipe raw sftp bytes between the client channel and the target session.
-		done := make(chan struct{}, 2)
-		go func() {
-			defer func() { done <- struct{}{} }()
-			if _, err := io.Copy(targetIn, ch); err != nil {
-				slog.Warn("sftp_proxy_client_to_target", slog.String("error", err.Error()))
-			}
-			_ = targetIn.Close()
-		}()
-		go func() {
-			defer func() { done <- struct{}{} }()
-			if _, err := io.Copy(ch, targetOut); err != nil {
-				slog.Warn("sftp_proxy_target_to_client", slog.String("error", err.Error()))
-			}
-			_ = ch.CloseWrite()
-		}()
-		<-done
-		<-done
+		relaySFTP(ch, target, targetRequests)
+		// Wait for the peer's channel-close acknowledgement before tearing down
+		// the transport, including when it had already half-closed its input.
+		<-requestsDone
 		return nil
 	}
 	return nil
+}
+
+func relaySFTP(front, target ssh.Channel, targetRequests <-chan *ssh.Request) {
+	closeChannels := func() { _ = target.Close(); _ = front.Close() }
+	var pending sync.WaitGroup
+	pending.Go(func() {
+		if _, err := io.Copy(target, front); err != nil {
+			slog.Warn("sftp_proxy_client_to_target", "error", err)
+			closeChannels()
+			return
+		}
+		// A client half-close must still allow the target's final reply through.
+		_ = target.CloseWrite()
+	})
+	requestsDone := make(chan struct{})
+	go func() {
+		defer close(requestsDone)
+		for req := range targetRequests {
+			if req.Type == "exit-status" || req.Type == "exit-signal" {
+				_, _ = front.SendRequest(req.Type, false, req.Payload)
+			}
+			_ = req.Reply(false, nil)
+		}
+	}()
+	var output sync.WaitGroup
+	copyOutput := func(dst io.Writer, src io.Reader) {
+		if _, err := io.Copy(dst, src); err != nil {
+			slog.Warn("sftp_proxy_target_to_client", "error", err)
+			closeChannels()
+		}
+	}
+	output.Go(func() { copyOutput(front, target) })
+	output.Go(func() { copyOutput(front.Stderr(), target.Stderr()) })
+	output.Wait()
+	// Both output streams are drained. Closing the channels also releases an
+	// upload blocked on the local client or on the target's receive window.
+	_ = target.Close()
+	<-requestsDone
+	_ = front.Close()
+	pending.Wait()
 }
 
 func serverHandshake(conn net.Conn, cfg *ssh.ServerConfig, timeout time.Duration) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {

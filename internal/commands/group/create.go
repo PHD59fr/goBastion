@@ -2,6 +2,7 @@ package group
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"regexp"
@@ -50,18 +51,21 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
-	var existingGroup models.Group
-	if err := db.Unscoped().Where("name = ? AND deleted_at IS NULL", groupName).First(&existingGroup).Error; err == nil {
-		console.DisplayBlock(console.ContentBlock{
-			Title:     "Group Create",
-			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Exists", Body: []string{fmt.Sprintf("Group '%s' already exists.", groupName)}}},
-		})
-		return nil
-	}
-
-	g := models.Group{Name: groupName}
-	if err := db.Create(&g).Error; err != nil {
+	// Group creation is administrator-only. Lock the same administrator set
+	// across creators, including on MariaDB without partial unique indexes.
+	if err := models.WithAccountChange(db, func(tx *gorm.DB) error {
+		var actor models.User
+		if err := tx.Where(map[string]any{"id": currentUser.ID, "enabled": true, "system_user": false, "role": models.RoleAdmin}).First(&actor).Error; err != nil {
+			return fmt.Errorf("administrator access is no longer valid: %w", err)
+		}
+		var existing models.Group
+		if err := tx.Where("name = ?", groupName).First(&existing).Error; err == nil {
+			return fmt.Errorf("group '%s' already exists", groupName)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		return tx.Create(&models.Group{Name: groupName}).Error
+	}); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Group Create",
 			BlockType: "error",

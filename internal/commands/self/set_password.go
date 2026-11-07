@@ -14,6 +14,16 @@ import (
 // SetPassword sets a password-based MFA second factor for the current user.
 // The password is stored as a bcrypt hash. It will be required at every login in addition to key auth.
 func SetPassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string) error {
+	if user.PasswordHash != "" {
+		return fmt.Errorf("password MFA already configured; use selfChangePassword")
+	}
+	var fresh models.User
+	if err := db.First(&fresh, "id = ?", user.ID).Error; err != nil {
+		return err
+	}
+	if fresh.PasswordHash != "" {
+		return fmt.Errorf("password MFA already configured; use selfChangePassword")
+	}
 	fmt.Print("Enter new password: ")
 	pass1, err := readPassword()
 	if err != nil {
@@ -43,8 +53,12 @@ func SetPassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string
 	if err != nil {
 		return fmt.Errorf("bcrypt error: %w", err)
 	}
-	if err := db.Model(user).Update("password_hash", string(hash)).Error; err != nil {
+	result := db.Model(&models.User{}).Where(map[string]any{"id": user.ID, "enabled": true, "system_user": false}).Where("password_hash IS NULL OR password_hash = ?", "").Update("password_hash", string(hash))
+	if err := result.Error; err != nil {
 		return fmt.Errorf("failed to save password: %w", err)
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("account changed or password already configured; reconnect or use selfChangePassword")
 	}
 	user.PasswordHash = string(hash)
 	log.Info("password_mfa_set", slog.String("user", user.Username))

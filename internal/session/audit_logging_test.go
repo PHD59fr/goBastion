@@ -22,6 +22,16 @@ func TestRedactAuditArgs(t *testing.T) {
 			want: []string{"--password=" + auditRedactedValue, "--port", "5432"},
 		},
 		{
+			name: "single dash password value",
+			args: []string{"-password", "secret", "--host", "db.example"},
+			want: []string{"-password", auditRedactedValue, "--host", "db.example"},
+		},
+		{
+			name: "single dash equals password value",
+			args: []string{"-password=secret", "--host", "db.example"},
+			want: []string{"-password=" + auditRedactedValue, "--host", "db.example"},
+		},
+		{
 			name: "multiple password values",
 			args: []string{"--password", "one", "safe", "--password=two"},
 			want: []string{"--password", auditRedactedValue, "safe", "--password=" + auditRedactedValue},
@@ -67,6 +77,16 @@ func TestRedactAuditCommand(t *testing.T) {
 			name:    "original SSH command with equals value",
 			command: "-osh selfAddDBAccess --password=secret --host db.example",
 			want:    "-osh selfAddDBAccess --password=[REDACTED] --host db.example",
+		},
+		{
+			name:    "SSH command with single dash password",
+			command: `-osh selfAddDBAccess -password "secret with spaces" --host db.example`,
+			want:    "-osh selfAddDBAccess -password [REDACTED] --host db.example",
+		},
+		{
+			name:    "SSH command with single dash equals password",
+			command: "-osh selfAddDBAccess -password=secret --host db.example",
+			want:    "-osh selfAddDBAccess -password=[REDACTED] --host db.example",
 		},
 		{
 			name:    "safe command remains byte-for-byte unchanged",

@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS `groups` (
     updated_at   datetime,
     deleted_at   datetime,
     UNIQUE KEY idx_groupname_deletedat (name(255), deleted_at),
+    active_name_hash varchar(512) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED,
+    UNIQUE KEY uq_active_groups_name (active_name_hash),
     KEY idx_groups_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -403,6 +405,9 @@ DROP PROCEDURE IF EXISTS gobastion_add_active_identity_indexes;
 DELIMITER //
 CREATE PROCEDURE gobastion_add_active_identity_indexes()
 BEGIN
+    IF EXISTS (SELECT 1 FROM `groups` WHERE deleted_at IS NULL GROUP BY name HAVING COUNT(*) > 1) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active group names exist; resolve manually (no data deleted)';
+    END IF;
     IF EXISTS (SELECT 1 FROM users WHERE deleted_at IS NULL GROUP BY LOWER(username) HAVING COUNT(*) > 1) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active usernames exist; resolve manually (no data deleted)';
     END IF;
@@ -425,6 +430,12 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'duplicate active group DB aliases exist; resolve manually (no data deleted)';
     END IF;
 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'groups' AND column_name = 'active_name_hash') THEN
+        ALTER TABLE `groups` ADD COLUMN active_name_hash VARCHAR(512) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'groups' AND index_name = 'uq_active_groups_name') THEN
+        CREATE UNIQUE INDEX uq_active_groups_name ON `groups` (active_name_hash);
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'active_username_hash') THEN
         ALTER TABLE users ADD COLUMN active_username_hash BINARY(32) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN UNHEX(SHA2(LOWER(username), 256)) ELSE NULL END) VIRTUAL;
     END IF;

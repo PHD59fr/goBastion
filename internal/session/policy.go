@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"goBastion/internal/config"
+	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 
 	"gorm.io/gorm"
@@ -39,5 +40,44 @@ func refreshSessionUser(db *gorm.DB, user *models.User) error {
 		return fmt.Errorf("account disabled")
 	}
 	*user = fresh
+	return nil
+}
+
+// Authentication was performed against this snapshot. Role changes take effect
+// immediately; changes to the factors themselves require a fresh authentication.
+func refreshAuthenticatedUser(db *gorm.DB, u *models.User) error {
+	before := *u
+	if err := refreshSessionUser(db, u); err != nil {
+		return err
+	}
+	if before.PasswordHash != u.PasswordHash || before.TOTPEnabled != u.TOTPEnabled || before.TOTPSecret != u.TOTPSecret {
+		return fmt.Errorf("authentication factors changed; reconnect")
+	}
+	return nil
+}
+func validateSessionAdmission(db *gorm.DB, u *models.User, command string, args []string) error {
+	if err := refreshAuthenticatedUser(db, u); err != nil {
+		return err
+	}
+	cfg := config.Get()
+	if cfg.Maintenance.Enabled && !u.IsAdmin() {
+		return fmt.Errorf("bastion under maintenance")
+	}
+	interactive := command == "" || command == "--"
+	if interactive {
+		if msg := interactiveBlockMessage(u); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+	} else if (u.OSHOnly || cfg.ForceOSHOnly.Enabled) && !isOSHCommand(command) {
+		return fmt.Errorf("account is limited to -osh commands")
+	}
+	if _, _, ok := parseTCPProxyRequest(command, args); ok {
+		if msg := tcpProxyMFABlockMessage(*u); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+	}
+	if strings.HasPrefix(command, "sftp-session") {
+		return mfa.OpaqueTransportError(*u, "SFTP proxy")
+	}
 	return nil
 }

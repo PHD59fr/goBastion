@@ -96,6 +96,11 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
 			return
 		}
+		if err := validateSessionAdmission(db, &currentUser, "", nil); err != nil {
+			log.Warn("session_admission_denied", "error", err)
+			fmt.Fprintln(os.Stderr, "Session denied:", err)
+			return
+		}
 		releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
 		if err != nil {
 			log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
@@ -103,6 +108,9 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			return
 		}
 		defer releaseSession()
+		if !recordAuthenticatedLogin(db, currentUser, log) {
+			return
+		}
 		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 		runInteractiveMode(db, &currentUser, log, releaseSession)
 	} else {
@@ -127,6 +135,11 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
 				return
 			}
+			if err := validateSessionAdmission(db, &currentUser, cmd, args); err != nil {
+				log.Warn("session_admission_denied", "error", err)
+				fmt.Fprintln(os.Stderr, "Session denied:", err)
+				return
+			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
 			if err != nil {
 				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
@@ -134,6 +147,9 @@ func Run(db *gorm.DB, log *slog.Logger) {
 				return
 			}
 			defer releaseSession()
+			if !recordAuthenticatedLogin(db, currentUser, log) {
+				return
+			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 			runInteractiveMode(db, &currentUser, log, releaseSession)
 		} else {
@@ -158,6 +174,11 @@ func Run(db *gorm.DB, log *slog.Logger) {
 				}
 			}
 			sessionKind := classifySessionKind(cmd, args)
+			if err := validateSessionAdmission(db, &currentUser, cmd, args); err != nil {
+				log.Warn("session_admission_denied", "error", err)
+				fmt.Fprintln(os.Stderr, "Session denied:", err)
+				return
+			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, sessionKind)
 			if err != nil {
 				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("kind", sessionKind), slog.String("error", err.Error()))
@@ -165,6 +186,9 @@ func Run(db *gorm.DB, log *slog.Logger) {
 				return
 			}
 			defer releaseSession()
+			if !recordAuthenticatedLogin(db, currentUser, log) {
+				return
+			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", redactAuditCommand(cmd)))
 			runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session_end", slog.String("user", currentUser.Username))

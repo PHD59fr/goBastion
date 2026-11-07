@@ -23,10 +23,11 @@ import (
 )
 
 type Spec struct {
-	Binary    string
-	Args, Env []string
-	IP        string
-	Port      int64
+	Binary        string
+	Args, Env     []string
+	IP            string
+	Port          int64
+	TrackActivity bool
 }
 
 // Command never accepts sandbox settings or executables from the user.
@@ -75,6 +76,16 @@ func Command(ctx context.Context, host string, port int64, bin string, args, env
 	ip := first.RemoteAddr().(*net.TCPAddr).IP.String()
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
+		_ = first.Close()
+		cleanupDir()
+		return nil, nil, err
+	}
+	// Let Go's poller interrupt the supervisor's Read when the session is
+	// canceled. Closing a descriptor in another thread does not interrupt a
+	// blocking Linux recv; it can otherwise retain the worker's liveness socket.
+	if err := unix.SetNonblock(pair[0], true); err != nil {
+		_ = unix.Close(pair[0])
+		_ = unix.Close(pair[1])
 		_ = first.Close()
 		cleanupDir()
 		return nil, nil, err
@@ -162,9 +173,10 @@ func Command(ctx context.Context, host string, port int64, bin string, args, env
 		})
 	}
 	auth, clientArgs, clientEnv := newBroker(ctx, host, net.JoinHostPort(ip, strconv.FormatInt(port, 10)), bin, args, env, first)
+	auth.touch, _ = ctx.Value(activityKey{}).(func())
 	go func() {
 		defer func() { _ = w.Close() }()
-		_ = json.NewEncoder(w).Encode(Spec{Binary: bin, Args: clientArgs, Env: clientEnv, IP: ip, Port: port})
+		_ = json.NewEncoder(w).Encode(Spec{Binary: bin, Args: clientArgs, Env: clientEnv, IP: ip, Port: port, TrackActivity: auth.touch != nil})
 	}()
 	go auth.serve(parent)
 	return cmd, clean, nil
@@ -293,7 +305,11 @@ func Worker() error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return runClient(cmd, terminal)
+	var touch func()
+	if spec.TrackActivity {
+		touch = activityNotifier(int(control.Fd()))
+	}
+	return runClient(cmd, terminal, touch)
 }
 
 // Use architecture-specific syscall numbers: Kafel 3.4 names differ from Linux names.

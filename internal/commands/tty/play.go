@@ -133,6 +133,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 	}
 	if err := playCmd.Start(); err != nil {
 		_ = zcatCmd.Process.Kill()
+		_ = zcatCmd.Wait()
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
 			BlockType: "error",
@@ -151,7 +152,11 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 	// is set to os.Stdin, so the pipe's write end is not used by zcatCmd.
 	// Just wait for both processes.
 	playErr := playCmd.Wait()
-	_ = zcatCmd.Wait()
+	decompressErr := zcatCmd.Wait()
+	if playErr == nil && decompressErr != nil {
+		console.DisplayBlock(console.ContentBlock{Title: "TTY Session Playback", BlockType: "error", Sections: []console.SectionContent{{SubTitle: "Playback Error", Body: []string{"Recording decompression failed; playback may be incomplete."}}}})
+		return fmt.Errorf("recording decompression failed: %w", decompressErr)
+	}
 
 	if playErr != nil && playErr.Error() != "signal: interrupt" && playErr.Error() != "signal: killed" {
 		if !errors.Is(playErr, io.EOF) {
@@ -194,6 +199,9 @@ func findRecordingFile(baseDir, file string) (string, error) {
 			return err
 		}
 		if d.IsDir() {
+			if internalRecordingDir(d.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if filepath.Base(path) != file {
@@ -247,4 +255,8 @@ func recordingLabel(file string) string {
 
 func validRecordingName(file string) bool {
 	return recordingNameRegexp.MatchString(file) && !strings.Contains(file, "..")
+}
+
+func internalRecordingDir(name string) bool {
+	return name == ".db-pending" || strings.HasPrefix(name, ".ssh-record-") || strings.HasPrefix(name, ".publish-")
 }

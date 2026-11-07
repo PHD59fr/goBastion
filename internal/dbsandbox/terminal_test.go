@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"goBastion/internal/utils/sessionlimit"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -22,7 +24,7 @@ func TestRecordingWithControllingTerminal(t *testing.T) {
 	if os.Getenv("GOB_SANDBOX_INTEGRATION") != "1" {
 		t.Skip("requires the isolation-test Docker target")
 	}
-	for _, scenario := range []string{"psql", "mariadb", "keyboard", "keyboard-mariadb", "keyboard-direct", "terminate", "hangup", "interrupt"} {
+	for _, scenario := range []string{"psql", "mariadb", "keyboard", "keyboard-mariadb", "keyboard-direct", "terminate", "hangup", "interrupt", "idle", "idle-direct"} {
 		t.Run(scenario, func(t *testing.T) {
 			masterFD, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 			if err != nil {
@@ -102,7 +104,18 @@ func TestRecordingWithControllingTerminal(t *testing.T) {
 				write("\\! GOB_CHECK_CLIENT_CAPS=1 /bin/caps-test -test.run TestNativeCapabilities -test.v\n")
 				readUntil("CAPABILITIES_EMPTY")
 			}
-			if scenario != "psql" && scenario != "mariadb" {
+			idle := strings.HasPrefix(scenario, "idle")
+			if idle {
+				// Partial input generates no database traffic. It must keep the
+				// session alive beyond its one-second idle limit in either mode.
+				for range 5 {
+					time.Sleep(300 * time.Millisecond)
+					write(" ")
+				}
+				write("\nSELECT 'AFTER_' || 'TYPING';\n")
+				readUntil("AFTER_TYPING")
+			}
+			if scenario != "psql" && scenario != "mariadb" && !idle {
 				query := "SELECT pg_sleep(60) /* terminal_interrupt */;\n"
 				if mysql {
 					query = "SELECT SLEEP(60) /* terminal_interrupt */;\n"
@@ -144,6 +157,8 @@ func TestRecordingWithControllingTerminal(t *testing.T) {
 					readUntil("RESIZE_37 91")
 				}
 				write("\\q\n")
+			} else if idle {
+				// No more input: wait for the supervisor to expire and clean up.
 			} else if sig, ok := map[string]syscall.Signal{"terminate": syscall.SIGTERM, "hangup": syscall.SIGHUP, "interrupt": syscall.SIGINT}[scenario]; ok {
 				if err := cmd.Process.Signal(sig); err != nil {
 					t.Fatal(err)
@@ -169,6 +184,11 @@ func TestRecordingTerminalHelper(t *testing.T) {
 	defer cancel()
 	ctx, timeout := context.WithTimeout(ctx, 10*time.Second)
 	defer timeout()
+	if strings.HasPrefix(scenario, "idle") {
+		watch := sessionlimit.StartWith(time.Second, 0, cancel)
+		defer watch.Stop()
+		ctx = WithActivity(ctx, watch.Touch)
+	}
 	binary, port := "psql", int64(55432)
 	args := []string{"-X", "-v", "ON_ERROR_STOP=1", "-v", "PROMPT1=READY> ", "-h", "127.0.0.1", "-p", "55432", "-U", "postgres", "-d", "postgres"}
 	if strings.Contains(scenario, "mariadb") {
@@ -199,7 +219,7 @@ func TestRecordingTerminalHelper(t *testing.T) {
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	err = cmd.Run()
-	if scenario == "terminate" || scenario == "hangup" || scenario == "interrupt" {
+	if scenario == "terminate" || scenario == "hangup" || scenario == "interrupt" || strings.HasPrefix(scenario, "idle") {
 		if err == nil || ctx.Err() != context.Canceled {
 			t.Fatalf("expected cancellation: client=%v context=%v", err, ctx.Err())
 		}

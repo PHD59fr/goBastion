@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -78,6 +79,26 @@ func TestRedisAdministrativeCommandsCannotReachDatabase(t *testing.T) {
 	}
 }
 
+func TestRedisIdentityCommandsAndAliasesAreDenied(t *testing.T) {
+	metadata := func(name, flag string) redisValue {
+		return redisValue{children: []redisValue{{text: []byte(name)}, {text: []byte("1")}, {children: []redisValue{{text: []byte(flag)}}}}}
+	}
+	for _, tc := range []struct{ name, target, flag string }{
+		{"reset", "reset", "no_auth"},
+		{"auth", "auth", "no_auth"},
+		{"ping", "reset", "no_auth"},
+		{"get", "auth", "no_auth"},
+		{"get", "config", "admin"},
+	} {
+		if redisCommandAllowed(tc.name, metadata(tc.target, tc.flag)) {
+			t.Fatalf("identity or administrative command allowed: %s -> %s", tc.name, tc.target)
+		}
+	}
+	if !redisCommandAllowed("get", metadata("get", "readonly")) {
+		t.Fatal("ordinary GET was denied")
+	}
+}
+
 func TestMySQLLoginRejectsUnsupportedWireCapabilities(t *testing.T) {
 	for n := 0; n < 33; n++ {
 		if _, _, err := mysqlLogin(make([]byte, n)); err == nil {
@@ -137,7 +158,7 @@ func TestRealRedisDoesNotExposeCredentialsThroughAdministrativeAliases(t *testin
 	if os.Getenv("GOB_SANDBOX_INTEGRATION") != "1" {
 		t.Skip("requires isolation-test fixture")
 	}
-	for _, command := range []string{"CONFIG GET requirepass", "HIDDENCONFIG GET requirepass", "ACL GETUSER default", "AUTH default replacement", "HELLO 3 AUTH default replacement"} {
+	for _, command := range []string{"CONFIG GET requirepass", "HIDDENCONFIG GET requirepass", "ACL GETUSER default", "AUTH default replacement", "HELLO 3 AUTH default replacement", "RESET"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd, cleanup, err := Command(ctx, "127.0.0.1", 56379, "redis-cli", []string{"-h", "127.0.0.1", "-p", "56379"}, []string{"REDISCLI_AUTH=sandbox-secret"})
 		if err != nil {
@@ -152,6 +173,35 @@ func TestRealRedisDoesNotExposeCredentialsThroughAdministrativeAliases(t *testin
 		closed := strings.Contains(string(out), "Server closed") || strings.Contains(string(out), "ERR Upstream verified TLS")
 		if expired || !closed || !strings.Contains(string(out), "PONG") || strings.Contains(string(out), "sandbox-secret") || strings.Contains(string(out), "requirepass\n") {
 			t.Fatalf("credential command was not blocked: %s: %s", command, out)
+		}
+	}
+}
+
+func TestRealRedisResetCannotRestoreDefaultPrivileges(t *testing.T) {
+	if os.Getenv("GOB_SANDBOX_INTEGRATION") != "1" {
+		t.Skip("requires isolation-test fixture")
+	}
+	for _, tc := range []struct {
+		port    int64
+		command string
+	}{{56380, "RESET"}, {56381, "PING"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		args := []string{"-h", "127.0.0.1", "-p", fmt.Sprint(tc.port), "--user", "limited"}
+		cmd, cleanup, err := Command(ctx, "127.0.0.1", tc.port, "redis-cli", args, []string{"REDISCLI_AUTH=sandbox-secret"})
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		cmd.Stdin = strings.NewReader("ECHO CONNECTED\nGET forbidden:key\n" + tc.command + "\nGET forbidden:key\n")
+		out, _ := cmd.CombinedOutput()
+		expired := ctx.Err() != nil
+		cleanup()
+		cancel()
+		if expired || !strings.Contains(string(out), "CONNECTED") || !strings.Contains(string(out), "NOPERM") || strings.Contains(string(out), "FORBIDDEN_DATA") {
+			t.Fatalf("Redis identity changed or fixture did not authenticate: port=%d: %s", tc.port, out)
+		}
+		if !strings.Contains(string(out), "Server closed") {
+			t.Fatalf("identity command did not close session: %s", out)
 		}
 	}
 }
