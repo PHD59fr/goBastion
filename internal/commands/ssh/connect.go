@@ -246,10 +246,10 @@ func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (s
 
 	// Group accesses.
 	var groupIDs []uuid.UUID
-	if err := db.Model(&models.UserGroup{}).Where("user_id = ?", user.ID).
+	if err := db.Model(&models.UserGroup{}).Scopes(models.ActiveGroup).Where("user_id = ?", user.ID).
 		Pluck("group_id", &groupIDs).Error; err == nil && len(groupIDs) > 0 {
 		var ga models.GroupAccess
-		if err := db.Where("group_id IN ? AND server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
+		if err := db.Scopes(models.ActiveGroup).Where("group_id IN ? AND server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)",
 			groupIDs, validation.HostReferences(host), port, now).
 			Order("CASE WHEN username != '*' THEN 0 ELSE 1 END").
 			First(&ga).Error; err == nil {
@@ -262,7 +262,7 @@ func inferSSHUsername(db *gorm.DB, user models.User, host string, port int64) (s
 	// Admin override: any access entry in the system for this host.
 	if user.Role == models.RoleAdmin {
 		var ga models.GroupAccess
-		if err := db.Where("server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", validation.HostReferences(host), port, now).
+		if err := db.Scopes(models.ActiveGroup).Where("server IN ? AND port = ? AND (expires_at IS NULL OR expires_at > ?)", validation.HostReferences(host), port, now).
 			First(&ga).Error; err == nil {
 			if u, ok := resolveAccessUsername(ga.Username); ok {
 				return u, true
@@ -334,7 +334,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 
 	// --- Group accesses (scores 1 and 3) ---
 	var userGroups []models.UserGroup
-	if err = DB.Where("user_id = ?", user.ID).Preload("Group").Find(&userGroups).Error; err != nil {
+	if err = DB.Scopes(models.ActiveGroup).Where("user_id = ?", user.ID).Preload("Group").Find(&userGroups).Error; err != nil {
 		return nil, fmt.Errorf("error retrieving user groups: %w", err)
 	}
 	groupIDs := make([]uuid.UUID, 0, len(userGroups))
@@ -354,7 +354,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 			"group_id IN ? AND (username = ? OR username = '*') AND server IN ? AND port = ? "+
 				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
 			groupIDs, username, validation.HostReferences(host), portInt, now, protocol,
-		).Preload("Group").Find(&groupAccesses).Error; err != nil {
+		).Scopes(models.ActiveGroup).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return nil, validation.WrapDBError(err, "error retrieving group accesses")
 		}
 
@@ -425,7 +425,7 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 			"(username = ? OR username = '*') AND server IN ? AND port = ? "+
 				"AND (expires_at IS NULL OR expires_at > ?) AND (protocol = 'ssh' OR protocol = ?)",
 			username, validation.HostReferences(host), portInt, now, protocol,
-		).Preload("Group").Find(&adminGroupAccesses).Error; err == nil {
+		).Scopes(models.ActiveGroup).Preload("Group").Find(&adminGroupAccesses).Error; err == nil {
 			for i := range adminGroupAccesses {
 				candidates = append(candidates, accessCandidate{
 					groupAccess: &adminGroupAccesses[i],
@@ -482,6 +482,9 @@ func accessFilter(DB *gorm.DB, user models.User, username, host, port, protocol 
 
 // buildGroupAccessRight constructs an AccessRight from a GroupAccess entry and its egress key.
 func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess, requestedUsername, reason string) (models.AccessRight, error) {
+	if err := db.First(&ga.Group, "id = ?", ga.GroupID).Error; err != nil {
+		return models.AccessRight{}, fmt.Errorf("group no longer available: %w", err)
+	}
 	var key models.GroupEgressKey
 	if err := db.Where("group_id = ?", ga.GroupID).First(&key).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
@@ -932,7 +935,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 	}
 
 	var groupIDs []uuid.UUID
-	err = db.Model(&models.UserGroup{}).
+	err = db.Model(&models.UserGroup{}).Scopes(models.ActiveGroup).
 		Where("user_id = ?", user.ID).
 		Pluck("group_id", &groupIDs).Error
 	if err != nil {
@@ -944,7 +947,7 @@ func resolveForcedHost(db *gorm.DB, user models.User, forcedHostname string) (mo
 	}
 
 	var aliases []models.Aliases
-	err = db.Preload("Group").
+	err = db.Scopes(models.ActiveGroup).Preload("Group").
 		Where("group_id IN (?)", groupIDs).
 		Find(&aliases).Error
 	if err != nil {
@@ -1136,7 +1139,7 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 	var groupAccesses []models.GroupAccess
 	var groupIDs []uuid.UUID
 	var userGroups []models.UserGroup
-	if err := db.Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
+	if err := db.Scopes(models.ActiveGroup).Where("user_id = ?", user.ID).Find(&userGroups).Error; err != nil {
 		return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve user groups: %w", err)
 	}
 	groupRoles := make(map[uuid.UUID]string, len(userGroups))
@@ -1152,7 +1155,7 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 		if err := db.Where(
 			"group_id IN ? AND server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
 			groupIDs, validation.HostReferences(host), port, now,
-		).Preload("Group").Find(&groupAccesses).Error; err != nil {
+		).Scopes(models.ActiveGroup).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve group access: %w", err)
 		}
 	}
@@ -1168,7 +1171,7 @@ func tcpProxyAccessFilter(db *gorm.DB, log *slog.Logger, user models.User, host 
 		if err := db.Where(
 			"server IN ? AND port = ? AND protocol = 'ssh' AND (expires_at IS NULL OR expires_at > ?)",
 			validation.HostReferences(host), port, now,
-		).Preload("Group").Find(&groupAccesses).Error; err != nil {
+		).Scopes(models.ActiveGroup).Preload("Group").Find(&groupAccesses).Error; err != nil {
 			return models.AccessRight{}, fmt.Errorf("⛔ Access denied: failed to resolve admin group access: %w", err)
 		}
 	}

@@ -389,6 +389,7 @@ type activeIdentityCheck struct {
 }
 
 var activeIdentityChecks = []activeIdentityCheck{
+	{table: "groups", name: "group name", where: "deleted_at IS NULL", groupBy: "name"},
 	{table: "users", name: "username", where: "deleted_at IS NULL", groupBy: "LOWER(username)"},
 	{table: "user_groups", name: "user/group membership", where: "deleted_at IS NULL", groupBy: "user_id, group_id"},
 	{table: "ingress_keys", name: "user/fingerprint ingress key", where: "deleted_at IS NULL", groupBy: "user_id, fingerprint"},
@@ -402,7 +403,7 @@ func ensureBusinessIdentityIndexes(db *gorm.DB, driver string) error {
 	for _, check := range activeIdentityChecks {
 		query := fmt.Sprintf(
 			"SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s GROUP BY %s HAVING COUNT(*) > 1) AS duplicate_identities",
-			check.table, check.where, check.groupBy,
+			db.Statement.Quote(check.table), check.where, check.groupBy,
 		)
 		var duplicateGroups int64
 		if err := db.Raw(query).Scan(&duplicateGroups).Error; err != nil {
@@ -424,6 +425,7 @@ func ensureBusinessIdentityIndexes(db *gorm.DB, driver string) error {
 		name string
 		sql  string
 	}{
+		{"uq_active_groups_name", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_groups_name ON "groups"(name) WHERE deleted_at IS NULL`},
 		{"uq_active_users_username", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_users_username ON users(LOWER(username)) WHERE deleted_at IS NULL`},
 		{"uq_active_user_groups_membership", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_user_groups_membership ON user_groups(user_id, group_id) WHERE deleted_at IS NULL`},
 		{"uq_active_ingress_keys_fingerprint", `CREATE UNIQUE INDEX IF NOT EXISTS uq_active_ingress_keys_fingerprint ON ingress_keys(user_id, fingerprint) WHERE deleted_at IS NULL`},
@@ -464,6 +466,7 @@ func ensureMySQLBusinessIdentityIndexes(db *gorm.DB) error {
 		// in generated columns (and differs from MySQL in virtual-column index
 		// support), while the concatenated identities are bounded by the indexed
 		// model fields and remain unique without a hash.
+		{"groups", "active_name_hash", "uq_active_groups_name", "CASE WHEN deleted_at IS NULL THEN name ELSE NULL END"},
 		{"users", "active_username_hash", "uq_active_users_username", "CASE WHEN deleted_at IS NULL THEN LOWER(username) ELSE NULL END"},
 		{"user_groups", "active_membership_hash", "uq_active_user_groups_membership", "CASE WHEN deleted_at IS NULL THEN CONCAT(user_id, ':', group_id) ELSE NULL END"},
 		{"ingress_keys", "active_fingerprint_hash", "uq_active_ingress_keys_fingerprint", "CASE WHEN deleted_at IS NULL THEN CONCAT(user_id, ':', fingerprint) ELSE NULL END"},

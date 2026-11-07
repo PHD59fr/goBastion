@@ -16,7 +16,6 @@ import (
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/dbConnector"
-	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
@@ -65,7 +64,7 @@ func RunDBSupervisor(db *gorm.DB, log *slog.Logger, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err = refreshSessionUser(db, &u); err != nil {
+	if err = refreshAuthenticatedUser(db, &u); err != nil {
 		return 1
 	}
 	if u.OSHOnly || config.Get().ForceOSHOnly.Enabled || (config.Get().Maintenance.Enabled && !u.IsAdmin()) {
@@ -81,16 +80,13 @@ func RunDBSupervisor(db *gorm.DB, log *slog.Logger, args []string) int {
 		if !ssh.CheckJITMFA(db, &u, log) {
 			return 1
 		}
-		if err = refreshSessionUser(db, &u); err != nil || u.OSHOnly || (config.Get().Maintenance.Enabled && !u.IsAdmin()) {
+		if err = refreshAuthenticatedUser(db, &u); err != nil || u.OSHOnly || (config.Get().Maintenance.Enabled && !u.IsAdmin()) {
 			return 1
 		}
 		access, _, err = dbConnector.ResolveTargetDetailed(db, u, args[0], args[1:]...)
 		if err != nil {
 			return 1
 		}
-	}
-	if err = db.Model(&models.User{}).Where("id = ? AND enabled = ?", u.ID, true).Updates(map[string]any{"last_login_at": time.Now(), "last_login_from": system.ClientIPFromEnv()}).Error; err != nil {
-		return 1
 	}
 	id := uuid.NewString()
 	_ = os.Setenv("GOB_SESSION_ID", id)
@@ -99,6 +95,9 @@ func RunDBSupervisor(db *gorm.DB, log *slog.Logger, args []string) int {
 		return 1
 	}
 	defer release()
+	if !recordAuthenticatedLogin(db, u, log) {
+		return 1
+	}
 	displayWelcome(u, welcomeDB)
 	// The controller is root, so UID-based sync termination alone cannot revoke it.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)

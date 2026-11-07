@@ -82,6 +82,10 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return fmt.Errorf("error creating .tmp directory: %w", err)
 	}
+	tmpDir, err := os.MkdirTemp(tmpDir, "keygen-")
+	if err != nil {
+		return fmt.Errorf("error creating key generation directory: %w", err)
+	}
 	defer func() {
 		_ = os.RemoveAll(tmpDir)
 	}()

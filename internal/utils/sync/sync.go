@@ -21,6 +21,7 @@ import (
 	"goBastion/internal/osadapter"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/sshHostKey"
+	"goBastion/internal/utils/sshkey"
 	"goBastion/internal/utils/validation"
 )
 
@@ -161,21 +162,6 @@ func (s *Syncer) IngressKeyFromDB(user models.User) error {
 	sshDir := filepath.Join(config.Get().Paths.HomeBaseDir, utils.NormalizeUsername(user.Username), ".ssh")
 	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
 
-	existingKeys := make(map[string]string)
-	if file, err := os.Open(authorizedKeysPath); err == nil {
-		defer func(f *os.File) { _ = f.Close() }(file)
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if parts := strings.Split(line, " #ID:"); len(parts) > 1 {
-				existingKeys[parts[0]] = line
-			}
-		}
-	}
-
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
 		return fmt.Errorf("error creating .ssh directory: %w", err)
 	}
@@ -193,13 +179,15 @@ func (s *Syncer) IngressKeyFromDB(user models.User) error {
 	}
 
 	for _, key := range keys {
-		var line string
-		if existing, exists := existingKeys[key.Key]; exists {
-			line = existing + "\n"
-			delete(existingKeys, key.Key)
-		} else {
-			line = fmt.Sprintf("%s #ID:%s\n", key.Key, key.ID.String())
+		canonical, discarded, err := sshkey.CanonicalIngressKey(key.Key, key.PIVAttested)
+		if err != nil {
+			s.log.Error("ingress_key_rejected", "user", user.Username, "key_id", key.ID, "error", err)
+			continue
 		}
+		if discarded {
+			s.log.Warn("ingress_key_extra_data_ignored", "user", user.Username, "key_id", key.ID)
+		}
+		line := fmt.Sprintf("%s #ID:%s\n", canonical, key.ID.String())
 		if _, err := tmpFile.WriteString(line); err != nil {
 			_ = tmpFile.Close()
 			return fmt.Errorf("error writing key to temp file: %w", err)

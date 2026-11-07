@@ -61,10 +61,11 @@ find /var/lib/goBastion -type d -exec chmod 2770 {} \;
 find /var/lib/goBastion -type d -exec chgrp gobastion {} \;
 find /var/lib/goBastion -type f -exec chgrp gobastion {} \;
 find /var/lib/goBastion -type f -exec chmod 0660 {} \;
-find /app/ttyrec -type d -exec chgrp gobastion {} \;
-find /app/ttyrec -type d -exec chmod 2770 {} \;
-find /app/ttyrec -type f -exec chgrp gobastion {} \;
-find /app/ttyrec -type f -exec chmod 0640 {} \;
+# Recovery spools retain their private permissions across container restarts.
+find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type d -exec chgrp gobastion {} \;
+find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type d -exec chmod 2770 {} \;
+find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type f -exec chgrp gobastion {} \;
+find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type f -exec chmod 0640 {} \;
 for home_dir in /home/*; do
 	[ -d "$home_dir" ] || continue
 	account=${home_dir##*/}

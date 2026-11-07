@@ -135,6 +135,16 @@ func TestMigrateRejectsDuplicateMembershipsAndAliases(t *testing.T) {
 		seed      func(*testing.T, *gorm.DB)
 	}{
 		{
+			name: "group name", wantError: "duplicate active group name",
+			seed: func(t *testing.T, database *gorm.DB) {
+				for range 2 {
+					if err := database.Create(&models.Group{Name: "ops"}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
 			name:      "membership",
 			wantError: "duplicate active user/group membership",
 			seed: func(t *testing.T, database *gorm.DB) {

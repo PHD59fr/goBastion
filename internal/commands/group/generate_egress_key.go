@@ -86,6 +86,10 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {
 		return fmt.Errorf("error creating temporary directory: %w", err)
 	}
+	tmpDir, err := os.MkdirTemp(tmpDir, "keygen-")
+	if err != nil {
+		return fmt.Errorf("error creating key generation directory: %w", err)
+	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 	tmpFile := fmt.Sprintf("%s/sshkey_%s.pem", tmpDir, uuid.New().String())
 	hostname, _ := os.Hostname()

@@ -53,6 +53,15 @@ grep -Fq -- '- group-PLEX' /tmp/db-supervisor-group-session.out
 [ "$(grep -Fc 'Welcome to goBastion, dbclient!' /tmp/db-supervisor-group-session.out)" = 1 ]
 echo 'PASS: DB welcome shown once and selected group access displayed'
 
+as_admin '-osh groupDelete --group PLEX' > /tmp/db-supervisor-delete-group.out
+grep -q "Group 'PLEX' deleted successfully" /tmp/db-supervisor-delete-group.out
+printf "SELECT CONCAT('DELETED_GROUP_', 'BYPASS');\n" | as_dbclient --db credentialuser@db.fixture:53306:mysql > /tmp/db-supervisor-deleted-group.out 2>&1
+if grep -q DELETED_GROUP_BYPASS /tmp/db-supervisor-deleted-group.out; then
+ echo 'FAIL: deleted group still grants a supervised DB session' >&2; exit 1
+fi
+grep -q 'no database access found' /tmp/db-supervisor-deleted-group.out
+echo 'PASS: group deletion revokes the supervised DB access'
+
 # Revoking the frontend UID must also stop its root supervisor and DB client.
 as_dbclient '-osh selfAddDBAccess --host 127.0.0.1 --port 55432 --protocol postgres --user credentialuser --password sandbox-secret --database postgres' > /tmp/db-supervisor-client-access.out
 printf 'SELECT pg_sleep(60);\n' | as_dbclient --db credentialuser@127.0.0.1:55432:postgres > /tmp/db-supervisor-revoked.out 2>&1 &
@@ -66,6 +75,18 @@ for attempt in $(seq 1 50); do
  sleep 0.1
 done
 [ "$ready" = yes ] || { echo 'FAIL: supervised DB query never started' >&2; exit 1; }
+# Recovery must leave the live recorder untouched, including its inherited lock.
+lock_seen=no
+for recorder_pid in $(pgrep -x ttyrec); do
+ for descriptor in /proc/$recorder_pid/fd/*; do
+  target=$(readlink "$descriptor" 2>/dev/null || true)
+  case "$target" in */.db-pending/*/.lock) lock_seen=yes ;; esac
+ done
+done
+[ "$lock_seen" = yes ] || { echo 'FAIL: ttyrec did not inherit its recording lock' >&2; exit 1; }
+/app/goBastion --sync >/tmp/db-supervisor-active-sync.out 2>&1
+[ "$(active_queries)" -ge 1 ] || { echo 'FAIL: sync interrupted an active DB recording' >&2; exit 1; }
+echo 'PASS: sync skips active DB recording and ttyrec retains its lock'
 as_admin '-osh accountExpire --user dbclient' > /tmp/db-supervisor-expire.out
 stopped=no
 for attempt in $(seq 1 50); do

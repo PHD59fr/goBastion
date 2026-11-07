@@ -19,12 +19,13 @@ func redactAuditArgs(args []string) []string {
 			redactNext = false
 			continue
 		}
-		if arg == "--password" {
-			redactNext = true
-			continue
-		}
-		if strings.HasPrefix(arg, "--password=") {
-			redacted[i] = "--password=" + auditRedactedValue
+		name, _, inline := strings.Cut(arg, "=")
+		if name == "--password" || name == "-password" {
+			if inline {
+				redacted[i] = name + "=" + auditRedactedValue
+			} else {
+				redactNext = true
+			}
 		}
 	}
 	return redacted

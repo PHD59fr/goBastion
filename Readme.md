@@ -215,6 +215,17 @@ Administrative roles and account state are reloaded before each bastion command.
 
 > TODO: MongoDB client support is not packaged in the container yet. Current built-in database client support is `mysql`, `postgres`, and `redis`.
 
+`groupCreate` serializes concurrent administrator requests so an active group
+name cannot be created twice, including on MariaDB. Migration refuses existing
+duplicate active names with an explicit error; no rows are deleted automatically.
+
+`groupDelMember` serializes removals and checks the owner count inside the same
+transaction, preventing concurrent requests from removing the last group owner.
+
+`groupDelete` soft-deletes the group's memberships, SSH/DB access grants, guest
+grants, egress keys and aliases in one transaction. Deleted groups cannot authorize
+new connections, including when orphaned rows remain from older deletions.
+
 ---
 
 ### 👥 **Guest Access Management**
@@ -273,7 +284,7 @@ goBastion supports multiple second-factor authentication methods that stack: pas
 
 Once TOTP is enabled, the bastion prompts for a 6-digit code at interactive and one-shot command logins. Opaque SFTP and TCP proxy streams cannot carry an MFA prompt: these modes refuse connections when account password MFA, account TOTP, or global `require_mfa` is enabled. They also refuse accesses requiring group JIT MFA.
 
-Global mandatory MFA permits only the explicit command `-osh selfSetupTOTP` for an unenrolled account, after checking the independent password factor if configured. After enrollment, reconnect normally.
+Global mandatory MFA permits only the explicit command `-osh selfSetupTOTP` for an unenrolled account, after checking the independent password factor if configured. After enrollment, reconnect normally. Account status, role and OSH restrictions are reloaded after authentication; changes to authentication factors require a fresh connection.
 
 #### Backup Codes
 
@@ -292,11 +303,11 @@ Backup codes are single-use recovery codes that can be used instead of a TOTP co
 
 | Command                  | Description                                                               |
 |--------------------------|---------------------------------------------------------------------------|
-| `selfSetPassword`        | Set a bcrypt-hashed password as a second factor. Required at every login. |
+| `selfSetPassword`        | Configure the initial password second factor; refuses an existing password. |
 | `selfChangePassword`     | Change your password second factor (requires current password).           |
 | `accountSetPassword`     | *(admin)* Set or clear a user's password second factor.                   |
 
-Password MFA is independent of TOTP — both can be active simultaneously.
+Password MFA is independent of TOTP — both can be active simultaneously. Use `selfChangePassword` to replace an existing password; `selfSetPassword` cannot overwrite a factor configured concurrently.
 
 #### JIT MFA (per-group)
 
@@ -307,6 +318,26 @@ This also applies to database connections, including guest database grants. A TO
 | Command         | Description                                              |
 |-----------------|----------------------------------------------------------|
 | `groupSetMFA`   | *(owner/admin)* Enable or disable JIT MFA for a group.                   |
+
+---
+
+### 🎥 **SSH Session Recording**
+
+SSH recordings are compressed and published only after finalization succeeds.
+If compression or publication fails, a nonempty recording and its temporary gzip
+are retained in a private `0700` directory under the configured ttyrec directory.
+The `ssh_recording_retained` error event reports the recovery path. Successful
+publication removes the temporary directory. Disconnect signals stop the remote
+session first; goBastion then finishes compression and publication before exiting.
+
+The root startup process and each `--sync` pass retry abandoned SSH and DB
+recordings for all users. The existing sync interval controls the retry frequency
+(`SYNC_INTERVAL_SECONDS`, default 300 seconds). Active recordings and concurrent
+recovery attempts are excluded by a per-recording lock inherited by `ttyrec`.
+A successful retry emits `recording_recovered`; persistent errors emit
+`recording_recovery_failed` and keep the source for the next attempt. Publication
+is atomic and never overwrites another archive. Failed retries clean up their own compressed candidates, keeping storage bounded while preserving the raw source and the original retained copy. Old spools without recovery
+metadata are left for manual recovery because their active state is unknown.
 
 ---
 
@@ -404,6 +435,9 @@ Operational notes:
 All passthrough connections are subject to the same access control rules as interactive SSH sessions.
 
 SFTP and TCP proxies enforce the configured session duration and traffic inactivity limits.
+The SFTP proxy forwards target diagnostics and exit status, drains the final
+response after client EOF, and terminates when the target closes its streams even
+if the client keeps its input open.
 
 #### Protocol Restriction
 
@@ -468,17 +502,44 @@ workstation's SSH command, it affects the workstation-to-bastion connection.
 The bastion must itself have a route to the target's address, including from
 inside its container in Docker deployments.
 
+DB connections display the selected access source in the same list style as SSH
+connections. For example, an access inherited from the `PLEX` group displays:
+
+```text
+⚡ 192.0.2.10 → alice@goBastion → reader@db.example.com:3306/app (mysql) ...
+
+Authenticating ...
+- group-PLEX
+Target TLS: verification required
+Connecting ...
+```
+
+The source identifies the access grant used for this connection, such as
+`group-PLEX`, `account-alice`, `guest-group-PLEX`, or `admin-override`.
+`Target TLS: verification required` states the connection policy; the session
+opens only after upstream certificate verification and authentication succeed.
+
 #### Database client isolation
 
 `--db` sessions use a root-owned supervisor which independently verifies sudo's caller, access rights, CIDR, expiry, maintenance restrictions and MFA. Authentication happens once in this supervisor. Target credentials stay in the privileged broker: native clients receive no password in their environment, command arguments, files, memory or worker configuration. Commands such as MariaDB's `system env` cannot retrieve the stored DB password.
 
 Each client runs in a separate NsJail filesystem, PID, IPC, user and network namespace. The root filesystem is read-only; the temporary home and `/tmp` are private writable mounts. Procfs is absent, and the client has no Linux capabilities. Clients cannot see the bastion database, SSH keys, bootstrap secrets, sudo helpers, control sockets or other sessions. A shell opened by a DB client remains confined. A private broker can open at most 128 connections per session, all to the IP/port pinned when the session starts; reconnecting to another host is not allowed. Original hostnames and numeric IPv4/IPv6 addresses are retained for TLS validation.
 
-Recordings stay outside the sandbox. Account disable/removal is checked every second by the supervisor; revocation and duration expiry stop the sandbox. The root supervisor handles the DB session registry. No existing access or credential migration is required.
+Recordings stay outside the sandbox. Account disable/removal is checked every second by the supervisor; revocation and duration expiry stop the sandbox. `session.idle_timeout` also applies to DB sessions, with or without recording: terminal input/output and DB traffic reset the inactivity timer. An idle timeout stops the sandbox and preserves the recording collected so far. The root supervisor handles the DB session registry. No existing access or credential migration is required.
+
+If compression or publication fails, a nonempty DB recording is retained in its
+private `0700` spool directory. The `db_recording_retained` error event reports
+its path for administrator recovery; the raw `.ttyrec` and any compressed copy
+remain there. New DB spools normally live under `.db-pending` in the configured
+ttyrec volume, so they survive container replacement when that volume is
+persisted. If the archive is unavailable, recording falls back to a private
+container temporary directory; those fallback files need to be copied before
+replacing the container. Startup and `--sync` retry spools carrying recovery
+metadata, using the same active-recording locks as SSH.
 
 The broker authenticates upstream using TLS 1.2 or newer and verifies the server certificate against the container's CA store and the original target hostname/IP. Targets must support TLS with a trusted certificate; there is no plaintext or unverifiable fallback. The native client's connection is a private relay inside the sandbox, so its local SSL status describes that relay, not the verified upstream connection. `Target TLS: verification required` shows the upstream policy.
 
-PostgreSQL reconnects and query cancellation retain the selected account; MySQL account switching is refused. Redis requires `COMMAND` permission for command metadata; administrative commands (including renamed aliases and subcommands), `AUTH` and `HELLO ... AUTH` are refused to prevent credential disclosure or account switching. The DB account's server-side privileges still apply: use dedicated accounts with appropriate rights, rather than granting database administration to people who must not manage server credentials.
+PostgreSQL reconnects and query cancellation retain the selected account; MySQL account switching is refused. Redis requires `COMMAND` and `COMMAND INFO` permission for command metadata; administrative commands (including renamed aliases and subcommands), `AUTH`, `RESET` and `HELLO ... AUTH` are refused to prevent credential disclosure or account switching. Command names are resolved before use so a renamed command cannot inherit the permissions of the command it replaces. The DB account's server-side privileges still apply: use dedicated accounts with appropriate rights, rather than granting database administration to people who must not manage server credentials.
 
 See [installation requirements](#database-client-isolation-runtime) for the Docker capabilities and security profiles.
 
@@ -503,7 +564,7 @@ The `Expires` and `From` columns appear in all `listAccesses` outputs.
 
 ### ⏳ **Account Inactivity Lockout (MaxInactiveDays)**
 
-Admins can configure a maximum number of inactive days via `bastionConfig`. If a user hasn't logged in for more than `MaxInactiveDays`, the account is automatically disabled during the sync cycle.
+Admins can configure a maximum number of inactive days via `bastionConfig`. If a user hasn't logged in for more than `MaxInactiveDays`, the account is automatically disabled during the sync cycle. Login history and successful `login` events are updated only after MFA and session admission succeed; rejected attempts do not reset the inactivity timer.
 
 | Config Key | Default | Description |
 |------------|---------|-------------|
@@ -554,6 +615,11 @@ selfAddIngressKeyPIV --attest attest.pem --intermediate intermediate.pem $(cat m
 ```
 
 Keys added via PIV attestation are marked `PIV` in `selfListIngressKeys`.
+Each ingress-key submission must contain exactly one public key on a single line
+(a trailing newline from a `.pub` file is accepted). PIV-attested keys cannot be
+registered as SSH certificate authorities. During synchronization, legacy entries
+containing multiple keys publish only the first valid key; ignored extra data or
+rejected entries are logged, and previously published unsafe lines are removed.
 
 ---
 
@@ -566,7 +632,7 @@ Local `mosh-server` execution on the bastion is disabled. The `final-full` Docke
 | Command      | Description                                                                |
 |--------------|-----------------------------------------------------------------------------|
 | 📋 `ttyList` | List recorded interactive SSH/DB sessions. |
-| ▶️ `ttyPlay` | Replay a recorded interactive SSH/DB session.                                              |
+| ▶️ `ttyPlay` | Replay a recorded interactive SSH/DB session; decompression errors are reported.                                              |
 
 ---
 
@@ -587,7 +653,7 @@ user@final-target --via user@hop1[:port] [--via user@hop2[:port] ...]
 
 #### How it works
 
-goBastion translates the chain to SSH native ProxyJump:
+goBastion translates the chain to SSH native ProxyJump, with a private temporary configuration that supplies the selected egress identity and the bastion known_hosts policy to every hop:
 
 ```
 phd@192.1.1.2 --via phd@10.0.0.1 --via phd@1.3.2.1
@@ -640,6 +706,7 @@ sequenceDiagram
 1. The bastion must have a valid **access entry** for the final target (`selfAddAccess` or `groupAddAccess`).
 2. The bastion's **egress key** must be authorized on each intermediate hop.
 3. Each intermediate hop must have the bastion's egress public key in its `authorized_keys`.
+4. Hop host keys follow the same TOFU and change-detection policy as direct connections. For a hop not directly reachable from the bastion, its trusted host key must already be present in the bastion known_hosts file.
 
 #### Examples
 
@@ -689,6 +756,9 @@ Realms are **named, registered intermediate bastions** — a convenient alternat
 | `realmList`            | List all configured realms. |
 | `realmInfo`            | Show full details for one realm. |
 | `realmDelete`          | Remove a realm entry. |
+
+A deleted realm name can be registered again with `realmCreate`. The stored row
+is reactivated with the newly supplied endpoint, public key and source CIDRs.
 
 #### Full Usage
 
@@ -776,6 +846,10 @@ Behavior:
 Restricted commands (such as `realmCreate`, `pivAddTrustAnchor`) normally require admin or superowner privileges. Admins can delegate individual restricted commands to specific non-admin users using grants.
 
 > Only admins and superowners can manage grants.
+
+A revoked command grant can be assigned again with `restrictedGrantAdd`. The
+existing row is reactivated and its granting administrator is updated; duplicate
+active grants remain rejected. No schema migration is required for restoration.
 
 #### Commands
 
@@ -1083,6 +1157,10 @@ Then add `--security-opt apparmor=gobastion-db` to the container command. The pr
 
 ### DSN examples
 
+These DSNs configure goBastion's own metadata database. Connections opened with
+`--db` use the broker's verified TLS policy described in
+[Database client isolation](#database-client-isolation).
+
 **MySQL:**
 ```
 DB_DRIVER=mysql
@@ -1168,7 +1246,7 @@ In practice:
 - session settings are scoped to the current bastion instance
 - `max_concurrent_sessions` limits concurrent authenticated sessions on that instance
 - `idle_timeout` and `max_session_duration` accept `0` to disable the limit, or a duration of at least `30s`
-- `splash.enabled` is the master switch for the ASCII login logo. `splash.ssh_enabled`, `splash.db_enabled` and `splash.interactive_enabled` independently control SSH connections, DB connections and the interactive OSH shell/one-shot OSH commands. All default to `true`, including when loading older saved configurations; the master switch takes precedence. These settings live in `Access & Login` and do not change the SSH server banner. DB connections also show the selected access source, such as `group-PLEX`, `account-alice`, or `guest-group-PLEX`.
+- `splash.enabled` is the master switch for the ASCII login logo. `splash.ssh_enabled`, `splash.db_enabled` and `splash.interactive_enabled` independently control SSH connections, DB connections and the interactive OSH shell/one-shot OSH commands. All default to `true`, including when loading older saved configurations; the master switch takes precedence. These settings live in `Access & Login` and do not change the welcome message, last-login information, connection details or SSH server banner.
 - `interactive.enabled=false` disables the interactive shell (only one-shot `-osh` commands remain), as `force_osh_only` does instance-wide. It was named `interactive.allow` before, and existing instances are migrated automatically on read.
 - group discovery and group egress-key discovery are controlled by `security.group_visibility.mode` and `security.egress_key_visibility.mode`
 
@@ -1373,7 +1451,7 @@ docker run --rm --tmpfs /tmp:rw,nosuid,nodev,size=768m \
   --security-opt apparmor=gobastion-db gobastion-isolation-test
 ```
 
-The AppArmor option requires the profile to be loaded on the Docker host; omit that option on hosts without AppArmor. The integration target also checks simultaneous administrator removal on real PostgreSQL and MariaDB databases.
+The AppArmor option requires the profile to be loaded on the Docker host; omit that option on hosts without AppArmor. The integration target checks credential isolation from native clients, TLS server-name verification, query cancellation, process cleanup, the DB welcome and selected access source. It also checks simultaneous administrator removal on real PostgreSQL and MariaDB databases.
 
 ---
 

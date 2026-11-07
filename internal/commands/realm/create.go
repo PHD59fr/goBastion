@@ -2,6 +2,8 @@ package realm
 
 import (
 	"bytes"
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"regexp"
@@ -13,6 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var realmNameRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -109,7 +112,27 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 		Enabled:     true,
 		CreatedByID: currentUser.ID,
 	}
-	if err := db.Create(&record).Error; err != nil {
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var previous models.Realm
+		err := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).Where("name = ?", realmName).First(&previous).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return tx.Create(&record).Error
+		}
+		if err != nil {
+			return err
+		}
+		if !previous.DeletedAt.Valid {
+			return fmt.Errorf("realm %q already exists", realmName)
+		}
+		// Reuse the reserved name and identity, but apply the complete new
+		// trust configuration. An old key or CIDR must never be resurrected.
+		return tx.Unscoped().Model(&previous).Where("deleted_at IS NOT NULL").Updates(map[string]any{
+			"bastion_host": record.BastionHost, "bastion_port": record.BastionPort,
+			"allowed_from": record.AllowedFrom, "public_key": record.PublicKey,
+			"enabled": true, "created_by_id": record.CreatedByID, "deleted_at": nil,
+		}).Error
+	}, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Realm Create",
 			BlockType: "error",

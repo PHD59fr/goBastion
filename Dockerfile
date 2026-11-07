@@ -20,6 +20,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/db-worker ./cmd/dbworker/ && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/dbsandbox.test ./internal/dbsandbox && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/policy.test ./internal/models && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/session.test ./internal/session && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -o /app/recording.test ./internal/recording && \
     (upx --best --lzma goBastion || upx --best goBastion || upx goBastion || true)
 
 # ── ttyrec (compiled natively for target arch) ───────────────────────────────
@@ -128,6 +130,8 @@ RUN apk add --no-cache postgresql mariadb mariadb-client openssl && mkdir -p /ru
 COPY --from=go-builder /app/dbsandbox.test /dbsandbox.test
 COPY --from=go-builder /app/dbsandbox.test /opt/gobastion-db-root/bin/caps-test
 COPY --from=go-builder /app/policy.test /policy.test
+COPY --from=go-builder /app/session.test /session.test
+COPY --from=go-builder /app/recording.test /recording.test
 COPY scripts/test-db-isolation.sh /test-db-isolation.sh
 COPY scripts/test-db-supervisor.sh /test-db-supervisor.sh
 ENTRYPOINT ["/bin/sh", "/test-db-isolation.sh"]
