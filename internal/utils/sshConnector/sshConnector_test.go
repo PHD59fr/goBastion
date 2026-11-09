@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
@@ -76,6 +77,130 @@ func TestIPv6HostKeyScanAndChangeDetection(t *testing.T) {
 				t.Fatalf("changed IPv6 host key must be rejected: %v", err)
 			}
 		})
+	}
+}
+
+func TestHostKeyTTLRefreshAfterUnchangedScan(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Paths.HomeBaseDir = dir
+	cfg.SSH.HostKeyTTL = config.Duration(time.Hour)
+	cfg.SSH.KeyscanTimeout = config.Duration(time.Second)
+	_ = config.Load()
+	config.SetForTesting(cfg)
+	t.Cleanup(config.ResetForTesting)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.User{}, &models.KnownHostsEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	keyFile := filepath.Join(dir, "scan.key")
+	countFile := filepath.Join(dir, "scan.count")
+	t.Setenv("TEST_SCAN_KEY", keyFile)
+	t.Setenv("TEST_SCAN_COUNT", countFile)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeScan := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "ssh-keyscan"), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeScan("#!/bin/sh\n" +
+		"count=0\n" +
+		"[ -f \"$TEST_SCAN_COUNT\" ] && count=$(cat \"$TEST_SCAN_COUNT\")\n" +
+		"count=$((count+1))\n" +
+		"printf '%s' \"$count\" > \"$TEST_SCAN_COUNT\"\n" +
+		"cat \"$TEST_SCAN_KEY\"\n")
+	entry := "host.example ssh-ed25519 AAAAkey\n"
+	if err := os.WriteFile(keyFile, []byte(entry), 0600); err != nil {
+		t.Fatal(err)
+	}
+	scanCount := func() int {
+		t.Helper()
+		data, err := os.ReadFile(countFile)
+		if err != nil {
+			t.Fatalf("read scan count: %v", err)
+		}
+		n, err := strconv.Atoi(string(data))
+		if err != nil {
+			t.Fatalf("parse scan count: %v", err)
+		}
+		return n
+	}
+	entryTimestamp := func() time.Time {
+		t.Helper()
+		var stored models.KnownHostsEntry
+		if err := db.First(&stored).Error; err != nil {
+			t.Fatalf("load known host entry: %v", err)
+		}
+		return stored.UpdatedAt
+	}
+
+	if err := CheckAndUpdateHostKey(db, user, "host.example", 22); err != nil {
+		t.Fatal(err)
+	}
+	if got := scanCount(); got != 1 {
+		t.Fatalf("initial scans = %d, want 1", got)
+	}
+
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := db.Model(&models.KnownHostsEntry{}).Where("user_id = ?", user.ID).UpdateColumn("updated_at", stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckAndUpdateHostKey(db, user, "host.example", 22); err != nil {
+		t.Fatal(err)
+	}
+	if got := scanCount(); got != 2 {
+		t.Fatalf("stale entry scans = %d, want 2", got)
+	}
+	refreshed := entryTimestamp()
+	if !refreshed.After(stale) {
+		t.Fatalf("unchanged scan did not refresh timestamp: %s", refreshed)
+	}
+
+	if err := CheckAndUpdateHostKey(db, user, "host.example", 22); err != nil {
+		t.Fatal(err)
+	}
+	if got := scanCount(); got != 2 {
+		t.Fatalf("fresh entry was rescanned: %d scans", got)
+	}
+
+	if err := db.Model(&models.KnownHostsEntry{}).Where("user_id = ?", user.ID).UpdateColumn("updated_at", stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, []byte("host.example ssh-ed25519 AAAAchanged\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckAndUpdateHostKey(db, user, "host.example", 22); err == nil || !strings.Contains(err.Error(), "Host key verification failed") {
+		t.Fatalf("changed key was not rejected: %v", err)
+	}
+	if got := scanCount(); got != 3 {
+		t.Fatalf("changed-key scans = %d, want 3", got)
+	}
+	if got := entryTimestamp(); got.After(stale.Add(time.Second)) {
+		t.Fatalf("changed key refreshed the verification timestamp: %s", got)
+	}
+
+	writeScan("#!/bin/sh\nexit 1\n")
+	if err := os.WriteFile(keyFile, []byte(entry), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckAndUpdateHostKey(db, user, "host.example", 22); err != nil {
+		t.Fatalf("scan failure must leave SSH to fail naturally: %v", err)
+	}
+	if got := scanCount(); got != 3 {
+		t.Fatalf("failed scan counter = %d, want 3", got)
+	}
+	if got := entryTimestamp(); got.After(stale.Add(time.Second)) {
+		t.Fatalf("failed scan refreshed the verification timestamp: %s", got)
 	}
 }
 

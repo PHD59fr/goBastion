@@ -32,7 +32,6 @@ func TestRegressionDemotedAdministratorCannotUseSSHOverride(t *testing.T) {
 	cfg.Paths.HomeBaseDir = t.TempDir()
 	config.SetForTesting(cfg)
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("EGRESS_ENC_KEY", "")
 	t.Setenv("GOB_SESSION_ID", "")
 	current, err := user.Current()
 	if err != nil {
@@ -66,7 +65,7 @@ func TestRegressionDemotedAdministratorCannotUseSSHOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := models.SelfEgressKey{UserID: owner.ID, Type: "ed25519", PrivKey: string(pem.EncodeToMemory(encoded)), Fingerprint: "fixture"}
+	key := models.SelfEgressKey{UserID: owner.ID, Type: "ed25519", PrivKey: encryptedFixture(t, string(pem.EncodeToMemory(encoded))), Fingerprint: "fixture"}
 	access := models.SelfAccess{UserID: owner.ID, Server: "fixture", Port: 22, Username: "deploy", Protocol: "ssh"}
 	known := models.KnownHostsEntry{UserID: actor.ID, Entry: "fixture ssh-ed25519 AAAA"}
 	for _, row := range []any{&key, &access, &known} {

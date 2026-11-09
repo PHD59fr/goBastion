@@ -192,13 +192,6 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	safeAccessUser := strings.ReplaceAll(access.Username, "/", "_")
 	safeAccessUser = strings.ReplaceAll(safeAccessUser, "..", "_")
 	dir := fmt.Sprintf("%s/%s/%s/", config.Get().Paths.TtyrecDir, safeUser, safeServer)
-	if err = os.MkdirAll(dir, 02770); err != nil {
-		return fmt.Errorf("error creating ttyrec dir: %w", err)
-	}
-	// Fix permissions on pre-existing dirs (entrypoint may have set 2750).
-	if chmodErr := os.Chmod(dir, 02770); chmodErr != nil {
-		slog.Warn("ttyrec dir chmod failed", "dir", dir, "err", chmodErr)
-	}
 
 	// Non-interactive sessions (remote command) get a _cmd suffix in the filename
 	filenameSuffix := ""
@@ -210,11 +203,21 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeAccessUser, safeServer, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
-	spool, err := os.MkdirTemp(dir, ".ssh-record-*")
+	spool, err := recording.NewSSHSpool(config.Get().Paths.TtyrecDir, filepath.Join(safeUser, safeServer))
 	if err != nil {
-		return fmt.Errorf("creating recording spool: %w", err)
+		if strings.Contains(err.Error(), "unsafe recording") || strings.Contains(err.Error(), "provision an isolated archive") || strings.Contains(err.Error(), "recording account provisioning requires") {
+			slog.Error("recording_integrity_failed",
+				slog.String("user", user.Username),
+				slog.String("archive", config.Get().Paths.TtyrecDir),
+				slog.String("path", filepath.Join(safeUser, safeServer)),
+				slog.Any("error", err),
+			)
+			return fmt.Errorf("creating recording spool: recording storage integrity check failed")
+		}
+		slog.Error("recording_spool_failed", slog.String("user", user.Username), slog.Any("error", err))
+		return fmt.Errorf("creating recording spool: recording storage unavailable")
 	}
-	ttyrecFile = filepath.Join(spool, filepath.Base(ttyrecFile))
+	ttyrecFile = filepath.Join(spool.WorkPath, filepath.Base(ttyrecFile))
 	published := false
 	var lock *os.File
 	defer func() {
@@ -224,21 +227,27 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			}
 		}()
 		if !published {
-			if info, err := os.Stat(ttyrecFile); err == nil && info.Size() > 0 {
-				slog.Error("ssh_recording_retained", "user", user.Username, "spool", spool, "destination", ttyrecGzFile)
+			info, statErr := os.Stat(ttyrecFile)
+			if (statErr == nil && info.Size() > 0) || (statErr != nil && !os.IsNotExist(statErr)) {
+				slog.Error("ssh_recording_retained", "user", user.Username, "spool", spool.Path, "destination", ttyrecGzFile)
+				if err := spool.Close(false); err != nil {
+					slog.Warn("ssh_spool_close_failed", "error", err)
+				}
 				return
 			}
 		}
-		_ = os.RemoveAll(spool)
+		if err := spool.Close(true); err != nil {
+			slog.Warn("ssh_spool_cleanup_failed", "error", err)
+		}
 	}()
 
-	lock, err = recording.Prepare(spool, filepath.Join(safeUser, safeServer, filepath.Base(ttyrecGzFile)), ttyrecFile)
+	lock, err = recording.Prepare(spool.WorkPath, filepath.Join(safeUser, safeServer, filepath.Base(ttyrecGzFile)), ttyrecFile)
 	if err != nil {
 		return fmt.Errorf("prepare SSH recording: %w", err)
 	}
 
 	// Create gzip output via temp file + atomic rename to prevent symlink attacks.
-	tmpGz, err := os.CreateTemp(spool, "*.gz.tmp")
+	tmpGz, err := os.CreateTemp(spool.WorkPath, "*.gz.tmp")
 	if err != nil {
 		return fmt.Errorf("error creating temp gzip file: %w", err)
 	}
@@ -360,7 +369,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		if isExpectedSessionStop(cmdErr) {
 			return nil
 		}
-		return fmt.Errorf("ttyrec execution error: %v", cmdErr)
+		return fmt.Errorf("ttyrec execution error: %w", cmdErr)
 	}
 
 	return nil
@@ -396,11 +405,13 @@ func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 	// Build map keyType → stored entry for this specific host,
 	// and find the most recent update time.
 	existing := make(map[string]string)
+	matched := make([]models.KnownHostsEntry, 0, len(dbEntries))
 	var mostRecentUpdate time.Time
 	for _, e := range dbEntries {
 		parts := strings.Fields(e.Entry)
 		if len(parts) >= 3 && parts[0] == hostToken {
 			existing[parts[1]] = e.Entry
+			matched = append(matched, e)
 			if e.UpdatedAt.After(mostRecentUpdate) {
 				mostRecentUpdate = e.UpdatedAt
 			}
@@ -478,6 +489,19 @@ func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 				"The remote host key has changed since the last connection.\n"+
 				"If you trust the new key, run: selfReplaceKnownHost --host %s",
 			server, server)
+	}
+
+	// Record the successful verification so the TTL covers subsequent
+	// connections. Only a scan that matched every stored key reaches this
+	// point; errors and key or algorithm changes return before the update.
+	if len(matched) > 0 {
+		ids := make([]uuid.UUID, 0, len(matched))
+		for _, entry := range matched {
+			ids = append(ids, entry.ID)
+		}
+		if err := db.Model(&models.KnownHostsEntry{}).Where("id IN ?", ids).Update("updated_at", time.Now()).Error; err != nil {
+			slog.Warn("known_hosts_verification_timestamp_failed", slog.String("event", "known_hosts"), slog.String("error", err.Error()))
+		}
 	}
 
 	// Ensure file is up to date (e.g. new key type was added or entries were stale).

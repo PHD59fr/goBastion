@@ -295,9 +295,12 @@ func TestSyslogHandlerSanitizesControls(t *testing.T) {
 	if w.severity != "warning" {
 		t.Errorf("severity = %q, want warning", w.severity)
 	}
-	want := `msg\u000a\u001b\u0080 ke\u000dy=value\u0000\u007f\u009f`
-	if w.message != want {
-		t.Errorf("syslog message = %q, want %q", w.message, want)
+	value := decodeJSON(t, w.message)
+	if value["msg"] != "msg\n\x1b\u0080" || value["_ke\ry"] != "value\x00\x7f\u009f" {
+		t.Fatal("structured syslog did not preserve escaped event data")
+	}
+	if value["event_id"] == "" || value["event_type"] != "msg\n\x1b\u0080" {
+		t.Fatal("structured syslog schema missing")
 	}
 	assertNoLogControls(t, w.message)
 }

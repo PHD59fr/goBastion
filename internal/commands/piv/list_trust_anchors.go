@@ -21,7 +21,7 @@ func ListTrustAnchors(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to query trust anchors."}}},
 		})
-		return nil
+		return err
 	}
 
 	if len(anchors) == 0 {

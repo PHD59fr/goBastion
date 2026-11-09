@@ -42,7 +42,10 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupGenerateEgressKey --group <groupName> --type <keyType> --size <keySize>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupGenerateEgressKey", groupName) {
@@ -61,7 +64,7 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Key Type", Body: []string{"Key type must be one of: ed25519, rsa, ecdsa"}}},
 		})
-		return nil
+		return fmt.Errorf("invalid key type: %s", keyType)
 	}
 	if keyType == "rsa" && keySize < 2048 {
 		console.DisplayBlock(console.ContentBlock{
@@ -69,7 +72,7 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Weak Key Size", Body: []string{"RSA key size must be at least 2048 bits."}}},
 		})
-		return nil
+		return fmt.Errorf("RSA key size must be at least 2048 bits")
 	}
 
 	var group models.Group

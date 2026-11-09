@@ -15,7 +15,7 @@ import (
 	"goBastion/internal/utils/console"
 )
 
-// Delete removes a user account from the system.
+// Delete retires active authorization while preserving historical identity.
 func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountDelete", flag.ContinueOnError)
 	var username string
@@ -64,12 +64,13 @@ func Delete(db *gorm.DB, adapter osadapter.SystemAdapter, currentUser *models.Us
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Delete",
 		BlockType: "success",
-		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("User '%s' deleted successfully.", username)}}},
+		Sections:  []console.SectionContent{{SubTitle: "Success", Body: []string{fmt.Sprintf("Account '%s' retired. This login name remains reserved.", username)}}},
 	})
 	return nil
 }
 
-// DeleteUser soft-deletes the DB record first, then removes the OS user.
+// DeleteUser soft-deletes the DB record first, then revokes the local identity.
+// Production retains its OS UID/home and seals the recording boundary.
 // This ensures the DB (source of truth) is updated before any irreversible
 // OS changes. If OS deletion fails, it attempts to restore the DB record.
 func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) error {
@@ -97,12 +98,12 @@ func DeleteUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string) e
 		return fmt.Errorf("error deleting user from database: %w", err)
 	}
 
-	// Then remove the OS user. If this fails, restore the DB record.
+	// Then retire the local identity. If this fails, restore the DB record.
 	if err := adapter.DeleteUser(username); err != nil {
 		if restoreErr := restoreDBUser(db, &user, memberships); restoreErr != nil {
-			return fmt.Errorf("OS deletion failed: %v; DB restore also failed: %v", err, restoreErr)
+			return fmt.Errorf("privileged retirement failed: %v; DB restore also failed: %v", err, restoreErr)
 		}
-		return fmt.Errorf("OS deletion failed, DB record restored: %w", err)
+		return fmt.Errorf("privileged retirement failed, DB record restored; local permissions may require reconciliation: %w", err)
 	}
 	return nil
 }

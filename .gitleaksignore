@@ -1,0 +1,3 @@
+# Historical four-character dummy PEM body, verified not to encode a private key.
+# Exact commit/file/rule/line only; evidence: docs/security/SCANNER_TRIAGE.md.
+0b32b4a8ff036556b7979b3f0ca904d66afa896e:internal/utils/cryptokey/cryptokey_test.go:private-key:38

@@ -2,6 +2,7 @@ package dbConnector
 
 import (
 	"context"
+	"goBastion/internal/utils/cryptokey"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,6 +107,9 @@ func TestIPv6DBClientArgs(t *testing.T) {
 
 func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 	tmpDir := t.TempDir()
+	if err := os.Chmod(tmpDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	binDir := filepath.Join(tmpDir, "bin")
 	ttyrecDir := filepath.Join(tmpDir, "ttyrec")
 	ttyrecLog := filepath.Join(tmpDir, "ttyrec.args")
@@ -147,6 +151,9 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.TTYRec.Enabled = true
 	cfg.Paths.TtyrecDir = ttyrecDir
+	if err := os.Chmod(ttyrecDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	_ = config.Load()
 	config.SetForTesting(cfg)
 	defer config.ResetForTesting()
@@ -208,8 +215,11 @@ func TestConnectWrapsDBClientWithTTYRec(t *testing.T) {
 	}
 }
 
-func TestConnectFixesTTYRecDirPermissions(t *testing.T) {
+func TestConnectPreservesPrivateTTYRecDirPermissions(t *testing.T) {
 	tmpDir := t.TempDir()
+	if err := os.Chmod(tmpDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	binDir := filepath.Join(tmpDir, "bin")
 	ttyrecDir := filepath.Join(tmpDir, "ttyrec")
 	ttyrecLog := filepath.Join(tmpDir, "ttyrec.args")
@@ -255,6 +265,9 @@ func TestConnectFixesTTYRecDirPermissions(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.TTYRec.Enabled = true
 	cfg.Paths.TtyrecDir = ttyrecDir
+	if err := os.Chmod(ttyrecDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	_ = config.Load()
 	config.SetForTesting(cfg)
 	defer config.ResetForTesting()
@@ -277,8 +290,8 @@ func TestConnectFixesTTYRecDirPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat target dir: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o770 {
-		t.Fatalf("unexpected ttyrec dir mode: got %o want 770", got)
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Fatalf("private ttyrec dir permissions were expanded: got %o want 750", got)
 	}
 }
 
@@ -434,7 +447,7 @@ func TestResolveTargetFindsGroupDBAccessByHost(t *testing.T) {
 	}
 }
 
-func TestResolveTargetKeepsPlaintextStoredPassword(t *testing.T) {
+func TestResolveTargetRejectsPlaintextStoredPassword(t *testing.T) {
 	db := newAliasTestDB(t)
 
 	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
@@ -463,11 +476,19 @@ func TestResolveTargetKeepsPlaintextStoredPassword(t *testing.T) {
 	}
 
 	got, err := ResolveTarget(db, user, "dbuser@db-main.internal")
-	if err != nil {
-		t.Fatalf("ResolveTarget returned error: %v", err)
+	if err == nil || got.Password != "" {
+		t.Fatal("plaintext persisted password must fail closed")
 	}
-	if got.Password != "123456" {
-		t.Fatalf("expected plaintext password passthrough, got %q", got.Password)
+	encrypted, err := cryptokey.Encrypt("123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&access).Update("password", encrypted).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err = ResolveTarget(db, user, "dbuser@db-main.internal")
+	if err != nil || got.Password != "123456" {
+		t.Fatalf("encrypted stored password failed: %v", err)
 	}
 }
 
@@ -619,6 +640,24 @@ func TestBuildClientArgsAndBrokerInputKeepPasswordOutOfArgv(t *testing.T) {
 	}
 }
 
+func TestRedisClientArgsSelectConfiguredDatabase(t *testing.T) {
+	access := models.DBAccessRight{
+		Host: "db.internal", Port: 6379, Protocol: "redis",
+		Username: "reader", Database: "2",
+	}
+	want := []string{"-h", "db.internal", "-p", "6379", "--user", "reader", "-n", "2"}
+	if got := buildClientArgs(access); !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildClientArgs() = %q, want %q", got, want)
+	}
+
+	access.Database = ""
+	for _, arg := range buildClientArgs(access) {
+		if arg == "-n" {
+			t.Fatal("empty Redis database must keep the server default")
+		}
+	}
+}
+
 func TestConnectUpdatesLastConnectionForSelfDBAccess(t *testing.T) {
 	db := newAliasTestDB(t)
 
@@ -725,6 +764,9 @@ func stubClientBinary(t *testing.T, name string) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
+	if err := os.Chmod(tmpDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	binDir := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", binDir, err)
@@ -753,6 +795,9 @@ func init() {
 
 func TestPublishRecordingRejectsEscapingSymlinkAndOverwrite(t *testing.T) {
 	base, outside := t.TempDir(), t.TempDir()
+	if err := os.Chmod(base, 0700); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.DefaultConfig()
 	cfg.Paths.TtyrecDir = base
 	_ = config.Load()

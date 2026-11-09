@@ -2,7 +2,10 @@ package session
 
 import (
 	"bytes"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -113,4 +116,46 @@ func captureSessionStdout(t *testing.T, fn func()) string {
 		t.Fatalf("close stdout pipe reader: %v", err)
 	}
 	return out.String()
+}
+
+func TestPreConnectionCheckSuppressesWelcomeForOpaqueTransfers(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("uses the unprivileged SSH login path")
+	}
+	config.ResetForTesting()
+	_ = config.Load()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.DefaultConfig()
+	cfg.Splash.Enabled = true
+	config.SetForTesting(cfg)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatal(err)
+	}
+	u := models.User{Username: "alice", Enabled: true, Role: models.RoleUser}
+	if err := db.Create(&u).Error; err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	for _, args := range [][]string{
+		{"gobastion", "alice@host rsync --server -vlogDtpre.iLsfxCIvu . /tmp"},
+		{"gobastion", "sftp-session", "alice@host:22"},
+	} {
+		os.Args = args
+		out := captureSessionStdout(t, func() {
+			if !preConnectionCheck(db, u, log) {
+				t.Fatalf("preConnectionCheck rejected %v", args)
+			}
+		})
+		if out != "" {
+			t.Fatalf("opaque transfer %v must not emit welcome text on stdout: %q", args, out)
+		}
+	}
 }

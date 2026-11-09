@@ -6,6 +6,7 @@
 .aws/
 .claude/
 .env
+deploy/secrets/
 .env.*
 !.env.example
 *.test

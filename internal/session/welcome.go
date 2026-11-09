@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	cmdssh "goBastion/internal/commands/ssh"
 	"goBastion/internal/config"
 	"goBastion/internal/models"
 	"goBastion/internal/utils"
@@ -41,6 +42,16 @@ func preConnectionCheck(db *gorm.DB, currentUser models.User, log *slog.Logger) 
 	mode := welcomeSSH
 	if len(os.Args) == 1 || strings.TrimSpace(os.Args[1]) == "" || os.Args[1] == "--" || isOSHCommand(os.Args[1]) {
 		mode = welcomeInteractive
+	}
+	// Binary protocols and proxied transports require an untouched stdout.
+	// Human greetings and prompts must never be injected into the data stream.
+	if len(os.Args) > 1 {
+		if _, _, ok := parseTCPProxyRequest(os.Args[1], os.Args[2:]); ok {
+			return true
+		}
+	}
+	if cmdssh.IsOpaqueTransfer(os.Args[1:]...) {
+		return true
 	}
 	displayWelcome(currentUser, mode)
 

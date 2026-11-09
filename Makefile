@@ -4,6 +4,7 @@ BINARY   := goBastion
 PKG      := ./...
 DOCKER_TAG ?= gobastion:latest
 VERSION    ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
+UPX_MODE   ?= all
 
 ## build: compile the binary
 build:
@@ -32,9 +33,9 @@ tidy:
 	go mod tidy
 	go mod verify
 
-## docker: build the Docker image
+## docker: build the Docker image (UPX_MODE=all by default; off|cold|all)
 docker:
-	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_TAG) .
+	docker build --build-arg VERSION=$(VERSION) --build-arg UPX_MODE=$(UPX_MODE) -t $(DOCKER_TAG) .
 
 ## clean: remove build artefacts
 clean:

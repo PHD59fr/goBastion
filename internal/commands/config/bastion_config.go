@@ -89,7 +89,7 @@ func BastionConfig(db *gorm.DB, currentUser *models.User) error {
 				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view or modify the configuration."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	fd := int(os.Stdin.Fd())

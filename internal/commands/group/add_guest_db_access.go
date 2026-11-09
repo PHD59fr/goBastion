@@ -29,7 +29,7 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 	fs.StringVar(&protocol, "protocol", "", "Protocol: mysql, postgres, redis")
 	fs.StringVar(&username, "user", "", "Database username")
 	fs.StringVar(&password, "password", "", "Database password (encrypted if EGRESS_ENC_KEY is configured)")
-	fs.StringVar(&database, "database", "", "Specific database name (optional)")
+	fs.StringVar(&database, "database", "", "Specific database name (optional; Redis logical database index)")
 	fs.StringVar(&comment, "comment", "", "Comment")
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated)")
 	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never)")
@@ -44,7 +44,10 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 				"Usage: groupAddGuestDBAccess --group <group> --account <user> --host <host> --user <username> --protocol <mysql|postgres|redis> [--port <port>] [--password <password>] [--database <database>] [--comment <text>] [--from <CIDRs>] [--ttl <days>]",
 			}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupAddGuestDBAccess", groupName) {
@@ -63,6 +66,18 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: mysql, postgres, redis"}}},
 		})
 		return fmt.Errorf("invalid protocol: %s", protocol)
+	}
+	if protocol == "redis" {
+		normalized, err := validation.NormalizeRedisDatabase(database)
+		if err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Add Guest DB Access",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Invalid Database", Body: []string{"Redis database must be a non-negative integer index."}}},
+			})
+			return err
+		}
+		database = normalized
 	}
 	if !validation.IsValidHost(host) {
 		console.DisplayBlock(console.ContentBlock{
@@ -137,7 +152,7 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Wrong Role", Body: []string{fmt.Sprintf("User '%s' has role '%s' in group '%s', not 'guest'. Guest access grants only apply to guest-role users.", account, ug.Role, groupName)}}},
 		})
-		return nil
+		return fmt.Errorf("user %q is not a guest in group %q", account, groupName)
 	}
 
 	// Prompt for the password interactively when it was not passed as a flag,
@@ -176,7 +191,7 @@ func AddGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "info",
 			Sections:  []console.SectionContent{{SubTitle: "Already Exists", Body: []string{"This guest DB access grant already exists."}}},
 		})
-		return nil
+		return fmt.Errorf("guest DB access already exists for %s in group %q", account, groupName)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add Guest DB Access",

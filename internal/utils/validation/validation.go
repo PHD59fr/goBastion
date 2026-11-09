@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -65,6 +66,20 @@ func DBProtocolClient(p string) string {
 	default:
 		return ""
 	}
+}
+
+// NormalizeRedisDatabase validates a Redis logical database index. An empty
+// value keeps the server default, which is database 0 on a stock server. The
+// returned value is the canonical decimal index used by redis-cli and SELECT.
+func NormalizeRedisDatabase(database string) (string, error) {
+	if database == "" {
+		return "", nil
+	}
+	index, err := strconv.ParseInt(database, 10, 32)
+	if err != nil || index < 0 {
+		return "", fmt.Errorf("redis database must be a non-negative integer index")
+	}
+	return strconv.FormatInt(index, 10), nil
 }
 
 // IsValidHost returns true when h is a valid hostname or IP address for a new

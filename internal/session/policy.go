@@ -1,8 +1,12 @@
 package session
 
 import (
+	"context"
 	"fmt"
+	"goBastion/internal/telemetry"
+	"log/slog"
 	"strings"
+	"time"
 
 	"goBastion/internal/config"
 	"goBastion/internal/mfa"
@@ -55,7 +59,30 @@ func refreshAuthenticatedUser(db *gorm.DB, u *models.User) error {
 	}
 	return nil
 }
-func validateSessionAdmission(db *gorm.DB, u *models.User, command string, args []string) error {
+func validateSessionAdmission(db *gorm.DB, u *models.User, command string, args []string) (resultErr error) {
+	ctx, span := telemetry.Start(context.Background(), "session.authorization", telemetry.Component("session"))
+	started := time.Now()
+	defer func() {
+		actor := ""
+		if u != nil {
+			actor = u.Username
+		}
+		decision := "allow"
+		if resultErr != nil {
+			decision = "deny"
+		}
+		slog.InfoContext(ctx, "authorization_result", "actor", actor, "decision", decision, "duration", time.Since(started))
+		if resultErr != nil {
+			span.Failure()
+		} else {
+			span.Success()
+		}
+		span.End()
+	}()
+
+	if u == nil {
+		return fmt.Errorf("missing session account")
+	}
 	if err := refreshAuthenticatedUser(db, u); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -111,34 +112,44 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 			}
 			dsn = "file:" + filepath.Join(cfg.Paths.DbDir, "bastion.db") + "?cache=shared&mode=rwc"
 		}
-		separator := "?"
-		if strings.Contains(dsn, "?") {
-			separator = "&"
-		}
-		dialector = sqlite.Open(dsn + separator + "_pragma=foreign_keys(1)")
+		dialector = sqlite.Open(sqliteDSNWithPragmas(dsn, cfg))
 
 	default:
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q — supported values: sqlite, mysql, postgres", driver)
 	}
 
 	gormLogCfg := gormLogger.Config{
-		SlowThreshold: cfg.InternalDB.SlowQueryThreshold,
-		LogLevel:      gormLogger.Silent,
-		Colorful:      true,
+		SlowThreshold:        cfg.InternalDB.SlowQueryThreshold,
+		LogLevel:             gormLogger.Silent,
+		Colorful:             false,
+		ParameterizedQueries: true,
 	}
 
 	var dbLog gormLogger.Interface
 	if log != nil {
 		dbLog = gormLogger.New(logger.NewGormLogger(log), gormLogCfg)
 	} else {
-		dbLog = gormLogger.Default.LogMode(gormLogger.Info)
+		dbLog = gormLogger.Default.LogMode(gormLogger.Silent)
 	}
 
 	tConn := time.Now()
 	db, err := gorm.Open(dialector, &gorm.Config{Logger: dbLog})
 	if err != nil {
+		if db != nil {
+			if pool, poolErr := db.DB(); poolErr == nil {
+				_ = pool.Close()
+			}
+		}
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			if pool, poolErr := db.DB(); poolErr == nil {
+				_ = pool.Close()
+			}
+		}
+	}()
 	if driver == "sqlite" {
 		if err := ensureSQLitePermissions(dsn); err != nil {
 			return nil, err
@@ -150,7 +161,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 
 	tMig := time.Now()
 	if runMigrate {
-		if err = migrate(db, driver); err != nil {
+		if err = startupMigrate(db.Statement.Context, db, driver, log); err != nil {
 			return nil, fmt.Errorf("database migration failed for driver %s: %w", driver, err)
 		}
 		if log != nil {
@@ -158,14 +169,6 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 		}
 	} else if log != nil {
 		log.Info("db_migrate_skip", slog.String("reason", "non-root session"))
-	}
-
-	tBool := time.Now()
-	if runMigrate && driver == "postgres" {
-		fixPostgresBoolColumns(db, log)
-	}
-	if log != nil && driver == "postgres" {
-		log.Info("db_bool_fix", slog.Duration("took", time.Since(tBool)))
 	}
 
 	tCfg := time.Now()
@@ -185,6 +188,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 		log.Info("db_init_done", slog.Duration("total", time.Since(t0)))
 	}
 
+	initialized = true
 	return db, nil
 }
 
@@ -219,7 +223,7 @@ func ensureSQLitePermissions(dsn string) error {
 // Columns created by older images without explicit type tags may be text.
 // Uses a USING expression safe for both text ('false'/'true') and boolean values.
 // Skips columns that are already boolean to avoid unnecessary ALTER TABLE locks.
-func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
+func fixPostgresBoolColumns(db *gorm.DB) error {
 	type colFix struct{ table, column string }
 
 	fixes := []colFix{
@@ -236,30 +240,37 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 		// Check current column type — skip if already boolean.
 		var dataType string
 		if err := db.Raw(
-			`SELECT data_type FROM information_schema.columns WHERE table_name = ? AND column_name = ?`,
+			`SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
 			f.table, f.column,
 		).Scan(&dataType).Error; err != nil {
-			continue
+			return fmt.Errorf("inspect PostgreSQL boolean column %s.%s: %w", f.table, f.column, err)
+		}
+		if dataType == "" {
+			return fmt.Errorf("missing PostgreSQL boolean column %s.%s after schema migration", f.table, f.column)
 		}
 		if dataType == "boolean" {
 			continue
 		}
+		var invalid int64
+		check := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IS NOT NULL AND lower(btrim("%s"::text)) NOT IN ('true','t','1','false','f','0','')`, f.table, f.column, f.column)
+		if err := db.Raw(check).Scan(&invalid).Error; err != nil {
+			return fmt.Errorf("validate PostgreSQL boolean column %s.%s: %w", f.table, f.column, err)
+		}
+		if invalid != 0 {
+			return fmt.Errorf("refusing ambiguous PostgreSQL boolean values in %s.%s; repair from a verified backup before migration", f.table, f.column)
+		}
 
 		sql := fmt.Sprintf(
 			`ALTER TABLE IF EXISTS "%s" ALTER COLUMN "%s" TYPE boolean `+
-				`USING CASE WHEN "%s"::text = ANY(ARRAY['false','f','0','']) THEN false ELSE true END`,
-			f.table, f.column, f.column,
+				`USING CASE WHEN "%s" IS NULL THEN NULL WHEN lower(btrim("%s"::text)) = ANY(ARRAY['true','t','1']) THEN true ELSE false END`,
+			f.table, f.column, f.column, f.column,
 		)
 
-		if err := db.Exec(sql).Error; err != nil && log != nil {
-			log.Warn("db_bool_migrate",
-				slog.String("event", "db_bool_migrate"),
-				slog.String("table", f.table),
-				slog.String("column", f.column),
-				slog.String("error", err.Error()),
-			)
+		if err := db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("migrate PostgreSQL boolean column %s.%s: %w", f.table, f.column, err)
 		}
 	}
+	return nil
 }
 
 // migrate runs GORM AutoMigrate for all managed models and creates custom indexes.
@@ -496,6 +507,29 @@ func ensureMySQLBusinessIdentityIndexes(db *gorm.DB) error {
 	return nil
 }
 
+// sqliteDSNWithPragmas appends connection-scoped PRAGMAs to the DSN. The
+// driver applies them to every new connection, so settings are not lost when
+// the pool replaces a connection after ConnMaxLifetime expires. journal_mode is
+// database-scoped in SQLite but is harmless to assert on each connection.
+func sqliteDSNWithPragmas(dsn string, cfg *config.Config) string {
+	pragmas := []string{
+		"foreign_keys(1)",
+		"journal_mode(WAL)",
+		"synchronous(NORMAL)",
+		fmt.Sprintf("cache_size(-%d)", cfg.InternalDB.SQLite.CacheSize),
+		fmt.Sprintf("busy_timeout(%d)", cfg.InternalDB.SQLite.BusyTimeout),
+	}
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	values := make([]string, 0, len(pragmas))
+	for _, pragma := range pragmas {
+		values = append(values, "_pragma="+url.QueryEscape(pragma))
+	}
+	return dsn + separator + strings.Join(values, "&")
+}
+
 // configure sets connection pool parameters and SQLite-specific pragmas (SQLite only).
 func configure(db *gorm.DB, driver string) error {
 	cfg := config.Get()
@@ -517,20 +551,6 @@ func configure(db *gorm.DB, driver string) error {
 		sqlDB.SetMaxIdleConns(1)
 	}
 	sqlDB.SetConnMaxLifetime(cfg.InternalDB.ConnMaxLifetime)
-
-	if driver == "sqlite" {
-		pragmas := []string{
-			"PRAGMA journal_mode=WAL;",
-			"PRAGMA synchronous=NORMAL;",
-			fmt.Sprintf("PRAGMA cache_size=-%d;", cfg.InternalDB.SQLite.CacheSize),
-			fmt.Sprintf("PRAGMA busy_timeout=%d;", cfg.InternalDB.SQLite.BusyTimeout),
-		}
-		for _, p := range pragmas {
-			if err := db.Exec(p).Error; err != nil {
-				slog.Default().Error("sqlite_pragma_failed", slog.String("pragma", p), slog.String("error", err.Error()))
-			}
-		}
-	}
 
 	return nil
 }
@@ -612,5 +632,6 @@ func ManagedModelsInDependencyOrder() []any {
 		&models.GroupDBAccess{},
 		&models.GroupGuestDBAccess{},
 		&models.DatabaseAlias{},
+		&models.ObservationCounter{},
 	}
 }

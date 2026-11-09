@@ -86,6 +86,9 @@ func TestFailedPublicationRemovesIncompleteDestination(t *testing.T) {
 	t.Cleanup(config.ResetForTesting)
 	cfg := config.DefaultConfig()
 	cfg.Paths.TtyrecDir = t.TempDir()
+	if err := os.Chmod(cfg.Paths.TtyrecDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	config.SetForTesting(cfg)
 	// Reading a directory fails after the destination has been created. A
 	// retry must not be blocked by an empty/corrupt exclusive archive entry.

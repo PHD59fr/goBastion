@@ -51,7 +51,7 @@ func Info(db *gorm.DB, currentUser *models.User, args []string) error {
 				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view this account's information."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var user models.User

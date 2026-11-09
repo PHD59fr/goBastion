@@ -1,0 +1,74 @@
+# Example hardened deployment profile for goBastion.
+# This is an illustrative starting point, not a validated production profile.
+# Validate capabilities, kernel features, storage, backups, and network policy
+# against the exact image and host before deployment.
+
+services:
+  gobastion:
+    image: phd59fr/gobastion:latest
+    container_name: gobastion
+    restart: unless-stopped
+    hostname: gobastion
+    ports:
+      - "2222:22"
+    environment:
+      # Required: create deploy/secrets/egress_enc_key from the repository root,
+      # or ./secrets/egress_enc_key relative to this Compose file, with a canonical base64
+      # encoding of exactly 32 random bytes. Do not commit the secret.
+      EGRESS_ENC_KEY_FILE: /run/secrets/egress_enc_key
+      INSTANCE_ID: gobastion-1
+    secrets:
+      - egress_enc_key
+    volumes:
+      - gobastion-home:/home
+      - gobastion-data:/var/lib/goBastion
+      - gobastion-ttyrec:/app/ttyrec
+    tmpfs:
+      - /run:size=64m,mode=0755
+      - /tmp:size=64m,mode=1777
+    # A read-only root filesystem is incompatible with the current entrypoint,
+    # which updates /etc account files and /goBastion.log. The setuid sudo
+    # session wrapper also requires no-new-privileges to remain disabled.
+    # These controls need application/runtime changes before they can be enabled.
+    cap_drop:
+      - ALL
+    # The container entrypoint performs privileged startup tasks (sshd, user
+    # reconciliation, filesystem permissions). Validate the minimal capability
+    # set required by your image/runtime before narrowing further. NsJail DB
+    # isolation may require additional host/kernel support and security profiles.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      # Preserve setgid on recording directories owned by account:auditors.
+      - FSETID
+      - SETGID
+      - SETUID
+      - KILL
+      - NET_BIND_SERVICE
+      - SYS_CHROOT
+      # - SYS_ADMIN  # Only if required by your validated NsJail/profile setup; avoid by default.
+    pids_limit: 4096
+    mem_limit: 1g
+    cpus: "2.0"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      # This is a basic process check; application-level readiness should be
+      # defined separately (e.g. dedicated probe endpoint or control-plane check).
+      test: ["CMD-SHELL", "pidof sshd >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  gobastion-home:
+  gobastion-data:
+  gobastion-ttyrec:
+
+secrets:
+  egress_enc_key:
+    file: ./secrets/egress_enc_key

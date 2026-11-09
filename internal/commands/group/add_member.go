@@ -29,7 +29,10 @@ func AddMember(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupAddMember --group <groupName> --user <username> --role <role>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupAddMember", groupName) {

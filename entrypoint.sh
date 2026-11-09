@@ -8,19 +8,55 @@ TAIL_PID=""
 SYNC_PID=""
 SSHD_PID=""
 AWK_PID=""
+OBS_PID=""
 SSHD_LOG_PIPE="/run/gobastion/sshd.log"
+
+drain_sessions() {
+	timeout="${DRAIN_TIMEOUT_SECONDS:-30}"
+	case "$timeout" in
+		''|*[!0-9]*) timeout=30 ;;
+	esac
+	[ "$timeout" -gt 0 ] || return 0
+	end=$(( $(date +%s) + timeout ))
+	while [ "$(date +%s)" -lt "$end" ]; do
+		active=0
+		for status in /proc/[0-9]*/status; do
+			[ -r "$status" ] || continue
+			uid=
+			while IFS='	 ' read -r key value _; do
+				[ "$key" = "Uid:" ] && { uid=$value; break; }
+			done < "$status" 2>/dev/null || continue
+			case "$uid" in ''|*[!0-9]*) continue ;; esac
+			if [ "$uid" -ge 1000 ] && [ "$uid" -lt 65000 ]; then
+				active=1
+				break
+			fi
+		done
+		[ "$active" -eq 0 ] && return 0
+		sleep 1
+	done
+	printf '{"version":"1.1","host":"%s","timestamp":%s,"level":4,"short_message":"drain timeout reached; stopping with active sessions","_mode":"system","_event":"shutdown_drain_timeout","_timeout_seconds":%s}\n' \
+		"${HOSTNAME:-goBastion}" "$(date +%s)" "$timeout"
+}
 
 cleanup() {
 	status=${1:-0}
 	trap - TERM INT EXIT
-  printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"shutting down","_mode":"system","_event":"shutdown"}\n' \
-    "${HOSTNAME:-goBastion}" "$(date +%s)"
-	[ -z "$SSHD_PID" ] || kill -TERM "$SSHD_PID" 2>/dev/null || true
+	printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"shutting down","_mode":"system","_event":"shutdown"}\n' \
+		"${HOSTNAME:-goBastion}" "$(date +%s)"
+	if [ -n "$SSHD_PID" ]; then
+		kill -TERM "$SSHD_PID" 2>/dev/null || true
+		printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"draining active sessions before shutdown","_mode":"system","_event":"shutdown_drain_start"}\n' \
+			"${HOSTNAME:-goBastion}" "$(date +%s)"
+		drain_sessions
+	fi
 	[ -z "$SYNC_PID" ] || kill "$SYNC_PID" 2>/dev/null || true
+	[ -z "$OBS_PID" ] || kill -TERM "$OBS_PID" 2>/dev/null || true
 	[ -z "$TAIL_PID" ] || kill "$TAIL_PID" 2>/dev/null || true
 	[ -z "$AWK_PID" ] || kill "$AWK_PID" 2>/dev/null || true
 	[ -z "$SSHD_PID" ] || wait "$SSHD_PID" 2>/dev/null || true
 	[ -z "$SYNC_PID" ] || wait "$SYNC_PID" 2>/dev/null || true
+	[ -z "$OBS_PID" ] || wait "$OBS_PID" 2>/dev/null || true
 	[ -z "$TAIL_PID" ] || wait "$TAIL_PID" 2>/dev/null || true
 	[ -z "$AWK_PID" ] || wait "$AWK_PID" 2>/dev/null || true
 	rm -f "$SSHD_LOG_PIPE"
@@ -35,11 +71,44 @@ trap 'cleanup $?' EXIT
 # them in the application's environment, then drops to the connected user.
 mkdir -p /run/gobastion
 chmod 700 /run/gobastion
+# Resolve Docker/Kubernetes secret mounts as root before the session wrappers
+# drop privileges. Never source this file as shell code.
+if [ "${EGRESS_ENC_KEY_FILE+x}" = x ]; then
+  [ "${EGRESS_ENC_KEY+x}" != x ] || { echo "conflicting encryption key sources" >&2; exit 2; }
+  EGRESS_ENC_KEY=$(cat "$EGRESS_ENC_KEY_FILE")
+  unset EGRESS_ENC_KEY_FILE
+  export EGRESS_ENC_KEY
+fi
+if [ "${EGRESS_ENC_KEYS_FILE+x}" = x ]; then
+  [ "${EGRESS_ENC_KEYS+x}" != x ] || { echo "conflicting encryption keyring sources" >&2; exit 2; }
+  EGRESS_ENC_KEYS=$(cat "$EGRESS_ENC_KEYS_FILE")
+  unset EGRESS_ENC_KEYS_FILE
+  export EGRESS_ENC_KEYS
+fi
+# Bootstrap is line-oriented. Keep keyring bytes intact so the Go parser can
+# reject duplicate members instead of a JSON normalizer silently dropping them.
+if [ -z "${EGRESS_ENC_KEYS:-}" ]; then EGRESS_ENC_KEYS='{}'; fi
+EGRESS_ENC_KEY_ID=${EGRESS_ENC_KEY_ID:-default}
+export EGRESS_ENC_KEYS EGRESS_ENC_KEY_ID
+bootstrap_cr=$(printf '\r')
+for bootstrap_value in "${DB_DRIVER:-}" "${DB_DSN:-}" "${EGRESS_ENC_KEY:-}" "$EGRESS_ENC_KEY_ID" "$EGRESS_ENC_KEYS" "${INSTANCE_ID:-}" "${OBS_ENABLED:-false}" "${OTEL_SDK_DISABLED:-}" "${OTEL_TRACES_EXPORTER:-}" "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" "${OTEL_EXPORTER_OTLP_ALLOW_HTTP_LOOPBACK:-}" "${OTEL_SERVICE_NAME:-}"; do
+  case "$bootstrap_value" in
+    *'
+'*|*"$bootstrap_cr"*) echo "bootstrap settings must be single-line values" >&2; exit 2 ;;
+  esac
+done
 {
   [ -z "${DB_DRIVER:-}" ] || printf 'DB_DRIVER=%s\n' "$DB_DRIVER"
   [ -z "${DB_DSN:-}" ] || printf 'DB_DSN=%s\n' "$DB_DSN"
   [ -z "${EGRESS_ENC_KEY:-}" ] || printf 'EGRESS_ENC_KEY=%s\n' "$EGRESS_ENC_KEY"
+  printf 'EGRESS_ENC_KEY_ID=%s\nEGRESS_ENC_KEYS=%s\nOBS_ENABLED=%s\n' "$EGRESS_ENC_KEY_ID" "$EGRESS_ENC_KEYS" "${OBS_ENABLED:-false}"
   [ -z "${INSTANCE_ID:-}" ] || printf 'INSTANCE_ID=%s\n' "$INSTANCE_ID"
+  [ -z "${OTEL_SDK_DISABLED:-}" ] || printf 'OTEL_SDK_DISABLED=%s\n' "$OTEL_SDK_DISABLED"
+  [ -z "${OTEL_TRACES_EXPORTER:-}" ] || printf 'OTEL_TRACES_EXPORTER=%s\n' "$OTEL_TRACES_EXPORTER"
+  [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ] || printf 'OTEL_EXPORTER_OTLP_ENDPOINT=%s\n' "$OTEL_EXPORTER_OTLP_ENDPOINT"
+  [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] || printf 'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=%s\n' "$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+  [ -z "${OTEL_EXPORTER_OTLP_ALLOW_HTTP_LOOPBACK:-}" ] || printf 'OTEL_EXPORTER_OTLP_ALLOW_HTTP_LOOPBACK=%s\n' "$OTEL_EXPORTER_OTLP_ALLOW_HTTP_LOOPBACK"
+  [ -z "${OTEL_SERVICE_NAME:-}" ] || printf 'OTEL_SERVICE_NAME=%s\n' "$OTEL_SERVICE_NAME"
 } > /run/gobastion/db.conf
 # Only the small sudo session/sync wrappers read this file. The application
 # itself runs as the connected user and receives these values via its private
@@ -53,19 +122,21 @@ if ! printf '%s' "$SYNC_INTERVAL" | grep -Eq '^[1-9][0-9]*$'; then
 fi
 
 # Reconcile permissions for persisted volumes and accounts created by older
-# images. Members need DB/log/recording access, but never direct secret access.
+# images. Database access is still a separate control-plane hardening gap.
+# The recording account namespace is root-controlled; only the authoritative
+# Go reconciliation assigns the dedicated recording-auditors group.
 chown root:gobastion /goBastion.log /var/lib/goBastion /app/ttyrec
 chmod 0620 /goBastion.log
-chmod 2770 /var/lib/goBastion /app/ttyrec
+chmod 2770 /var/lib/goBastion
+chmod 0751 /app/ttyrec
 find /var/lib/goBastion -type d -exec chmod 2770 {} \;
 find /var/lib/goBastion -type d -exec chgrp gobastion {} \;
 find /var/lib/goBastion -type f -exec chgrp gobastion {} \;
 find /var/lib/goBastion -type f -exec chmod 0660 {} \;
-# Recovery spools retain their private permissions across container restarts.
-find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type d -exec chgrp gobastion {} \;
-find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type d -exec chmod 2770 {} \;
-find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type f -exec chgrp gobastion {} \;
-find /app/ttyrec -type d \( -name '.ssh-record-*' -o -name '.db-pending' -o -name '.publish-*' \) -prune -o -type f -exec chmod 0640 {} \;
+# Never recursively widen permissions in user-controlled recording trees.
+# Account/server permissions are validated through directory descriptors.
+# Existing shared or foreign-owned trees require a stopped offline migration;
+# startup must fail rather than silently adopting or recursively chowning them.
 for home_dir in /home/*; do
 	[ -d "$home_dir" ] || continue
 	account=${home_dir##*/}
@@ -104,6 +175,12 @@ done
 # root bootstrap has finished, so normalize it before accepting SSH sessions.
 find /var/lib/goBastion -type f -exec chgrp gobastion {} \;
 find /var/lib/goBastion -type f -exec chmod 0660 {} \;
+
+# Dedicated read-only HTTP exporter; session processes only update DB counters.
+# It binds loopback and reads its own root-only bearer-token file.
+case "${OBS_ENABLED:-false}" in
+  true|TRUE|True|1|t|T) /app/observability & OBS_PID=$! ;;
+esac
 
 # ── Periodic sync ────────────────────────────────────────────────────────────
 # Enforce DB as source of truth at configurable intervals.
@@ -369,6 +446,13 @@ AWK_PID=$!
 
 /usr/sbin/sshd -D -e > "$SSHD_LOG_PIPE" 2>&1 &
 SSHD_PID=$!
+while kill -0 "$SSHD_PID" 2>/dev/null; do
+  if [ -n "$OBS_PID" ] && ! kill -0 "$OBS_PID" 2>/dev/null; then
+    echo '{"event_type":"observability_daemon_failed","decision":"error"}' >&2
+    cleanup 1
+  fi
+  sleep 1
+done
 set +e
 wait "$SSHD_PID"
 sshd_status=$?

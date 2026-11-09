@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/c-bata/go-prompt"
@@ -31,6 +33,7 @@ import (
 	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
+	"goBastion/internal/telemetry"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/autocomplete"
 	"goBastion/internal/utils/dbConnector"
@@ -39,10 +42,11 @@ import (
 )
 
 var connectDB = dbConnector.Connect
+var captureCommandOutput = captureOutput
 
 // Run is the main entry point after DB init: it looks up the current user,
 // runs the pre-connection checks, then dispatches to interactive or non-interactive mode.
-func Run(db *gorm.DB, log *slog.Logger) {
+func Run(db *gorm.DB, log *slog.Logger) int {
 	sessionID := uuid.NewString()
 	log = log.With(slog.String("session_id", sessionID))
 	_ = os.Setenv("GOB_SESSION_ID", sessionID)
@@ -50,7 +54,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 	sysUser, err := currentSystemUser()
 	if err != nil {
 		log.Error("system_user_lookup_failed", slog.String("error", err.Error()))
-		return
+		return 1
 	}
 
 	var currentUser models.User
@@ -58,7 +62,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 		ip := system.ClientIPFromEnv()
 		log.Warn("login_rejected", slog.String("user", sysUser), slog.String("from", ip), slog.String("reason", "user not in database"))
 		fmt.Printf("User '%s' is not registered in the bastion. Contact your admin to create your account.\n", sysUser)
-		return
+		return 1
 	}
 
 	// Maintenance mode: only administrators may connect.
@@ -68,7 +72,7 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			msg = "🚧 Bastion under maintenance: only administrators may connect."
 		}
 		fmt.Println(msg)
-		return
+		return 1
 	}
 
 	if len(os.Args) > 1 {
@@ -80,39 +84,43 @@ func Run(db *gorm.DB, log *slog.Logger) {
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
 				log.Warn("db_supervisor_failed", "error", err)
+				return exitStatus(err)
 			}
-			return
+			return 0
 		}
 	}
 	if !preConnectionCheck(db, currentUser, log) {
-		return
+		return 1
 	}
 
 	if len(os.Args) == 1 {
 		if msg := interactiveBlockMessage(&currentUser); msg != "" {
 			fmt.Println(msg)
-			return
+			return 1
 		}
 		if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
-			return
+			return 1
 		}
 		if err := validateSessionAdmission(db, &currentUser, "", nil); err != nil {
 			log.Warn("session_admission_denied", "error", err)
 			fmt.Fprintln(os.Stderr, "Session denied:", err)
-			return
+			return 1
 		}
 		releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
 		if err != nil {
 			log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
 			fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
-			return
+			return 1
 		}
+		stopRevocation := startSessionActorMonitor(context.Background(), db, currentUser.ID, sessionID, currentUser, log)
+		defer stopRevocation()
 		defer releaseSession()
 		if !recordAuthenticatedLogin(db, currentUser, log) {
-			return
+			return 1
 		}
 		log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 		runInteractiveMode(db, &currentUser, log, releaseSession)
+		return 0
 	} else {
 		cmd := os.Args[1]
 		args := os.Args[2:]
@@ -121,79 +129,109 @@ func Run(db *gorm.DB, log *slog.Logger) {
 
 		if config.Get().ForceOSHOnly.Enabled && !isInteractive && !isOSHCommand(cmd) {
 			fmt.Println("⛔ Interactive shell is disabled; use -osh commands only.")
-			return
+			return 1
 		}
 		if currentUser.OSHOnly && !isInteractive && !isOSHCommand(cmd) {
 			fmt.Println("⛔ This account is limited to -osh commands only.")
-			return
+			return 1
 		}
 		if isInteractive {
 			if msg := interactiveBlockMessage(&currentUser); msg != "" {
 				fmt.Println(msg)
-				return
+				return 1
 			}
 			if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
-				return
+				return 1
 			}
 			if err := validateSessionAdmission(db, &currentUser, cmd, args); err != nil {
 				log.Warn("session_admission_denied", "error", err)
 				fmt.Fprintln(os.Stderr, "Session denied:", err)
-				return
+				return 1
 			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
 			if err != nil {
 				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
 				fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
-				return
+				return 1
 			}
+			stopRevocation := startSessionActorMonitor(context.Background(), db, currentUser.ID, sessionID, currentUser, log)
+			defer stopRevocation()
 			defer releaseSession()
 			if !recordAuthenticatedLogin(db, currentUser, log) {
-				return
+				return 1
 			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", "interactive"))
 			runInteractiveMode(db, &currentUser, log, releaseSession)
+			return 0
 		} else {
-			// sftp-session is handled separately. Raw TCP proxy (-W) cannot safely
-			// carry an MFA prompt on its byte stream, so fail closed when account
-			// MFA would otherwise be required.
+			// Binary transports cannot safely carry an MFA prompt on their byte
+			// stream, so fail closed when account MFA would otherwise be required.
 			_, _, isTCPProxy := parseTCPProxyRequest(cmd, args)
 			isSftpSession := strings.HasPrefix(cmd, "sftp-session")
+			isTransfer := cmdssh.IsOpaqueTransfer(append([]string{cmd}, args...)...)
 			if isTCPProxy {
 				if msg := tcpProxyMFABlockMessage(currentUser); msg != "" {
 					fmt.Println(msg)
-					return
+					return 1
 				}
 			} else if isSftpSession {
 				if err := mfa.OpaqueTransportError(currentUser, "SFTP proxy (sftp-session)"); err != nil {
 					fmt.Fprintln(os.Stderr, err)
-					return
+					return 1
+				}
+			} else if isTransfer {
+				if err := mfa.OpaqueTransportError(currentUser, "file transfer"); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return 1
 				}
 			} else {
 				if !checkMFAForRequest(db, &currentUser, log, os.Args[1:]) {
-					return
+					return 1
 				}
 			}
 			sessionKind := classifySessionKind(cmd, args)
 			if err := validateSessionAdmission(db, &currentUser, cmd, args); err != nil {
 				log.Warn("session_admission_denied", "error", err)
 				fmt.Fprintln(os.Stderr, "Session denied:", err)
-				return
+				return 1
 			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, sessionKind)
 			if err != nil {
 				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("kind", sessionKind), slog.String("error", err.Error()))
 				fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
-				return
+				return 1
 			}
+			stopRevocation := startSessionActorMonitor(context.Background(), db, currentUser.ID, sessionID, currentUser, log)
+			defer stopRevocation()
 			defer releaseSession()
 			if !recordAuthenticatedLogin(db, currentUser, log) {
-				return
+				return 1
 			}
 			log.Info("session_start", slog.String("user", currentUser.Username), slog.String("cmd", redactAuditCommand(cmd)))
-			runNonInteractiveMode(db, &currentUser, log, cmd, args)
+			err = runNonInteractiveMode(db, &currentUser, log, cmd, args)
 			log.Info("session_end", slog.String("user", currentUser.Username))
+			if errors.Is(err, errSessionExit) {
+				return 0
+			}
+			return exitStatus(err)
 		}
 	}
+}
+
+func exitStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if code := exitErr.ExitCode(); code > 0 {
+			return code
+		}
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return 128 + int(status.Signal())
+		}
+	}
+	return 1
 }
 
 func tcpProxyMFABlockMessage(user models.User) string {
@@ -223,21 +261,20 @@ func classifySessionKind(cmd string, args []string) string {
 }
 
 // runNonInteractiveMode executes a single bastion command passed via -osh flag.
-func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, command string, args []string) {
+func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger, command string, args []string) error {
 	if (currentUser.OSHOnly || config.Get().ForceOSHOnly.Enabled) && !isOSHCommand(command) {
 		fmt.Println("⛔ This account is limited to -osh commands only.")
-		return
+		return errors.New("account is limited to -osh commands")
 	}
 
 	if command == "-osh" {
 		if len(args) < 1 {
 			fmt.Println("Usage: -osh <command> <args>")
-			return
+			return errors.New("missing -osh command")
 		}
 		command = args[0]
 		args = args[1:]
-		_ = executeCommandJSONAware(db, currentUser, log, command, args)
-		return
+		return executeCommandJSONAware(db, currentUser, log, command, args)
 	}
 
 	if strings.HasPrefix(command, "-osh ") {
@@ -246,40 +283,45 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		commandParts, err := parseCommandLine(command)
 		if err != nil {
 			fmt.Printf("Invalid command line: %v\n", err)
-			return
+			return err
 		}
 		if len(commandParts) == 0 {
 			fmt.Println("Usage: -osh <command> <args>")
-			return
+			return errors.New("missing -osh command")
 		}
 		command = commandParts[0]
 		args = commandParts[1:]
-		_ = executeCommandJSONAware(db, currentUser, log, command, args)
+		return executeCommandJSONAware(db, currentUser, log, command, args)
 	} else if host, port, ok := parseTCPProxyRequest(command, args); ok {
 		if err := cmdssh.TCPProxy(db, *currentUser, *log, host, port); err != nil {
 			log.Warn("tcp_proxy_failed", slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, "TCP proxy connection failed. Check the target host and your access rights.")
+			return err
 		}
+		return nil
 	} else if strings.HasPrefix(command, "sftp-session") {
 		if !config.Get().SFTP.Enabled {
 			fmt.Fprintln(os.Stderr, "⛔ SFTP transfers are disabled.")
-			return
+			return errors.New("SFTP transfers are disabled")
 		}
 		target := strings.TrimPrefix(strings.TrimPrefix(command, "sftp-session "), "sftp-session")
 		if err := cmdssh.SFTPSession(db, *currentUser, *log, target); err != nil {
 			log.Warn("sftp_session_failed", slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, "SFTP session failed. Check the target host and your access rights.")
+			return err
 		}
+		return nil
 	} else if isMoshServerRequest(command, args) {
 		runMoshServer(command, args, log)
+		return errors.New("local mosh-server execution is disabled")
 	} else if dbArgs, ok := parseDBRequest(command, args); ok {
 		if !config.Get().Database.Enabled {
 			fmt.Fprintln(os.Stderr, "⛔ Database access is disabled.")
-			return
+			return errors.New("database access is disabled")
 		}
 		if len(dbArgs) < 1 {
 			fmt.Fprintln(os.Stderr, "⛔ Usage: bastion --db|-db [user@]host[:port[:protocol]] [--mysql|--pg|--redis] [--dbname name]")
-			return
+			return errors.New("database target is required")
 		}
 		requestedTarget := dbArgs[0]
 		access, details, err := dbConnector.ResolveTargetDetailed(db, *currentUser, requestedTarget, dbArgs[1:]...)
@@ -295,7 +337,7 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		if err != nil {
 			dbLog.Warn("db_target_resolve_failed", slog.String("error", err.Error()))
 			fmt.Fprintf(os.Stderr, "⛔ %v\n", err)
-			return
+			return err
 		}
 		if details.AliasResolved {
 			dbLog.Info("db_alias_resolved",
@@ -316,20 +358,27 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		dbLog.Info("db_target_resolved")
 		if access.MFARequired && (!currentUser.TOTPEnabled || currentUser.TOTPSecret == "") {
 			if !cmdssh.CheckJITMFA(db, currentUser, dbLog) {
-				return
+				return errors.New("database MFA verification failed")
 			}
 		}
 		dbLog.Info("db_session_start")
 		if err := connectDB(db, *currentUser, access); err != nil {
 			dbLog.Warn("db_session_failed", slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, err)
-			return
+			return err
 		}
 		dbLog.Info("db_session_end")
+		return nil
 	} else {
 		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
-			fmt.Println(err)
+			if cmdssh.IsOpaqueTransfer(command) {
+				fmt.Fprintln(os.Stderr, err)
+			} else {
+				fmt.Println(err)
+			}
+			return err
 		}
+		return nil
 	}
 }
 
@@ -383,7 +432,7 @@ func executeCommandJSONAware(db *gorm.DB, currentUser *models.User, log *slog.Lo
 	// `capErr` is a *capture* failure: the command already ran but its output
 	// could not be read back. Re-running in that case would double-execute a
 	// mutating command, so we report the failure as a JSON error instead.
-	stdout, stderr, runErr, capErr := captureOutput(func() error {
+	stdout, stderr, runErr, capErr := captureCommandOutput(func() error {
 		return executeCommand(db, currentUser, log, cmd, filteredArgs)
 	})
 
@@ -415,6 +464,9 @@ func executeCommandJSONAware(db *gorm.DB, currentUser *models.User, log *slog.Lo
 		},
 	}
 	emitJSONPayload(mode, payload)
+	if capErr != nil {
+		return capErr
+	}
 	return runErr
 }
 
@@ -615,6 +667,7 @@ func runInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logger,
 			if forceRelease != nil {
 				forceRelease()
 			}
+			_ = telemetry.ShutdownDefault(context.Background())
 			os.Exit(0)
 		})
 	}
@@ -923,7 +976,12 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	}
 
 	// TOTP check
-	if !user.TOTPEnabled || user.TOTPSecret == "" {
+	if user.TOTPEnabled && user.TOTPSecret == "" {
+		log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.String("reason", "enabled_totp_missing_secret"))
+		fmt.Fprintln(os.Stderr, "⛔ MFA is enabled but its secret is missing. Contact your administrator to recover your account.")
+		return false
+	}
+	if !user.TOTPEnabled {
 		// Global MFA enforcement: if required, a missing TOTP secret is fatal.
 		if config.Get().RequireMFA.Enabled {
 			fmt.Println("⛔ MFA (TOTP) is required. Run selfSetupTOTP to enable it before connecting.")
@@ -945,7 +1003,7 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 		code = strings.TrimSpace(code)
 
 		// Try TOTP first
-		if totp.Verify(user.TOTPSecret, code) {
+		if totp.VerifyStoredSecret(user.TOTPSecret, code) {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
 			return true
 		}

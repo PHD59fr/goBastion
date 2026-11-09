@@ -38,7 +38,7 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: whoHasAccessTo --server <server>"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required argument --server")
 	}
 
 	if !currentUser.CanDo(db, "whoHasAccessTo", "") {
@@ -47,7 +47,7 @@ func WhoHasAccessTo(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view accesses for this server."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	// Narrow the candidate set in SQL, then apply the authoritative literal/CIDR

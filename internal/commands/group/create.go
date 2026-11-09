@@ -30,7 +30,10 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupCreate --group <groupName>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if len(groupName) > 64 || !groupNameRegexp.MatchString(groupName) {
@@ -39,7 +42,7 @@ func Create(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Name", Body: []string{"Group name must be alphanumeric (start with letter/digit), max 64 characters. Allowed: letters, digits, '.', '_', '-'."}}},
 		})
-		return nil
+		return fmt.Errorf("invalid group name: %s", groupName)
 	}
 
 	if !currentUser.CanDo(db, "groupCreate", groupName) {

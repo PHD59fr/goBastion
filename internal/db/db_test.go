@@ -58,6 +58,60 @@ func TestInit_SQLite_DefaultDriver(t *testing.T) {
 	}
 }
 
+func TestInit_SQLite_PragmasSurviveConnectionRenewal(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.InternalDB.SQLite.BusyTimeout = 20000
+	cfg.InternalDB.SQLite.CacheSize = 2000
+	config.SetForTesting(cfg)
+	t.Cleanup(config.ResetForTesting)
+
+	t.Setenv("DB_DRIVER", "sqlite")
+	dbPath := filepath.Join(t.TempDir(), "pragmas.db")
+	t.Setenv("DB_DSN", "file:"+dbPath+"?cache=shared&mode=rwc")
+
+	database, err := Init(nil, true)
+	if err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	pool, err := database.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force every query to use a fresh connection, as ConnMaxLifetime does
+	// after five minutes in production.
+	pool.SetMaxIdleConns(0)
+
+	check := func() {
+		t.Helper()
+		var busy, cache, synchronous int
+		var journal string
+		for query, dest := range map[string]any{
+			"PRAGMA busy_timeout": &busy,
+			"PRAGMA cache_size":   &cache,
+			"PRAGMA synchronous":  &synchronous,
+			"PRAGMA journal_mode": &journal,
+		} {
+			if err := database.Raw(query).Scan(dest).Error; err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+		}
+		if busy != cfg.InternalDB.SQLite.BusyTimeout {
+			t.Fatalf("busy_timeout = %d, want %d", busy, cfg.InternalDB.SQLite.BusyTimeout)
+		}
+		if cache != -cfg.InternalDB.SQLite.CacheSize {
+			t.Fatalf("cache_size = %d, want %d", cache, -cfg.InternalDB.SQLite.CacheSize)
+		}
+		if synchronous != 1 {
+			t.Fatalf("synchronous = %d, want NORMAL (1)", synchronous)
+		}
+		if !strings.EqualFold(journal, "wal") {
+			t.Fatalf("journal_mode = %q, want wal", journal)
+		}
+	}
+	check()
+	check()
+}
+
 func TestInit_MySQL_MissingDSN(t *testing.T) {
 	t.Setenv("DB_DRIVER", "mysql")
 	_ = os.Unsetenv("DB_DSN")

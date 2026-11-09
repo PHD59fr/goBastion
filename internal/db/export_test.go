@@ -2,8 +2,10 @@ package db
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,7 +13,10 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
+
+	"goBastion/internal/models"
 )
 
 func openTestDB(t *testing.T) *gorm.DB {
@@ -70,6 +75,89 @@ func TestExportProducesEnvelope(t *testing.T) {
 	}
 	if env.Payload == "" {
 		t.Fatalf("payload should not be empty")
+	}
+}
+
+func TestExportUsesOneConsistentSnapshot(t *testing.T) {
+	secret := "0123456789abcdef0123456789abcdef"
+	t.Setenv("DB_EXPORT_KEY", secret)
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	silent := &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)}
+
+	source, err := gorm.Open(sqlite.Open(dsn), silent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.AutoMigrate(ManagedModelsInDependencyOrder()...); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := gorm.Open(sqlite.Open(dsn), silent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	insertErr := error(nil)
+	if err := source.Callback().Query().After("gorm:query").Register("test:export_snapshot", func(tx *gorm.DB) {
+		if tx.Statement.Table != "users" || insertErr != nil {
+			return
+		}
+		// Commit a new user and one of its accesses after the export has
+		// already read the users table. A non-transactional export would read
+		// the access but not its user, producing an unrestorable dump.
+		insertErr = writer.Transaction(func(tx *gorm.DB) error {
+			user := models.User{Username: "concurrent", Role: models.RoleUser, Enabled: true}
+			if err := tx.Create(&user).Error; err != nil {
+				return err
+			}
+			return tx.Create(&models.SelfAccess{
+				UserID: user.ID, Username: "deploy", Server: "concurrent.example", Port: 22, Protocol: "ssh",
+			}).Error
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Export(source, &buf, nil); err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+	if insertErr != nil {
+		t.Fatalf("concurrent write failed: %v", insertErr)
+	}
+
+	var env exportEnvelope
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	key, err := deriveKeyForImport(secret, env.KDF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(env.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := decryptAESGCM(key, nonce, ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload exportPayload
+	if err := json.Unmarshal(plain, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range payload.Tables {
+		if table.Name != "users" && table.Name != "self_accesses" {
+			continue
+		}
+		if len(table.Rows) != 0 {
+			t.Fatalf("snapshot leaked a concurrent %s row into the export", table.Name)
+		}
 	}
 }
 
@@ -150,6 +238,10 @@ func TestValidateImportTablesRejectsMissingAndDuplicateTables(t *testing.T) {
 func TestMain(m *testing.M) {
 	// Avoid accidental leakage from caller environment
 	_ = os.Unsetenv("DB_EXPORT_KEY")
+	_ = os.Setenv("EGRESS_ENC_KEY", "PvHlWvN638cmg6oz6ixYa/gsYFNBqD6K1d87+A+8DMo=")
+	for _, name := range []string{"EGRESS_ENC_KEY_FILE", "EGRESS_ENC_KEY_ID", "EGRESS_ENC_KEYS", "EGRESS_ENC_KEYS_FILE"} {
+		_ = os.Unsetenv(name)
+	}
 	os.Exit(m.Run())
 }
 

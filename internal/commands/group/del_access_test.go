@@ -16,7 +16,7 @@ func TestDelAccess_Success(t *testing.T) {
 	}
 
 	access := models.GroupAccess{
-		GroupID: g.ID,
+		GroupID:  g.ID,
 		Server:   "10.0.0.1",
 		Port:     22,
 		Username: "deploy",

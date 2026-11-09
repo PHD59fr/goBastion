@@ -75,6 +75,11 @@ func Run(db *gorm.DB, log *slog.Logger, adapter osadapter.SystemAdapter) int {
 		return runDisablePassword(db, log, *disablePasswordUser)
 
 	case *syncFlag:
+		if err := recording.ValidateArchive(config.Get().Paths.TtyrecDir); err != nil {
+			log.Error("recording_integrity_failed", slog.String("archive", config.Get().Paths.TtyrecDir), slog.Any("error", err))
+			fmt.Fprintln(os.Stderr, "Sync failed: recording storage integrity check failed")
+			return 1
+		}
 		recording.Recover(config.Get().Paths.TtyrecDir, log)
 		fmt.Fprintln(os.Stderr, "Syncing database state to OS...")
 		if err := syncer.EnforceFromDB(); err != nil {
@@ -133,6 +138,16 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) int {
 		return 1
 	}
 	if userCount > 0 {
+		if err := autoFixRecordingArchive(config.Get().Paths.TtyrecDir, log); err != nil {
+			log.Error("recording_autofix_incomplete", slog.String("archive", config.Get().Paths.TtyrecDir), slog.Any("error", err))
+			fmt.Fprintln(os.Stderr, "Startup failed: recording storage integrity check failed")
+			return 1
+		}
+		if err := recording.ValidateArchive(config.Get().Paths.TtyrecDir); err != nil {
+			log.Error("recording_integrity_failed", slog.String("archive", config.Get().Paths.TtyrecDir), slog.Any("error", err))
+			fmt.Fprintln(os.Stderr, "Startup failed: recording storage integrity check failed")
+			return 1
+		}
 		log.Info("startup_sync_state")
 		if err := syncer.EnforceFromDB(); err != nil {
 			log.Error("startup_failed", slog.Any("error", err))
@@ -162,18 +177,13 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) int {
 	return 3
 }
 
-func runSyncUser(db *gorm.DB, syncer *gosync.Syncer, username string) int {
+func runSyncUser(_ *gorm.DB, syncer *gosync.Syncer, username string) int {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if !validation.IsValidUsername(username) {
 		fmt.Fprintln(os.Stderr, "Invalid username.")
 		return 2
 	}
-	var u models.User
-	if err := db.Where("username = ?", username).First(&u).Error; err != nil {
-		fmt.Fprintf(os.Stderr, "User %q not found: %v\n", username, err)
-		return 1
-	}
-	if err := syncer.CreateUserFromDB(u); err != nil {
+	if err := syncer.SyncUserByName(username); err != nil {
 		fmt.Fprintf(os.Stderr, "User sync failed: %v\n", err)
 		return 1
 	}

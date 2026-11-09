@@ -26,7 +26,10 @@ func ListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListEgressKeys --group <groupName>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupListEgressKeys", groupName) {

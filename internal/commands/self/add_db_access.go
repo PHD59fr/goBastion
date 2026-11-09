@@ -28,7 +28,7 @@ func AddDBAccess(db *gorm.DB, user *models.User, args []string) error {
 	fs.StringVar(&protocol, "protocol", "", "Protocol: mysql, postgres, redis")
 	fs.StringVar(&username, "user", "", "Database username")
 	fs.StringVar(&password, "password", "", "Database password (encrypted if EGRESS_ENC_KEY is configured)")
-	fs.StringVar(&database, "database", "", "Specific database name (optional)")
+	fs.StringVar(&database, "database", "", "Specific database name (optional; Redis logical database index)")
 	fs.StringVar(&comment, "comment", "", "Comment")
 	fs.StringVar(&allowedFrom, "from", "", "Allowed source CIDRs (comma-separated, e.g. 10.0.0.0/8,192.168.1.0/24)")
 	fs.IntVar(&ttlDays, "ttl", 0, "Access expiry in days (0 = never, must be positive if set)")
@@ -59,6 +59,18 @@ func AddDBAccess(db *gorm.DB, user *models.User, args []string) error {
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Protocol", Body: []string{"Protocol must be one of: mysql, postgres, redis"}}},
 		})
 		return fmt.Errorf("invalid protocol: %s", protocol)
+	}
+	if protocol == "redis" {
+		normalized, err := validation.NormalizeRedisDatabase(database)
+		if err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Add Personal DB Access",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Invalid Database", Body: []string{"Redis database must be a non-negative integer index."}}},
+			})
+			return err
+		}
+		database = normalized
 	}
 	// Validate TTL - must be zero (never) or positive
 	if ttlDays < 0 {

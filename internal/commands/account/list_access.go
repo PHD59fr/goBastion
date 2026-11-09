@@ -35,7 +35,7 @@ func ListAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountListAccess --user <username>"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required argument --user")
 	}
 
 	if !currentUser.CanDo(db, "accountListAccess", username) {
@@ -44,7 +44,7 @@ func ListAccess(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view accesses for this account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var user models.User

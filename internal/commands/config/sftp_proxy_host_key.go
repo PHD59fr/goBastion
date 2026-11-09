@@ -21,7 +21,7 @@ func ShowSFTPProxyHostKey(db *gorm.DB, currentUser *models.User) error {
 				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view the SFTP proxy host key."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	_, publicKey, fingerprint, err := sshHostKey.EnsureSFTPProxyHostKey(db, false)

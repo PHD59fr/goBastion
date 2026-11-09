@@ -48,7 +48,7 @@ func DelIngressKey(db *gorm.DB, user *models.User, args []string) error {
 				{SubTitle: "Usage", Body: []string{"selfDelIngressKey --id <key_id>"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("missing required argument --id")
 	}
 	_, err := uuid.Parse(keyId)
 	if err != nil {

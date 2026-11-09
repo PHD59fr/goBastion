@@ -40,14 +40,14 @@ func SetPassword(db *gorm.DB, user *models.User, log *slog.Logger, args []string
 			Title: "Set Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Passwords do not match."}}},
 		})
-		return nil
+		return fmt.Errorf("passwords do not match")
 	}
 	if len(pass1) < 8 {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Set Password MFA", BlockType: "error",
 			Sections: []console.SectionContent{{SubTitle: "Error", Body: []string{"Password must be at least 8 characters."}}},
 		})
-		return nil
+		return fmt.Errorf("password must be at least 8 characters")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(pass1), bcrypt.DefaultCost)
 	if err != nil {

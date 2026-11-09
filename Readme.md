@@ -1,6 +1,6 @@
 # 🚀 **goBastion**
 
-**goBastion** is a tool for managing SSH access, user roles, and keys on a bastion host. The project is currently under active development, and contributions are welcome!
+**goBastion** manages SSH access, user roles, and keys on a bastion host.
 
 🔗 **GitHub Repository**: [https://github.com/phd59fr/goBastion](https://github.com/phd59fr/goBastion)
 
@@ -8,26 +8,28 @@
 
 ---
 
+See the [deployment and administration guides](docs/README.md) for configuration, maintenance and security limits.
+
+---
+
 ## ✨ **Key Concept - Database as the Source of Truth**
 
-In **goBastion**, **the database is the single source of truth** for SSH keys and access management. This means that the system always reflects the state of the database. Any key or access added manually to the system without passing through the bastion will be **automatically removed** to maintain consistency.
+The database stores accounts, SSH keys, grants and policy. Reconciliation
+publishes that state to local accounts and SSH/compatibility files, by default
+every five minutes (`SYNC_INTERVAL_SECONDS`), or on demand with `--sync`. Local
+drift can exist between reconciliations; failures must be monitored.
 
-### How it works:
+In the container image, `sshd` uses trusted DB-backed ingress-key lookup
+(`AuthorizedKeysCommand /app/goBastion --authorizedKeys %u`, `AuthorizedKeysFile
+none`). New SSH public-key admissions are authorized only from eligible DB keys
+(enabled, non-system, non-expired); lookup/bootstrap/DB failures fail closed.
+This improves revocation of **new** SSH admissions, but it does not terminate
+already established sessions and does not provide atomic cross-node revocation.
 
-* **Key Addition**:
-  When a user adds an SSH key, it is first validated and stored in the database. The bastion then automatically synchronizes the database with the system, adding the key to the appropriate location.
-
-* **Automatic Synchronization**:
-  The bastion enforces the database state every **5 minutes** automatically. If it finds an SSH key, user, or host entry not in the database, it is immediately corrected to ensure security and consistency. The `--sync` flag allows triggering this on demand.
-
-### **Advantages of this Approach**
-
-* **Centralized Control**: All modifications go through the bastion, ensuring tight access management.
-* **Enhanced Security**: Unauthorized keys cannot remain on the system.
-* **State Consistency**: The system always mirrors the database state.
-* **Audit and Traceability**: Every change is recorded in the database.
-* **Fully Automated Management**: No need for manual checks; synchronization handles everything.
-* **Easy Exportability**: The system can be deployed on a new container effortlessly. Since the database is the source of truth, replicating it with synchronization scripts provides a functional bastion on a new instance.
+Central persistence supports common access management and encrypted logical
+export/import. Recreating a node also requires its encryption/SSH identity keys,
+configuration and recordings. Shared state and periodic synchronization alone
+do not establish high availability or immediate cross-node revocation.
 
 ---
 
@@ -145,7 +147,7 @@ ssh -p 2222 user@bastion -- -osh selfListAllAccesses --type ssh --json-pretty
 | 📋 `accountList`            | List all user accounts.                               |
 | ℹ️ `accountInfo`            | Show detailed information about a user account.       |
 | ➕ `accountCreate`           | Create a new user account (supports `--osh-only` and `--superowner`). |
-| ❌ `accountDelete`           | Delete a user account.                                |
+| ❌ `accountDelete`           | Retire a user account and reserve its Unix identity.                                |
 | ✏️ `accountModify`          | Modify a user account (role, `--oshOnly`, `--superOwner`). Cannot demote the last remaining admin. |
 | 🔑 `accountListIngressKeys` | List the ingress SSH keys of a user.                  |
 | 🔑 `accountListEgressKeys`  | List the egress SSH keys of a user.                   |
@@ -155,7 +157,7 @@ ssh -p 2222 user@bastion -- -osh selfListAllAccesses --type ssh --json-pretty
 | 📋 `whoHasAccessTo`         | Show all users with access to a specific server (supports CIDR).             |
 | 🔐 `accountDisableTOTP`    | Disable TOTP two-factor authentication for a user.                           |
 | 🔄 `accountUnexpire`       | Re-enable a disabled account (reactivate after max inactive days lockout).    |
-| 🔒 `accountExpire`         | Immediately lock a user account (force disable on departure).                 |
+| 🔒 `accountExpire`         | Disable account policy and reconcile local access.                 |
 | 🔑 `accountSetPassword`    | *(admin)* Set or clear a user's password second factor.                       |
 | 🛡️ `pivAddTrustAnchor`     | Register a Yubico PIV CA certificate as a trust anchor.                      |
 | 📋 `pivListTrustAnchors`    | List all registered PIV trust anchor CAs.                                    |
@@ -213,7 +215,7 @@ Administrative roles and account state are reloaded before each bastion command.
 | ❌ `groupDelGuestDBAccess`   | Remove a guest database access grant.             |
 | 📋 `groupListGuestDBAccesses`| List guest database access grants in a group.     |
 
-> TODO: MongoDB client support is not packaged in the container yet. Current built-in database client support is `mysql`, `postgres`, and `redis`.
+MongoDB client support is unavailable. Built-in database clients are `mysql`, `postgres`, and `redis`.
 
 `groupCreate` serializes concurrent administrator requests so an active group
 name cannot be created twice, including on MariaDB. Migration refuses existing
@@ -221,6 +223,8 @@ duplicate active names with an explicit error; no rows are deleted automatically
 
 `groupDelMember` serializes removals and checks the owner count inside the same
 transaction, preventing concurrent requests from removing the last group owner.
+Removing a guest also revokes that user's guest SSH and database grants in the
+group within the same transaction.
 
 `groupDelete` soft-deletes the group's memberships, SSH/DB access grants, guest
 grants, egress keys and aliases in one transaction. Deleted groups cannot authorize
@@ -330,6 +334,30 @@ The `ssh_recording_retained` error event reports the recovery path. Successful
 publication removes the temporary directory. Disconnect signals stop the remote
 session first; goBastion then finishes compression and publication before exiting.
 
+Recording storage uses an isolated layout: root:gobastion `0751` for the archive
+root, `account:gobastion-auditors 02750` for account/server directories, and
+`account:gobastion-auditors 0640` for published files. Root provisions account
+namespaces; the separate auditor group contains enabled administrators. Ordinary
+accounts cannot read another account's captures or reserve another account path.
+Unsupported ACLs or unsafe ownership/permissions are refused.
+
+Startup and sync check recording storage integrity. If an inconsistency is
+detected, startup attempts a safe automatic metadata repair when possible
+(backup outside the archive, apply, rollback on failure); if repair is
+incomplete or unsafe, startup fails and details are logged server-side. Session
+errors are generic to clients. Manual offline repair is available via
+[`recording-admin permissions`](cmd/recording-admin/README.md).
+
+Account deletion retains its Unix UID and a database name tombstone, removes
+local access and seals its recording namespace as root. Drain registered
+sessions and recover pending captures first. Retired names and UIDs must not be
+reused. Failed DB compensation may require local permission reconciliation.
+
+Recordings are not currently encrypted at rest. Restrict access to the recording
+volume and protect its backups at the storage layer. Mandatory recording
+encryption and its key lifecycle are pending implementation; compression is not
+encryption.
+
 The root startup process and each `--sync` pass retry abandoned SSH and DB
 recordings for all users. The existing sync interval controls the retry frequency
 (`SYNC_INTERVAL_SECONDS`, default 300 seconds). Active recordings and concurrent
@@ -349,7 +377,7 @@ goBastion supports two passthrough modes depending on whether you need to use th
 
 goBastion acts as a minimal SSH server and connects to the target with its own egress key. **Your local key does not need to be on the target server.**
 
-This mode now uses a **stable per-instance SSH host key** for the fake in-band SFTP server. Administrators should distribute that public key to client teams exactly like any other SSH host key.
+This mode uses a **stable per-instance SSH host key** for the fake in-band SFTP server. Administrators should distribute that public key to client teams exactly like any other SSH host key.
 
 ##### Admin workflow
 
@@ -406,7 +434,7 @@ sftp my-server
 - The bastion user in `ProxyCommand` is the **ingress account on goBastion**.
 - The `myuser@[%h]:%p` part is the **target account on the destination server**.
 - The host key presented by `sftp-session` is verified against the **client-side SSH host alias** being opened by the SFTP client.
-- Because the SFTP proxy host key is now stable, you should **not** use `StrictHostKeyChecking no` or `UserKnownHostsFile /dev/null` anymore.
+- Because the SFTP proxy host key is stable, do not use `StrictHostKeyChecking no` or `UserKnownHostsFile /dev/null`.
 - Rotating the SFTP proxy host key invalidates the previously pinned client entry. Treat it like any other SSH host key rotation.
 - `sftp-session` refuses account/global MFA and group JIT MFA requirements. Use an interactive SSH flow when MFA is required; the proxy never silently skips a required second factor.
 
@@ -525,7 +553,7 @@ opens only after upstream certificate verification and authentication succeed.
 
 Each client runs in a separate NsJail filesystem, PID, IPC, user and network namespace. The root filesystem is read-only; the temporary home and `/tmp` are private writable mounts. Procfs is absent, and the client has no Linux capabilities. Clients cannot see the bastion database, SSH keys, bootstrap secrets, sudo helpers, control sockets or other sessions. A shell opened by a DB client remains confined. A private broker can open at most 128 connections per session, all to the IP/port pinned when the session starts; reconnecting to another host is not allowed. Original hostnames and numeric IPv4/IPv6 addresses are retained for TLS validation.
 
-Recordings stay outside the sandbox. Account disable/removal is checked every second by the supervisor; revocation and duration expiry stop the sandbox. `session.idle_timeout` also applies to DB sessions, with or without recording: terminal input/output and DB traffic reset the inactivity timer. An idle timeout stops the sandbox and preserves the recording collected so far. The root supervisor handles the DB session registry. No existing access or credential migration is required.
+Recordings stay outside the sandbox. The supervisor checks account disable/removal/system status every second, with a one-second query deadline. Query errors/timeouts cancel the connector and return failure even if it suppresses cancellation; duration expiry also stops the sandbox. Target grant changes are not refreshed by this actor monitor, and database drivers must honor context cancellation. `session.idle_timeout` also applies to DB sessions, with or without recording: terminal input/output and DB traffic reset the inactivity timer. An idle timeout stops the sandbox and preserves the recording collected so far. The root supervisor handles the DB session registry. No existing access or credential migration is required.
 
 If compression or publication fails, a nonempty DB recording is retained in its
 private `0700` spool directory. The `db_recording_retained` error event reports
@@ -572,7 +600,7 @@ Admins can configure a maximum number of inactive days via `bastionConfig`. If a
 
 - Only accounts with a non-zero `last_login_at` are affected (accounts that have never logged in are left alone).
 - Disabled accounts can be re-enabled by an admin using `accountUnexpire`.
-- Admins can also **immediately lock** an account using `accountExpire` (e.g. when a collaborator leaves).
+- Admins can disable account policy with `accountExpire` (e.g. when a collaborator leaves). The command requests local privileged reconciliation and reports failures; immediate cross-instance session revocation is not implemented.
 - The inactivity check runs during every sync cycle (every 5 minutes by default).
 - Automatic inactivity expiry preserves the most recently connected usable administrator.
 
@@ -742,9 +770,9 @@ ssh -t -p 2222 user@bastion -- 'deploy@[2001:db8::10]:22' --via 'jump@[2001:db8:
 
 ---
 
-### 🌐 **Trusted Realms**
+### 🌐 **Registered Realm Relays**
 
-Realms are **named, registered intermediate bastions** — a convenient alternative to typing raw IPs in `--via` chains. They also store the trusted public key and allowed source CIDRs for auditing purposes.
+Realms are **named, registered intermediate bastions** — a convenient alternative to typing raw IPs in `--via` chains. They also store public-key and source-CIDR metadata. Authenticated remote-identity assertions, qualified realm RBAC, verifiable MFA context and replay-resistant federation remain unimplemented; endpoint registration does not establish those guarantees.
 
 > Realms require the `realmCreate` permission (admin, superowner, or restricted grant).
 
@@ -752,7 +780,7 @@ Realms are **named, registered intermediate bastions** — a convenient alternat
 
 | Command                | Description |
 |------------------------|-------------|
-| `realmCreate`          | Register a new trusted bastion endpoint. |
+| `realmCreate`          | Register a bastion relay endpoint. |
 | `realmList`            | List all configured realms. |
 | `realmInfo`            | Show full details for one realm. |
 | `realmDelete`          | Remove a realm entry. |
@@ -909,6 +937,12 @@ Example:
 ssh -p 2222 user@bastion -- -osh groupList --json-pretty
 ```
 
+Non-interactive command and admission failures return a nonzero SSH process
+status. JSON clients should inspect both that status and `error_code`; JSON
+capture failures emit `ERR_CAPTURE` and return failure without rerunning the
+command. Successful commands and an intentional `-osh exit` return status 0.
+
+
 ---
 
 ## 📊 **Permissions Matrix**
@@ -1058,6 +1092,24 @@ The same explicit disambiguation rule applies to database aliases when multiple 
    docker build -t gobastion .
    ```
 
+   UPX compression is enabled by default (`UPX_MODE=all`). To build without
+   compression, or to compress only the offline/daemon helpers:
+
+   ```sh
+   docker build --build-arg UPX_MODE=off -t gobastion .
+   docker build --build-arg UPX_MODE=cold -t gobastion .
+   ```
+
+   `cold` compresses only `secret-migrate`, `observability`, and
+   `recording-admin`; `all` also compresses `goBastion` and `db-worker`.
+   UPX reduces the uncompressed image size, but registry layers are already
+   compressed, so the download-size reduction is smaller. It also adds startup
+   decompression latency and removes the Go build metadata used by
+   `go version -m` and Go-binary SBOM catalogers. With `all`, `goBastion` and
+   `db-worker` pay that decompression cost on every SSH authentication and
+   database session startup. `make docker` uses `all` by default; override it
+   with `UPX_MODE=off` or `UPX_MODE=cold`.
+
    Build the legacy full image target (compatibility alias):
 
    ```sh
@@ -1157,7 +1209,9 @@ Then add `--security-opt apparmor=gobastion-db` to the container command. The pr
 |-----------------|---------|-------------|
 | `DB_DRIVER`     | `sqlite` | Database backend: `sqlite`, `mysql`, or `postgres` |
 | `DB_DSN`        | *(auto)* | Database connection string. For SQLite, defaults to `/var/lib/goBastion/bastion.db`. Required for `mysql` and `postgres`. |
-| `EGRESS_ENC_KEY`| *(none)* | AES key for encrypting egress private keys and stored database passwords at rest. See [Egress Key Encryption](#-egress-key-encryption). |
+| `EGRESS_ENC_KEY` | required | Canonical base64 AES-256 key for persisted application secrets. Prefer `EGRESS_ENC_KEY_FILE`; see [Egress Key Encryption](#-egress-key-encryption). |
+| `EGRESS_ENC_KEY_ID` | `default` | Active key identifier authenticated in v2 ciphertext. |
+| `EGRESS_ENC_KEYS` | `{}` | JSON map of historical key IDs to canonical base64 AES-128/192/256 keys for decrypt-only use. Prefer `EGRESS_ENC_KEYS_FILE`. |
 | `INSTANCE_ID`   | *(hostname)* | Unique identifier for this bastion instance. Used to distinguish master/slave instances and to store per-instance config in the database. Falls back to hostname, then to `"master"` if unset. |
 | `LOG_FORMAT`    | `json`   | Log output format: `json` (structured JSON, compatible with log aggregators) or `plain` (human-readable text for local debugging). |
 
@@ -1233,6 +1287,7 @@ In **goBastion**, the configuration is stored in the database (table `bastion_in
 | `DB_DSN` | Database connection string |
 | `INSTANCE_ID` | Instance identifier (defaults to hostname, then `"master"`) |
 | `SYNC_INTERVAL_SECONDS` | Delay in seconds between two automatic `--sync` runs (default: `300`) |
+| `DRAIN_TIMEOUT_SECONDS` | Seconds to wait for active managed user sessions to exit during shutdown after stopping new SSH admissions (default: `30`) |
 
 Everything else (account policies, feature toggles, session limits...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.
 
@@ -1328,35 +1383,95 @@ Access Denied
 **How it works:**
 1. At startup, goBastion reads `DB_DRIVER`, `DB_DSN`, and `INSTANCE_ID` from environment variables.
 2. It connects to the database and reads the full configuration from `bastion_instances` for this `INSTANCE_ID`.
-3. If no row exists, it creates one with default values.
+3. First installation creates the instance row while bootstrapping the first administrator; ordinary sessions do not create it merely because it is missing.
 4. Configuration is reloaded automatically at every sync cycle.
 5. Admins can view and modify config interactively via `bastionConfig`.
 
-> **Note:** To change bootstrap parameters (`DB_DRIVER`, `DB_DSN`), you must update environment variables and restart the container. All other config changes are live — no restart needed.
+> **Note:** Bootstrap environment, encryption keys and daemon settings require process restarts after changes. Database-managed configuration is read by new invocations and synchronization; verify propagation to existing sessions for each setting rather than assuming an immediate reload.
 
 ### 🔐 Egress Key Encryption
 
-By default, egress private keys and stored database passwords are kept in the database in **plaintext**. To encrypt them at rest, set the `EGRESS_ENC_KEY` environment variable:
+Persisted application secrets require encryption. A valid active key is mandatory for nonempty secret reads/writes; missing or invalid configuration fails closed. New values use AES-256-GCM envelopes in the `gob:v2:<key-id>:...` format. The format version and key ID are authenticated as additional data. `EGRESS_ENC_KEY_ID` defaults to `default`.
 
-```bash
-# Generate a 32-byte AES-256 key
-openssl rand -base64 32 > egress_key.txt
-export EGRESS_ENC_KEY=$(cat egress_key.txt)
-```
-
-`EGRESS_ENC_KEY` accepts:
-- Base64-encoded AES key (16/24/32 bytes)
-- 32-byte raw passphrase
-
-**Migration behavior:**
-- If `EGRESS_ENC_KEY` is set **after** keys or database passwords were already stored in plaintext, existing values are automatically re-encrypted on next use (transparent migration).
-- If `EGRESS_ENC_KEY` is **not set**, keys and stored database passwords remain in plaintext (backward-compatible).
+The active key must be canonical base64 encoding of exactly 32 random bytes. Raw passphrases, AES-128/192 active keys, whitespace-padded values, and noncanonical base64 are rejected. Historical AES-128/192/256 keys may be configured for authenticated decryption only; new ciphertext is always written with the active AES-256 key. Generate and protect a secret file rather than placing key bytes in shell history or process arguments:
 
 ```sh
-docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt seccomp=profiles/db-isolation-seccomp.json --name gobastion --hostname goBastion -it -p 2222:22 \
-  -e EGRESS_ENC_KEY="$(openssl rand -base64 32)" \
-  gobastion:latest
+umask 077
+openssl rand -base64 32 > /secure/path/gobastion-active-key
+chmod 600 /secure/path/gobastion-active-key
 ```
+
+Configure `EGRESS_ENC_KEY_FILE=/run/secrets/gobastion-active-key` (or inject `EGRESS_ENC_KEY` through a protected environment manager). During rotation, configure `EGRESS_ENC_KEYS_FILE` with a JSON object mapping historical IDs to their canonical base64 keys. Protect these files and restrict reads to the service. Each process loads key configuration once, so restart all instances after changing it.
+
+For a bind-mounted secret file, the runtime configuration is:
+
+```sh
+docker run \
+  --mount type=bind,src=/secure/path/gobastion-active-key,dst=/run/secrets/gobastion-active-key,readonly \
+  -e EGRESS_ENC_KEY_FILE=/run/secrets/gobastion-active-key \
+  --name gobastion gobastion:latest
+```
+
+`secret-migrate` handles legacy data and offline rotation. It is a root-only administrative binary (`0700`) and refuses to run from an SSH session. Stop and drain **every** instance before migration: the tool checks registered sessions at one point in time, but does not hold an admission lock that prevents new sessions from registering. Run it in a one-off maintenance container after stopping normal containers; `docker exec` cannot be used because instances must be stopped. Override the image entrypoint so the normal startup path does not run. Pass DB configuration, key-file paths, the same persistent SQLite volume (if applicable), and the deployment network (for external databases) explicitly. The protected `--env-file` should contain required `DB_DRIVER`/`DB_DSN` and key-file path variables; protect the file and do not put key bytes in arguments. The default command does not apply secret-row changes, but opening SQLite can adjust file permissions or WAL state. `--allow-plaintext` explicitly authorizes conversion of legacy plaintext. Apply requires a new protected backup path and `DB_EXPORT_KEY`:
+
+```sh
+IMAGE=gobastion:latest
+DATA_VOLUME=gobastion-data # Must be the exact persistent SQLite volume used by the stopped service.
+SECRET_DIR=/secure/path/gobastion-secrets
+BACKUP_DIR=/secure/path/gobastion-migration-backups
+MAINTENANCE_ENV=/secure/path/gobastion-maintenance.env # mode 0600; DB_DRIVER/DB_DSN and *_FILE paths.
+EXPORT_ENV=/secure/path/gobastion-export.env # mode 0600; contains DB_EXPORT_KEY for this one-off process.
+
+# Reuse these same mount, env, image, and network options for each invocation.
+docker run --rm --user 0:0 --env-file "$MAINTENANCE_ENV" \
+  --mount "type=volume,src=$DATA_VOLUME,dst=/var/lib/goBastion" \
+  --mount "type=bind,src=$SECRET_DIR/active-key,dst=/run/secrets/active-key,readonly" \
+  --mount "type=bind,src=$SECRET_DIR/historical-keyring.json,dst=/run/secrets/historical-keyring.json,readonly" \
+  --mount "type=bind,src=$BACKUP_DIR,dst=/migration" \
+  --entrypoint /app/secret-migrate "$IMAGE"
+
+# Dry-run: validates encrypted data without secret-row updates. SQLite open may adjust permissions/WAL.
+# Reuse the docker run options above, with optional --network <database-network>.
+docker run --rm --user 0:0 --env-file "$MAINTENANCE_ENV" \
+  --mount "type=volume,src=$DATA_VOLUME,dst=/var/lib/goBastion" \
+  --mount "type=bind,src=$SECRET_DIR/active-key,dst=/run/secrets/active-key,readonly" \
+  --mount "type=bind,src=$SECRET_DIR/historical-keyring.json,dst=/run/secrets/historical-keyring.json,readonly" \
+  --entrypoint /app/secret-migrate "$IMAGE" --allow-plaintext
+
+# Apply; Docker reads the export key from a protected env file, not command args.
+docker run --rm --user 0:0 --env-file "$MAINTENANCE_ENV" --env-file "$EXPORT_ENV" \
+  --mount "type=volume,src=$DATA_VOLUME,dst=/var/lib/goBastion" \
+  --mount "type=bind,src=$SECRET_DIR/active-key,dst=/run/secrets/active-key,readonly" \
+  --mount "type=bind,src=$SECRET_DIR/historical-keyring.json,dst=/run/secrets/historical-keyring.json,readonly" \
+  --mount "type=bind,src=$BACKUP_DIR,dst=/migration" \
+  --entrypoint /app/secret-migrate "$IMAGE" --apply --allow-plaintext --backup /migration/migration-backup.gob
+```
+
+The backup must be a new path; it is created exclusively with mode `0600`. A SIGKILL during backup creation can leave a partial `0600` file at that path; the apply step does not proceed until backup sync completes, and a retry needs a new path or careful verification/removal of the incomplete file. Store the export key separately. Restore against a fresh empty target database using maintenance settings that point at the target DB and the same key files; use its own target SQLite volume or external DB DSN/network:
+
+```sh
+EMPTY_DATA_VOLUME=gobastion-restore-data # New, empty SQLite volume for the restore target.
+docker run --rm --user 0:0 --env-file "$MAINTENANCE_ENV" --env-file "$EXPORT_ENV" \
+  --mount "type=volume,src=$EMPTY_DATA_VOLUME,dst=/var/lib/goBastion" \
+  --mount "type=bind,src=$SECRET_DIR/active-key,dst=/run/secrets/active-key,readonly" \
+  --mount "type=bind,src=$SECRET_DIR/historical-keyring.json,dst=/run/secrets/historical-keyring.json,readonly" \
+  --mount "type=bind,src=$BACKUP_DIR,dst=/migration,readonly" \
+  --entrypoint /app/secret-migrate "$IMAGE" --restore-backup /migration/migration-backup.gob
+```
+
+This path upgrades legacy secrets. Ordinary `--dbImport` rejects plaintext application secrets. For external DB restore, omit the SQLite volume and add the database network option.
+
+The explicit migration inventory has seven secret fields and includes soft-deleted rows: group DB passwords, group egress private keys, guest DB passwords, personal DB passwords, personal egress private keys, SSH host private keys, and TOTP secrets. Migration uses a transaction, but does not promise chunk checkpoints, secure erasure, or removal of old bytes from DB pages/WAL. Protect physical DB snapshots, WAL, backups, and storage separately. Historical AES-128/192 keys are accepted for authenticated decryption only; new data is encrypted with AES-256.
+
+#### Coordinated key rotation
+
+1. Upgrade every node to a v2-capable version and stop all older binaries before any v2 write. Old binaries cannot decrypt v2 values.
+2. Keep the existing key active while preloading the new key under its future ID in `EGRESS_ENC_KEYS` on every node. Restart and verify every node can read both keys.
+3. Coordinate all nodes to switch `EGRESS_ENC_KEY` and `EGRESS_ENC_KEY_ID` to the new key/ID, retaining the old key in the historical keyring. Restart all nodes; do not run mixed writer configurations.
+4. Drain/stop all nodes (there is no admission lock around the session-count check), confirm no sessions are registered, and run offline `secret-migrate` in a one-off maintenance container with the encrypted backup mount. The normal app containers must remain stopped; `docker exec` is not suitable.
+5. Re-run dry-run and verify `changed` is zero before removing the old key from the keyring. Retain recovery keys and backup as required by policy.
+
+Rollback to an old binary after v2 writes is unsupported. Restore the encrypted backup using a v2-capable release and the required key material.
 
 ---
 
@@ -1376,7 +1491,7 @@ These flags are only available when running as `root` outside an SSH session:
 
 ### 🔐 Database Export / Import
 
-The export is now a **single encrypted file**, independent of SQL dialects.
+The export is a **single encrypted file**, independent of SQL dialects.
 
 It is designed for portability across:
 
@@ -1393,7 +1508,7 @@ Encryption is mandatory.
 ```bash
 openssl rand -base64 32 > export_key.txt
 export DB_EXPORT_KEY=$(cat export_key.txt)
-````
+```
 
 `DB_EXPORT_KEY` can be:
 

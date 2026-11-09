@@ -52,8 +52,8 @@ func TestAddTrustAnchor_MissingArgs(t *testing.T) {
 
 	// Missing --cert flag triggers usage error.
 	err := AddTrustAnchor(db, admin, []string{"--name", "myca"})
-	if err != nil {
-		t.Fatalf("expected nil (usage error), got: %v", err)
+	if err == nil {
+		t.Fatal("expected usage error for missing arguments")
 	}
 
 	var count int64

@@ -29,7 +29,10 @@ func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: pivAddTrustAnchor --name <name> --cert <path-to-pem>"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !validation.EntityNameRegexp.MatchString(name) {
@@ -38,7 +41,7 @@ func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Invalid Name", Body: []string{"Name must contain only letters, digits, dots, hyphens, and underscores."}}},
 		})
-		return nil
+		return fmt.Errorf("invalid trust anchor name: %s", name)
 	}
 
 	certBytes, err := os.ReadFile(certFile)
@@ -48,7 +51,7 @@ func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("Cannot read certificate file: %v", err)}}},
 		})
-		return nil
+		return fmt.Errorf("read certificate file: %w", err)
 	}
 
 	anchor := models.PIVTrustAnchor{
@@ -62,7 +65,7 @@ func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{fmt.Sprintf("Failed to store anchor: %v", err)}}},
 		})
-		return nil
+		return fmt.Errorf("store trust anchor: %w", err)
 	}
 
 	console.DisplayBlock(console.ContentBlock{

@@ -16,6 +16,7 @@ import (
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
+	"goBastion/internal/utils/cryptokey"
 )
 
 // --- test helpers ---
@@ -82,7 +83,7 @@ func mustCreateGroupAccess(t *testing.T, db *gorm.DB, groupID uuid.UUID, usernam
 func mustCreateSelfEgressKey(t *testing.T, db *gorm.DB, userID uuid.UUID) {
 	t.Helper()
 	key := models.SelfEgressKey{
-		UserID: userID, PubKey: "pub", PrivKey: "priv",
+		UserID: userID, PubKey: "pub", PrivKey: encryptedFixture(t, "priv"),
 		Type: "ed25519", Size: 256, Fingerprint: "fp",
 	}
 	if err := db.Create(&key).Error; err != nil {
@@ -93,7 +94,7 @@ func mustCreateSelfEgressKey(t *testing.T, db *gorm.DB, userID uuid.UUID) {
 func mustCreateGroupEgressKey(t *testing.T, db *gorm.DB, groupID uuid.UUID) {
 	t.Helper()
 	key := models.GroupEgressKey{
-		GroupID: groupID, PubKey: "pub", PrivKey: "priv",
+		GroupID: groupID, PubKey: "pub", PrivKey: encryptedFixture(t, "priv"),
 		Type: "ed25519", Size: 256, Fingerprint: "fp",
 	}
 	if err := db.Create(&key).Error; err != nil {
@@ -674,8 +675,8 @@ func TestConnectLogsRequestedAndEffectiveTargets(t *testing.T) {
 
 	t.Setenv("SSH_CLIENT", "90.103.139.92 35118 22")
 
-	if err := Connect(db, user, *logger, "hub"); err != nil {
-		t.Fatalf("Connect returned error: %v", err)
+	if err := Connect(db, user, *logger, "hub"); err == nil || !strings.Contains(err.Error(), "no usable SSH egress key") {
+		t.Fatalf("Connect should report missing egress key: %v", err)
 	}
 
 	entries := parseJSONLogLines(t, &logBuf)
@@ -709,8 +710,8 @@ func TestConnectLogsExplicitRequestedUserUnchanged(t *testing.T) {
 
 	t.Setenv("SSH_CLIENT", "90.103.139.92 35118 22")
 
-	if err := Connect(db, user, *logger, "deploy@myserver"); err != nil {
-		t.Fatalf("Connect returned error: %v", err)
+	if err := Connect(db, user, *logger, "deploy@myserver"); err == nil || !strings.Contains(err.Error(), "no usable SSH egress key") {
+		t.Fatalf("Connect should report missing egress key: %v", err)
 	}
 
 	entries := parseJSONLogLines(t, &logBuf)
@@ -781,6 +782,60 @@ func TestDetectProtocol(t *testing.T) {
 		})
 	}
 }
+
+
+// --- BUG-04: opaque transfer detection and output routing ---
+
+func TestTransferProtocol(t *testing.T) {
+	tests := []struct {
+		name  string
+		parts []string
+		want  string
+	}{
+		{"empty", nil, "ssh"},
+		{"interactive target", []string{"alice@example.com"}, "ssh"},
+		{"sftp-session", []string{"sftp-session", "alice@host:22"}, "sftp"},
+		{"sftp-session joined", []string{"sftp-session alice@host:22"}, "sftp"},
+		{"rsync server", []string{"alice@example.com", "rsync", "--server", "-vlogDtpre.iLsfxCIvu", ".", "/tmp"}, "rsync"},
+		{"scp upload", []string{"alice@example.com", "scp", "-t", "/tmp/file"}, "scpupload"},
+		{"scp download", []string{"alice@example.com", "scp", "-f", "/tmp/file"}, "scpdownload"},
+		{"plain command", []string{"alice@example.com", "ls", "-la"}, "ssh"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TransferProtocol(tc.parts...); got != tc.want {
+				t.Errorf("TransferProtocol(%q) = %q, want %q", tc.parts, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsOpaqueTransfer(t *testing.T) {
+	if IsOpaqueTransfer("alice@example.com") {
+		t.Fatal("interactive SSH must not be treated as an opaque transfer")
+	}
+	for _, parts := range [][]string{
+		{"sftp-session", "alice@host:22"},
+		{"alice@example.com", "rsync", "--server", "-vlogDtpre.iLsfxCIvu", ".", "/tmp"},
+		{"alice@example.com", "scp", "-t", "/tmp/file"},
+	} {
+		if !IsOpaqueTransfer(parts...) {
+			t.Errorf("IsOpaqueTransfer(%q) = false, want true", parts)
+		}
+	}
+}
+
+func TestProtocolOutputRoutesHumanMessagesAwayFromTransferStdout(t *testing.T) {
+	if protocolOutput("ssh") != os.Stdout {
+		t.Fatal("interactive SSH output must stay on stdout")
+	}
+	for _, protocol := range []string{"sftp", "rsync", "scpupload", "scpdownload"} {
+		if protocolOutput(protocol) != os.Stderr {
+			t.Errorf("protocolOutput(%q) must route to stderr to protect the transfer stream", protocol)
+		}
+	}
+}
+
 
 // Suppress SSH_CLIENT env var between tests that don't set it.
 func init() {
@@ -856,4 +911,13 @@ func TestIPv6AccessResolution(t *testing.T) {
 			})
 		}
 	}
+}
+
+func encryptedFixture(t *testing.T, plaintext string) string {
+	t.Helper()
+	ciphertext, err := cryptokey.Encrypt(plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ciphertext
 }

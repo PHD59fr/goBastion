@@ -35,7 +35,7 @@ func ListEgressKeys(db *gorm.DB, currentUser *models.User, args []string) error 
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountListEgressKeys --user <username>"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required argument --user")
 	}
 
 	if !currentUser.CanDo(db, "accountListEgressKeys", username) {

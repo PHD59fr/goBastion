@@ -46,7 +46,10 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 				{SubTitle: "Usage Error", Body: bodyUsage},
 			},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return errors.New("recording file is required")
 	}
 
 	if username == "" {
@@ -83,7 +86,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 				{SubTitle: "Invalid File Format", Body: []string{"The specified file has an invalid format."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("invalid recording filename: %q", file)
 	}
 
 	baseDir := filepath.Join(config.Get().Paths.TtyrecDir, strings.ToLower(strings.TrimSpace(username)))
@@ -96,7 +99,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 				{SubTitle: "TTY Session Not Found", Body: []string{"Specified TTY Session does not exist"}},
 			},
 		})
-		return nil
+		return fmt.Errorf("recording %q could not be found: %w", file, err)
 	}
 
 	console.DisplayBlock(console.ContentBlock{
@@ -119,6 +122,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 	playCmd.Stderr = os.Stderr
 
 	if err := zcatCmd.Start(); err != nil {
+		_ = pipe.Close()
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "TTY Session Playback",
 			BlockType: "error",
@@ -132,6 +136,7 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		return err
 	}
 	if err := playCmd.Start(); err != nil {
+		_ = pipe.Close()
 		_ = zcatCmd.Process.Kill()
 		_ = zcatCmd.Wait()
 		console.DisplayBlock(console.ContentBlock{
@@ -147,11 +152,10 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		return err
 	}
 
-	// Close the write end of the pipe in this process so ttyplay sees EOF.
-	// We need to get the underlying file to close it, but Stdin of zcatCmd
-	// is set to os.Stdin, so the pipe's write end is not used by zcatCmd.
-	// Just wait for both processes.
+	// ttyplay owns the read end while it runs. Release our copy as soon as it
+	// exits so zcat cannot block writing to a pipe with no active reader.
 	playErr := playCmd.Wait()
+	_ = pipe.Close()
 	decompressErr := zcatCmd.Wait()
 	if playErr == nil && decompressErr != nil {
 		console.DisplayBlock(console.ContentBlock{Title: "TTY Session Playback", BlockType: "error", Sections: []console.SectionContent{{SubTitle: "Playback Error", Body: []string{"Recording decompression failed; playback may be incomplete."}}}})

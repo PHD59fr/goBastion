@@ -13,38 +13,13 @@ if ! printf "%s" "$user" | grep -Eq '^[a-z0-9][a-z0-9._-]{0,31}$'; then
   exit 2
 fi
 
-entry=$(getent passwd "$user" 2>/dev/null) || { echo "unknown user" >&2; exit 2; }
-uid=$(printf '%s' "$entry" | cut -d: -f3)
-if [ "$uid" -lt 1000 ]; then
-  echo "refusing to manage system account" >&2
-  exit 2
-fi
-
-target="/etc/sudoers.d/$user"
 case "$action" in
-  admin)
-    umask 077
-    tmp=$(mktemp "/etc/sudoers.d/.gobastion-$user.XXXXXX")
-    trap 'rm -f "$tmp"' EXIT HUP INT TERM
-    {
-      printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-adduser *\n' "$user"
-      printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-passwd-delete *\n' "$user"
-      printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-deluser *\n' "$user"
-      printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-chown-ssh *\n' "$user"
-      printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-sudoers *\n' "$user"
-    } > "$tmp"
-    chmod 0440 "$tmp"
-    if command -v visudo >/dev/null 2>&1; then
-      visudo -cf "$tmp" >/dev/null
-    fi
-    mv "$tmp" "$target"
-    trap - EXIT HUP INT TERM
-    ;;
-  remove)
-    rm -f "$target"
-    ;;
+  admin|remove) ;;
   *)
     echo "invalid action" >&2
     exit 2
     ;;
 esac
+case "$user" in gobastion|nobody|gobastion-session) echo "reserved account" >&2; exit 2 ;; esac
+# The action is a legacy syntax placeholder. Root sync reads fresh DB policy.
+exec /usr/local/sbin/gobastion-sync-user "$user"

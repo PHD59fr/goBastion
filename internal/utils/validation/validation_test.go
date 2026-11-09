@@ -68,3 +68,36 @@ func TestIsValidProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRedisDatabase(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{"", "", true},
+		{"0", "0", true},
+		{"2", "2", true},
+		{"02", "2", true},
+		{"2147483647", "2147483647", true},
+		{"-1", "", false},
+		{"+2", "2", true},
+		{"1.5", "", false},
+		{"two", "", false},
+		{" 2", "", false},
+		{"2147483648", "", false},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := validation.NormalizeRedisDatabase(tc.input)
+			if tc.ok && err != nil {
+				t.Fatalf("NormalizeRedisDatabase(%q) error = %v", tc.input, err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("NormalizeRedisDatabase(%q) accepted invalid input", tc.input)
+			}
+			if got != tc.want {
+				t.Fatalf("NormalizeRedisDatabase(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

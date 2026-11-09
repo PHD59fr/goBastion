@@ -205,3 +205,23 @@ func TestCreate_MissingArgs(t *testing.T) {
 		t.Fatal("expected missing required arguments error")
 	}
 }
+
+func TestFailedCreationRetainsIdentityTombstone(t *testing.T) {
+	db := newTestDB(t)
+	mock := osadapter.NewMockAdapter()
+	mock.ErrCreateUser = errors.New("refused")
+	opts := UserCreationOptions{Role: models.RoleUser, Enabled: true}
+	if err := CreateUser(db, mock, "failed", testPubKey, opts); err == nil {
+		t.Fatal("expected creation error")
+	}
+	var history []models.User
+	if err := db.Unscoped().Where("username = ?", "failed").Find(&history).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || !history[0].DeletedAt.Valid {
+		t.Fatalf("failed identity was not reserved: %+v", history)
+	}
+	if err := CreateUser(db, osadapter.NewMockAdapter(), "failed", testPubKey, opts); err == nil {
+		t.Fatal("failed identity was reused")
+	}
+}

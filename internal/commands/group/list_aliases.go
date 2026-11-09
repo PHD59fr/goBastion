@@ -27,7 +27,10 @@ func ListAliases(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListAliases --group <group_name>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupListAliases", groupName) {

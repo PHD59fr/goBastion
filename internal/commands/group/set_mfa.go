@@ -30,7 +30,10 @@ func SetMFA(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []stri
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"groupSetMFA --group <name> --required|--optional"}}},
 		})
-		return nil
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupSetMFA", groupName) {
@@ -39,7 +42,7 @@ func SetMFA(db *gorm.DB, currentUser *models.User, log *slog.Logger, args []stri
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"Only group owners or admins can set MFA policy."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var group models.Group

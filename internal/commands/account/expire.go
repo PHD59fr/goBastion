@@ -95,12 +95,15 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
+	if err := syncModifiedAccount(u.Username); err != nil {
+		return fmt.Errorf("account disabled but privileged reconciliation failed: %w", err)
+	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Expire",
 		BlockType: "success",
 		Sections: []console.SectionContent{{SubTitle: "Success", Body: []string{
 			fmt.Sprintf("User '%s' has been locked immediately.", username),
-			"The account is now disabled and all active sessions will be terminated on next sync.",
+			"The account is disabled; local privileged reconciliation completed.",
 			"Use accountUnexpire --user <username> to re-enable.",
 		}}},
 	})

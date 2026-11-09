@@ -75,7 +75,7 @@ func SetupTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 				{SubTitle: "Error", Body: []string{"Invalid code - TOTP was NOT enabled. Try again."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("invalid TOTP confirmation code")
 	}
 
 	user.TOTPSecret = secret

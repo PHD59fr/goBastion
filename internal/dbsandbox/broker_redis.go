@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"goBastion/internal/utils/validation"
 )
 
 func (b *broker) redis(native net.Conn) error {
@@ -26,12 +28,7 @@ func (b *broker) redis(native net.Conn) error {
 		return err
 	}
 	r := bufio.NewReader(upstream)
-	if b.password != "" {
-		parts := []string{"AUTH"}
-		if b.user != "" && b.user != "default" {
-			parts = append(parts, b.user)
-		}
-		parts = append(parts, b.password)
+	if parts, explicit := redisAuthCommand(b.user, b.password); explicit {
 		if err := writeRedisCommand(upstream, parts...); err != nil {
 			return err
 		}
@@ -42,6 +39,25 @@ func (b *broker) redis(native net.Conn) error {
 		}
 		if result.kind != '+' || string(result.text) != "OK" {
 			return fmt.Errorf("redis authentication rejected")
+		}
+	}
+	// Select the configured logical database before the client starts. The
+	// native client repeats the selection for its prompt, but the broker's
+	// selection is the fail-closed gate: if the server or ACL refuses it, the
+	// session never reaches the client on database 0.
+	if parts, explicit, err := redisSelectCommand(b.database); err != nil {
+		return err
+	} else if explicit {
+		if err := writeRedisCommand(upstream, parts...); err != nil {
+			return err
+		}
+		budget := 16 * 1024 * 1024
+		result, err := readRedisValue(r, &budget, 0)
+		if err != nil {
+			return err
+		}
+		if result.kind != '+' || string(result.text) != "OK" {
+			return fmt.Errorf("redis database selection rejected")
 		}
 	}
 	// Redis administrative commands can reveal credentials stored by the DB
@@ -103,6 +119,35 @@ func (b *broker) redis(native net.Conn) error {
 		return inputErr
 	}
 	return outputErr
+}
+
+// redisAuthCommand selects the configured ACL identity even when no password
+// is stored. A nopass user still requires AUTH to leave the default identity,
+// which may be more privileged. An empty password is sent explicitly so the
+// broker can fail closed if the server does not accept that identity.
+func redisAuthCommand(user, password string) ([]string, bool) {
+	if user == "" && password == "" {
+		return nil, false
+	}
+	parts := []string{"AUTH"}
+	if user != "" {
+		parts = append(parts, user)
+	}
+	parts = append(parts, password)
+	return parts, true
+}
+
+// redisSelectCommand returns the broker's initial database selection. An empty
+// value keeps the server default instead of forcing database 0 explicitly.
+func redisSelectCommand(database string) ([]string, bool, error) {
+	index, err := validation.NormalizeRedisDatabase(database)
+	if err != nil {
+		return nil, false, err
+	}
+	if index == "" {
+		return nil, false, nil
+	}
+	return []string{"SELECT", index}, true, nil
 }
 
 func redisCommandAllowed(name string, metadata redisValue) bool {

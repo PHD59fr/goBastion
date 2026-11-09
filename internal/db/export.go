@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"gorm.io/gorm/schema"
 
 	"goBastion/internal/config"
+	"goBastion/internal/secretstore"
 )
 
 const (
@@ -224,13 +226,35 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 		Tables:       make([]exportTable, 0, len(ManagedModelsInDependencyOrder())),
 	}
 
+	// Read every table from one consistent snapshot. Without a transaction,
+	// concurrent inserts can produce cross-table references that cannot be
+	// restored (for example an access whose user was read earlier). SQLite and
+	// MySQL use repeatable reads; PostgreSQL requires an explicit repeatable-read
+	// transaction because its default read-committed isolation is per statement.
+	tx := src.Begin(&sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if tx.Error != nil {
+		return fmt.Errorf("start export snapshot: %w", tx.Error)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
 	for _, model := range ManagedModelsInDependencyOrder() {
-		sch, err := parseModelSchema(src, model)
+		sch, err := parseModelSchema(tx, model)
 		if err != nil {
 			return fmt.Errorf("parse schema for export: %w", err)
 		}
+		// An offline upgrade must be able to back up a pre-observability schema
+		// before schema migration. This table contains operational counts only.
+		if sch.Table == "observation_counters" && !tx.Migrator().HasTable(model) {
+			payload.Tables = append(payload.Tables, exportTable{Name: sch.Table, Rows: []map[string]encodedCell{}})
+			continue
+		}
 
-		rows, err := exportTableRows(src, sch, log)
+		rows, err := exportTableRows(tx, sch, log)
 		if err != nil {
 			return fmt.Errorf("export table %s: %w", sch.Table, err)
 		}
@@ -240,6 +264,11 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 			Rows: rows,
 		})
 	}
+
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("commit export snapshot: %w", err)
+	}
+	committed = true
 
 	plain, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -273,7 +302,18 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 }
 
 // Import reads an encrypted logical JSON export from r and restores it into an empty DB.
-func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
+func Import(db *gorm.DB, r io.Reader, log *slog.Logger) error {
+	return importDatabase(db, r, log, false)
+}
+
+// ImportForSecretMigration restores an old encrypted logical backup and
+// upgrades its secrets in the same transaction. Only the offline root console
+// migration command exposes this operation; normal imports reject plaintext.
+func ImportForSecretMigration(db *gorm.DB, r io.Reader, log *slog.Logger) error {
+	return importDatabase(db, r, log, true)
+}
+
+func importDatabase(db *gorm.DB, r io.Reader, log *slog.Logger, migrateSecrets bool) (importErr error) {
 	// Limit import size to prevent OOM from malicious input.
 	raw, err := io.ReadAll(io.LimitReader(r, config.Get().DBExport.ImportMaxSize))
 	if err != nil {
@@ -413,6 +453,16 @@ func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
 		}
 	}
 
+	var secretErr error
+	if migrateSecrets {
+		_, secretErr = secretstore.Migrate(tx, secretstore.Options{Apply: true, AllowPlaintext: true})
+	} else {
+		secretErr = secretstore.ValidateStored(tx)
+	}
+	if secretErr != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("imported secrets failed validation: %w", secretErr)
+	}
 	return tx.Commit().Error
 }
 
@@ -436,7 +486,7 @@ func validateImportTables(db *gorm.DB, tables []exportTable) error {
 		expected[table.Name] = true
 	}
 	for table, seen := range expected {
-		if !seen {
+		if !seen && table != "observation_counters" {
 			return fmt.Errorf("required table %s is missing from import", table)
 		}
 	}

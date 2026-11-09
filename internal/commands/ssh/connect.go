@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -165,23 +166,30 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 	if sshUser != "" {
 		target = sshUser + "@" + net.JoinHostPort(sshHost, sshPort)
 	}
-	fmt.Printf("⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(target))
+	_, _ = fmt.Fprintf(protocolOutput(protocol), "⚡ %s → %s → %s ...\n\n", utils.FgBlueB(sshFrom), loginHostname, utils.FgYellow(target))
 
 	accesses, err := accessFilter(db, user, sshUser, sshHost, sshPort, protocol)
 	if err != nil {
 		log.Warn("ssh_connect", slog.String("reason", "access_denied"), slog.String("error", err.Error()))
 		return fmt.Errorf("access filter failed: %w", err)
 	}
+	return connectWithKeys(db, user, log, accesses, remoteCmd, formatJumpHosts(hops), effectiveTarget, sshConnector.SshConnection)
+}
 
+// connectWithKeys runs the selected SSH access. The runner argument keeps the
+// retry decision testable without starting an SSH client or weakening its setup.
+func connectWithKeys(db *gorm.DB, user models.User, log *slog.Logger, accesses []models.AccessRight, remoteCmd string, jumpHosts []string, target sshLogTarget, run func(*gorm.DB, models.User, models.AccessRight) error) error {
+	protocol := detectProtocol(remoteCmd)
+	out := protocolOutput(protocol)
 	if len(accesses) > 0 {
-		fmt.Printf("Trying keys ...\n")
+		_, _ = fmt.Fprintf(out, "Trying keys ...\n")
 		var lastConnErr error
 		for _, access := range accesses {
 			if access.KeyId == uuid.Nil {
-				fmt.Printf("- %s - Skip empty egress key.\n", access.Source)
+				_, _ = fmt.Fprintf(out, "- %s - Skip empty egress key.\n", access.Source)
 				continue
 			}
-			fmt.Printf("- "+utils.BgGreenB("%s")+" - ID: %s "+utils.FgBlueB("%s-%d")+" [%s]...\n", access.Source, access.KeyId.String(), strings.ToUpper(access.KeyType), access.KeySize, access.KeyUpdatedAt.Format("2006-01-02"))
+			_, _ = fmt.Fprintf(out, "- "+utils.BgGreenB("%s")+" - ID: %s "+utils.FgBlueB("%s-%d")+" [%s]...\n", access.Source, access.KeyId.String(), strings.ToUpper(access.KeyType), access.KeySize, access.KeyUpdatedAt.Format("2006-01-02"))
 
 			if access.Type == "self" {
 				if err := db.Model(&models.SelfAccess{}).Where("id = ?", access.ID).Update("last_connection", time.Now()).Error; err != nil {
@@ -194,21 +202,31 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 			}
 
 			// JIT MFA: if the group requires MFA and the user hasn't done global TOTP,
-			// prompt for a TOTP code now.
-			if access.MFARequired && (!user.TOTPEnabled || user.TOTPSecret == "") {
-				if !CheckJITMFA(db, &user, log) {
-					return fmt.Errorf("⛔ MFA validation failed")
+			// prompt for a TOTP code now. Opaque transfers cannot carry such a prompt.
+			if access.MFARequired {
+				if protocol != "ssh" {
+					return fmt.Errorf("⛔ file transfers are unavailable when the access requires MFA")
+				}
+				if !user.TOTPEnabled || user.TOTPSecret == "" {
+					if !CheckJITMFA(db, &user, log) {
+						return fmt.Errorf("⛔ MFA validation failed")
+					}
 				}
 			}
 
 			log.Info("ssh_connect", slog.String("to", access.Source), slog.String("key_id", access.KeyId.String()))
 			access.RemoteCmd = remoteCmd
-			access.JumpHosts = formatJumpHosts(hops)
-			err = sshConnector.SshConnection(db, user, access)
+			access.JumpHosts = jumpHosts
+			err := run(db, user, access)
 			if err != nil {
 				log.Error("ssh_close", slog.String("to", access.Source), slog.String("error", err.Error()))
-				fmt.Printf("SSH connection to %s failed: %v\n", access.Source, err)
+				_, _ = fmt.Fprintf(out, "SSH connection to %s failed: %v\n", access.Source, err)
 				lastConnErr = err
+				// A remote command may have run before SSH returned an error,
+				// including exit status 255. Never execute it with another key.
+				if remoteCmd != "" {
+					return err
+				}
 				continue
 			}
 			log.Info("ssh_close", slog.String("to", access.Source))
@@ -220,10 +238,10 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 	}
 
 	log.Warn("ssh_connect", slog.String("reason", "no_valid_key"))
-	fmt.Printf("No usable SSH egress key found for %s@%s:%s.\n", sshUser, sshHost, sshPort)
-	fmt.Println("Generate one with:")
-	fmt.Println("  selfGenerateEgressKey --type ed25519")
-	return nil
+	_, _ = fmt.Fprintf(out, "No usable SSH egress key found for %s@%s:%s.\n", target.user, target.host, target.port)
+	_, _ = fmt.Fprintln(out, "Generate one with:")
+	_, _ = fmt.Fprintln(out, "  selfGenerateEgressKey --type ed25519")
+	return fmt.Errorf("no usable SSH egress key found for %s@%s:%s", target.user, target.host, target.port)
 }
 
 // inferSSHUsername resolves the SSH username to use when connecting to host:port
@@ -517,7 +535,6 @@ func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess,
 		MFARequired:    ga.Group.MFARequired,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
-	maybeReEncryptKey(db, log, "group", key.ID, key.PrivKey)
 	return access, nil
 }
 
@@ -554,39 +571,12 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 		PrivateKey:     privateKey,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
-	maybeReEncryptKey(db, log, "self", key.ID, key.PrivKey)
 	return access, nil
 }
 
-// decryptPrivKey returns the plaintext private key, handling both encrypted and legacy plaintext values.
+// decryptPrivKey authenticates stored ciphertext before exposing a private key.
 func decryptPrivKey(raw string) (string, error) {
 	return cryptokey.DecryptOrPassThrough(raw)
-}
-
-// maybeReEncryptKey re-encrypts a plaintext egress key if EGRESS_ENC_KEY is now set.
-// Runs synchronously to ensure the re-encryption is persisted before the session ends.
-func maybeReEncryptKey(db *gorm.DB, log *slog.Logger, keyType string, keyID uuid.UUID, currentPrivKey string) {
-	if !cryptokey.Enabled() {
-		return
-	}
-	if cryptokey.IsEncrypted(currentPrivKey) {
-		return // already encrypted
-	}
-	encrypted, err := cryptokey.Encrypt(currentPrivKey)
-	if err != nil {
-		log.Warn("re_encrypt_key", slog.String("error", err.Error()))
-		return
-	}
-	var updateErr error
-	switch keyType {
-	case "self":
-		updateErr = db.Model(&models.SelfEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
-	case "group":
-		updateErr = db.Model(&models.GroupEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
-	}
-	if updateErr != nil {
-		log.Warn("re_encrypt_key", slog.String("key_type", keyType), slog.String("error", updateErr.Error()))
-	}
 }
 
 // normalizeWildcardUsername replaces a wildcard username '*' with the requested username.
@@ -612,6 +602,45 @@ func detectProtocol(remoteCmd string) string {
 	return protocol
 }
 
+// TransferProtocol reports the binary transfer protocol requested by an SSH
+// command line. It accepts both the ForceCommand form (one raw command string)
+// and a split argument form. "ssh" means that stdout can carry human messages.
+func TransferProtocol(parts ...string) string {
+	raw := strings.TrimSpace(strings.Join(parts, " "))
+	if raw == "" {
+		return "ssh"
+	}
+	if strings.HasPrefix(raw, "sftp-session") {
+		return "sftp"
+	}
+	clean, _, err := extractForwardHops(raw)
+	if err != nil {
+		return "ssh"
+	}
+	_, _, _, remoteCmd, err := parseSSHCommand(clean)
+	if err != nil || remoteCmd == "" {
+		return "ssh"
+	}
+	return detectProtocol(remoteCmd)
+}
+
+// IsOpaqueTransfer reports whether the command carries a binary protocol on
+// stdout and therefore must not receive human-oriented output on that stream.
+func IsOpaqueTransfer(parts ...string) bool {
+	protocol := TransferProtocol(parts...)
+	return protocol != "" && protocol != "ssh"
+}
+
+// protocolOutput keeps binary transfer stdout untouched. Human-readable
+// diagnostics for opaque protocols go to stderr, which rsync/scp do not use
+// for their protocol stream.
+func protocolOutput(protocol string) io.Writer {
+	if protocol != "" && protocol != "ssh" {
+		return os.Stderr
+	}
+	return os.Stdout
+}
+
 // CheckJITMFA requires enrollment and verifies a TOTP or backup code before an
 // SSH or database connection whose group requires MFA.
 func CheckJITMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
@@ -634,7 +663,7 @@ func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 			return false
 		}
 		code = strings.TrimSpace(code)
-		if totpUtil.Verify(user.TOTPSecret, code) {
+		if totpUtil.VerifyStoredSecret(user.TOTPSecret, code) {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
 			return true
 		}

@@ -54,6 +54,71 @@ func TestWorkerSpecificationNeverReceivesDatabasePasswords(t *testing.T) {
 	}
 }
 
+func TestRedisAuthenticationSelectsExplicitIdentityWithoutPassword(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		user     string
+		password string
+		want     []string
+		explicit bool
+	}{
+		{name: "no identity", want: nil, explicit: false},
+		{name: "default password only", password: "secret", want: []string{"AUTH", "secret"}, explicit: true},
+		{name: "explicit nopass user", user: "reader", want: []string{"AUTH", "reader", ""}, explicit: true},
+		{name: "explicit default nopass", user: "default", want: []string{"AUTH", "default", ""}, explicit: true},
+		{name: "explicit user with password", user: "reader", password: "secret", want: []string{"AUTH", "reader", "secret"}, explicit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, explicit := redisAuthCommand(tc.user, tc.password)
+			if explicit != tc.explicit {
+				t.Fatalf("explicit = %v, want %v", explicit, tc.explicit)
+			}
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("command = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRedisInitialDatabaseSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		database string
+		want     []string
+		explicit bool
+		valid    bool
+	}{
+		{name: "server default", database: "", explicit: false, valid: true},
+		{name: "database zero", database: "0", want: []string{"SELECT", "0"}, explicit: true, valid: true},
+		{name: "database two", database: "2", want: []string{"SELECT", "2"}, explicit: true, valid: true},
+		{name: "canonical index", database: "02", want: []string{"SELECT", "2"}, explicit: true, valid: true},
+		{name: "negative index", database: "-1", valid: false},
+		{name: "non-numeric index", database: "cache", valid: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, explicit, err := redisSelectCommand(tc.database)
+			if (err == nil) != tc.valid {
+				t.Fatalf("redisSelectCommand(%q) error = %v, valid = %v", tc.database, err, tc.valid)
+			}
+			if !tc.valid {
+				return
+			}
+			if explicit != tc.explicit || strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("redisSelectCommand(%q) = %q, %v; want %q, %v", tc.database, got, explicit, tc.want, tc.explicit)
+			}
+		})
+	}
+
+	b, args, _ := newBroker(context.Background(), "db.fixture", "127.0.0.1:6379", "redis-cli",
+		[]string{"-h", "db.fixture", "-p", "6379", "-n", "2"}, nil, nil)
+	if b.database != "2" {
+		t.Fatalf("broker database = %q, want 2", b.database)
+	}
+	if strings.Join(args, " ") != "-e -h db.fixture -p 6379 -n 2" {
+		t.Fatalf("unexpected redis client arguments: %q", args)
+	}
+}
+
 func TestRedisAdministrativeCommandsCannotReachDatabase(t *testing.T) {
 	allowed := map[string]bool{"get": true, "config": false, "renamedconfig": false}
 	for _, name := range []string{"CONFIG", "renamedconfig", "unknown"} {

@@ -1,0 +1,22 @@
+# Staging template for Codex 0.167.0. Install as .codex/config.toml only
+# after review; this workspace's .codex directory is managed/read-only.
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+
+[agents.security-architect]
+description = "Analyze security boundaries, threat scenarios, secret handling, and hardening plans. Make evidence-based recommendations and identify verification needs."
+config_file = "agents/security-architect.toml"
+
+[agents.go-engineer]
+description = "Implement focused Go changes that preserve repository conventions, security boundaries, database compatibility, and existing behavior."
+config_file = "agents/go-engineer.toml"
+
+[agents.architecture-reviewer]
+description = "Review system architecture and proposed changes for correctness, maintainability, failure modes, and deployment implications."
+config_file = "agents/architecture-reviewer.toml"
+
+[agents.maintenance-agent]
+description = "Maintain repository documentation, plans, operational guidance, and configuration inventories with factual, verified claims."
+config_file = "agents/maintenance-agent.toml"

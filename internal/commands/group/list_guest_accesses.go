@@ -28,7 +28,10 @@ func ListGuestAccesses(db *gorm.DB, currentUser *models.User, args []string) err
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupListGuestAccesses --group <group> --account <user>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupListGuestAccesses", groupName) {

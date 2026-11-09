@@ -29,7 +29,10 @@ func DelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupDelMember --group <groupName> --user <username>"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupDelMember", groupName) {
@@ -106,6 +109,25 @@ func DelMember(db *gorm.DB, currentUser *models.User, args []string) error {
 				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to remove member from group."}}},
 			})
 			return err
+		}
+		// Revoke guest grants together with the membership so that re-adding the
+		// user does not silently restore access. Soft deletion keeps the audit
+		// trail and stays inside the membership transaction.
+		if err := db.Where("user_id = ? AND group_id = ?", u.ID, g.ID).Delete(&models.GroupGuestAccess{}).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Remove Member",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to revoke the member's guest accesses."}}},
+			})
+			return fmt.Errorf("revoke guest accesses: %w", err)
+		}
+		if err := db.Where("user_id = ? AND group_id = ?", u.ID, g.ID).Delete(&models.GroupGuestDBAccess{}).Error; err != nil {
+			console.DisplayBlock(console.ContentBlock{
+				Title:     "Remove Member",
+				BlockType: "error",
+				Sections:  []console.SectionContent{{SubTitle: "Error", Body: []string{"Failed to revoke the member's guest DB accesses."}}},
+			})
+			return fmt.Errorf("revoke guest DB accesses: %w", err)
 		}
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelSerializable})

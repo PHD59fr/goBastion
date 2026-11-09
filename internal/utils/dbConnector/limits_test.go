@@ -22,6 +22,9 @@ func TestDBIdleTimeoutStopsClientAndPreservesRecording(t *testing.T) {
 			_ = config.Load()
 			t.Cleanup(config.ResetForTesting)
 			base := t.TempDir()
+			if err := os.Chmod(base, 0700); err != nil {
+				t.Fatal(err)
+			}
 			cfg := config.DefaultConfig()
 			cfg.TTYRec.Enabled = record
 			cfg.Paths.TtyrecDir = filepath.Join(base, "recordings")

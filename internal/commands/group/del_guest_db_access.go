@@ -29,7 +29,10 @@ func DelGuestDBAccess(db *gorm.DB, currentUser *models.User, args []string) erro
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: groupDelGuestDBAccess --group <group> --account <user> [--grant <grant_id>]"}}},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid or missing arguments")
 	}
 
 	if !currentUser.CanDo(db, "groupDelGuestDBAccess", groupName) {

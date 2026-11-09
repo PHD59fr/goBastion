@@ -48,6 +48,11 @@ func newBroker(ctx context.Context, host, address, binary string, args, env []st
 				b.database = args[i+1]
 				i++
 			}
+		case "-n":
+			if binary == "redis-cli" && i+1 < len(args) {
+				b.database = args[i+1]
+				i++
+			}
 		case "-h", "-p", "-P", "-v":
 			i++
 		default:

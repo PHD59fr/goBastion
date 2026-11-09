@@ -21,7 +21,7 @@ func List(db *gorm.DB, currentUser *models.User) error {
 				{SubTitle: "Access Denied", Body: []string{"You do not have permission to view the account list."}},
 			},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var users []models.User

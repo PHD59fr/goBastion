@@ -1,0 +1,25 @@
+# Targeted Grype ignores for vulnerabilities with no fix available in the
+# pinned Alpine 3.22 runtime base as of 2026-11-09. Re-evaluate on every
+# base-image, package, or Grype DB update; remove entries when fixes ship.
+ignore:
+  # busybox: no fixed apk release in Alpine 3.22 (1.37.0-r20). Medium severity;
+  # base utility required by the image. Track upstream Alpine busybox advisories.
+  - vulnerability: CVE-2025-60876
+    package:
+      name: busybox
+      type: apk
+  - vulnerability: CVE-2025-60876
+    package:
+      name: busybox-binsh
+      type: apk
+  - vulnerability: CVE-2025-60876
+    package:
+      name: ssl_client
+      type: apk
+
+  # gzip: no fixed apk release in Alpine 3.22 (1.14-r2). Medium severity.
+  # Track upstream Alpine gzip advisories.
+  - vulnerability: CVE-2026-41991
+    package:
+      name: gzip
+      type: apk

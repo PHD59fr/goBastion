@@ -20,6 +20,7 @@ import (
 	"goBastion/internal/dbsandbox"
 	"goBastion/internal/models"
 	"goBastion/internal/recording"
+	"goBastion/internal/telemetry"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/sessionlimit"
@@ -86,7 +87,21 @@ func sessionLimitError(ctx context.Context) error {
 func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	return ConnectContext(context.Background(), db, user, access)
 }
-func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access models.DBAccessRight) error {
+func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access models.DBAccessRight) (resultErr error) {
+	protocol := access.Protocol
+	if protocol == "postgres" {
+		protocol = "postgresql"
+	}
+	ctx, span := telemetry.Start(ctx, "dbbroker.connect", telemetry.Component("dbbroker"), telemetry.Protocol(protocol))
+	defer func() {
+		if resultErr != nil {
+			span.Failure()
+		} else {
+			span.Success()
+		}
+		span.End()
+	}()
+
 	if !config.Get().Database.Enabled {
 		return fmt.Errorf("database access is disabled")
 	}
@@ -108,6 +123,13 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	clientBin := validation.DBProtocolClient(access.Protocol)
 	if clientBin == "" {
 		return fmt.Errorf("unsupported database protocol: %s", access.Protocol)
+	}
+	if access.Protocol == "redis" {
+		database, err := validation.NormalizeRedisDatabase(access.Database)
+		if err != nil {
+			return fmt.Errorf("invalid Redis database %q: %w", access.Database, err)
+		}
+		access.Database = database
 	}
 
 	clientArgs := buildClientArgs(access)
@@ -926,6 +948,9 @@ func buildClientArgs(access models.DBAccessRight) []string {
 		if access.Username != "" {
 			args = append(args, "--user", access.Username)
 		}
+		if access.Database != "" {
+			args = append(args, "-n", access.Database)
+		}
 	}
 
 	return args
@@ -974,13 +999,12 @@ func ipAllowed(clientIP string, allowedFrom string) bool {
 	return false
 }
 
-func tmpDirPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".tmp")
-}
-
 // os.Root confines every path resolution, including hostile symlinks, to the
 // configured recording tree. Exclusive creation prevents replacing other files.
 func publishRecording(source, relative string) error {
-	return recording.Publish(config.Get().Paths.TtyrecDir, source, relative, -1)
+	owner := os.Geteuid()
+	if owner == 0 {
+		return recording.PublishAccount(config.Get().Paths.TtyrecDir, source, relative)
+	}
+	return recording.Publish(config.Get().Paths.TtyrecDir, source, relative, owner)
 }

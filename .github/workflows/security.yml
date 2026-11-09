@@ -1,0 +1,214 @@
+name: Security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "30 4 * * 1"
+  workflow_dispatch:
+
+# Scans run on untrusted pull requests without repository write permissions,
+# registry credentials, release uploads, or dependency snapshot submission.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  source:
+    name: Source / ${{ matrix.scanner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        scanner: [govulncheck, gosec, gitleaks]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install pinned scanner
+        env:
+          SCANNER: ${{ matrix.scanner }}
+          GOBIN: ${{ runner.temp }}/security-bin
+        run: |
+          case "$SCANNER" in
+            govulncheck) go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 ;;
+            gosec) go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0 ;;
+            gitleaks) go install github.com/zricethezav/gitleaks/v8@v8.30.1 ;;
+            *) exit 2 ;;
+          esac
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - name: Scan source and history
+        env:
+          SCANNER: ${{ matrix.scanner }}
+          REPORT_DIR: ${{ runner.temp }}/security-reports
+        run: |
+          mkdir -p "$REPORT_DIR"
+          case "$SCANNER" in
+            govulncheck)
+              # Text mode preserves govulncheck's nonzero finding exit status.
+              govulncheck -show verbose ./... 2>&1 | tee "$REPORT_DIR/govulncheck.txt"
+              ;;
+            gosec)
+              # Report-only: reviewed findings are tracked in the inventory and
+              # regressions are gated by the baseline comparison below.
+              gosec -nosec=true -fmt=sarif -out="$REPORT_DIR/gosec.sarif" ./... || true
+              python3 scripts/gosec-baseline.py "$REPORT_DIR/gosec.sarif"
+              ;;
+            gitleaks)
+              gitleaks git --log-opts="--all" --redact=100 --ignore-gitleaks-allow \
+                --report-format=sarif --report-path="$REPORT_DIR/gitleaks.sarif" .
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Preserve scan report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-${{ matrix.scanner }}
+          path: ${{ runner.temp }}/security-reports/
+          if-no-files-found: error
+          retention-days: 14
+
+  recording-boundary:
+    name: Recording account isolation acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check recording isolation in a disposable root container
+        env:
+          GOB_TEST_RECORDING_EXPOSURE_AUDIT: "1"
+          REPORT_DIR: ${{ runner.temp }}/recording-boundary
+        run: |
+          mkdir -p "$REPORT_DIR"
+          GO_BIN=go scripts/test-secret-root.sh > "$REPORT_DIR/root-acceptance.txt" 2>&1
+      - name: Preserve recording isolation results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-recording-boundary
+          path: ${{ runner.temp }}/recording-boundary/
+          if-no-files-found: error
+          retention-days: 14
+
+  dependencies:
+    name: Dependency inventory and vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate source SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: ${{ runner.temp }}/source.spdx.json
+          syft-version: v1.57.0
+          dependency-snapshot: false
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Scan dependency SBOM
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: ${{ runner.temp }}/source.spdx.json
+          grype-version: v0.121.2
+          fail-build: true
+          severity-cutoff: medium
+          only-fixed: false
+          output-format: sarif
+          output-file: ${{ runner.temp }}/dependencies.sarif
+      - name: Summarize dependency findings
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/security-scan-summary.py \
+            "$RUNNER_TEMP/dependencies.sarif" --title "Dependency scan findings"
+      - name: Preserve dependency inventory and report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-dependencies
+          path: |
+            ${{ runner.temp }}/source.spdx.json
+            ${{ runner.temp }}/dependencies.sarif
+          if-no-files-found: error
+          retention-days: 14
+
+  containers:
+    name: Container / ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [final, final-full]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build local runtime image
+        env:
+          IMAGE_TARGET: ${{ matrix.target }}
+        run: docker build --target "$IMAGE_TARGET" --tag "gobastion-security:$IMAGE_TARGET" .
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: gobastion-security:${{ matrix.target }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/image.spdx.json
+          syft-version: v1.57.0
+          dependency-snapshot: false
+          upload-artifact: false
+          upload-release-assets: false
+      # UPX-compressed Go binaries do not expose Go buildinfo. Go module
+      # vulnerabilities remain covered by the source SBOM job above.
+      - name: Scan image packages
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: ${{ runner.temp }}/image.spdx.json
+          grype-version: v0.121.2
+          fail-build: true
+          severity-cutoff: medium
+          only-fixed: false
+          output-format: sarif
+          output-file: ${{ runner.temp }}/image.sarif
+      - name: Summarize image findings
+        if: ${{ !cancelled() }}
+        env:
+          IMAGE_TARGET: ${{ matrix.target }}
+        run: |
+          python3 scripts/security-scan-summary.py \
+            "$RUNNER_TEMP/image.sarif" --title "Container $IMAGE_TARGET scan findings"
+      - name: Preserve image inventory and report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-container-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/image.spdx.json
+            ${{ runner.temp }}/image.sarif
+          if-no-files-found: error
+          retention-days: 14

@@ -7,6 +7,9 @@ trap 'status=$?; if [ "$status" -ne 0 ]; then echo "FAIL: $step" >&2; for log in
 
 test -f /.dockerenv
 test -x /app/goBastion
+# Disposable test-only key; production must inject and preserve its own key.
+EGRESS_ENC_KEY=$(head -c 32 /dev/urandom | base64)
+export EGRESS_ENC_KEY
 test ! -e /var/lib/goBastion/bastion.db
 umask 0007
 mkdir -p /run/gobastion

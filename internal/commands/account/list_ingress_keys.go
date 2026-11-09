@@ -35,7 +35,7 @@ func ListIngressKeys(db *gorm.DB, currentUser *models.User, args []string) error
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Usage", Body: []string{"Usage: accountListIngressKeys --user <username>"}}},
 		})
-		return nil
+		return fmt.Errorf("missing required argument --user")
 	}
 
 	if !currentUser.CanDo(db, "accountListIngressKeys", username) {
@@ -44,7 +44,7 @@ func ListIngressKeys(db *gorm.DB, currentUser *models.User, args []string) error
 			BlockType: "error",
 			Sections:  []console.SectionContent{{SubTitle: "Access Denied", Body: []string{"You do not have permission to view ingress keys for this account."}}},
 		})
-		return nil
+		return fmt.Errorf("access denied for %s", currentUser.Username)
 	}
 
 	var user models.User
