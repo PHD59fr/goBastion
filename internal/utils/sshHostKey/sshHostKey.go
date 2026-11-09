@@ -14,9 +14,11 @@ import (
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
+	"goBastion/internal/utils/cryptokey"
 
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const sftpProxyHostKeyType = "sftp-proxy-ed25519"
@@ -66,7 +68,11 @@ func EnsureSFTPProxyHostKey(db *gorm.DB, force bool) (ssh.Signer, string, string
 		return nil, "", "", err
 	}
 
-	signer, err := ssh.ParsePrivateKey(key.PrivateKey)
+	private, err := cryptokey.Decrypt(string(key.PrivateKey))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("decrypt persisted SFTP proxy host key: %w", err)
+	}
+	signer, err := ssh.ParsePrivateKey([]byte(private))
 	if err != nil {
 		return nil, "", "", fmt.Errorf("parse persisted SFTP proxy host key: %w", err)
 	}
@@ -93,13 +99,30 @@ func loadOrCreateSFTPProxyHostKey(db *gorm.DB, force bool) (*models.SshHostKey, 
 	if err != nil {
 		return nil, err
 	}
+	encrypted, err := cryptokey.Encrypt(string(priv))
+	if err != nil {
+		return nil, err
+	}
 	key = models.SshHostKey{
 		Type:       sftpProxyHostKeyType,
-		PrivateKey: priv,
+		PrivateKey: []byte(encrypted),
 		PublicKey:  pub,
 	}
-	if err := db.Save(&key).Error; err != nil {
+	query := db
+	if !force {
+		query = query.Clauses(clause.OnConflict{DoNothing: true})
+	}
+	if force {
+		query = query.Save(&key)
+	} else {
+		query = query.Create(&key)
+	}
+	if err := query.Error; err != nil {
 		return nil, fmt.Errorf("save SFTP proxy host key: %w", err)
+	}
+	// Another instance may have won creation. Always use the persisted winner.
+	if err := db.Where("type = ?", sftpProxyHostKeyType).First(&key).Error; err != nil {
+		return nil, err
 	}
 	return &key, nil
 }
@@ -139,10 +162,14 @@ func saveSSHHostKeys(db *gorm.DB) error {
 		if err != nil {
 			continue
 		}
+		encrypted, err := cryptokey.Encrypt(string(privateKey))
+		if err != nil {
+			return err
+		}
 
 		sshKey := models.SshHostKey{
 			Type:       keyType,
-			PrivateKey: privateKey,
+			PrivateKey: []byte(encrypted),
 			PublicKey:  publicKey,
 		}
 
@@ -185,18 +212,51 @@ func RestoreSSHHostKeys(db *gorm.DB) error {
 	}
 
 	for _, key := range keys {
+		// Database content must never select an arbitrary root write path.
+		switch key.Type {
+		case "rsa", "dsa", "ecdsa", "ed25519":
+		default:
+			return fmt.Errorf("unsupported persisted SSH host key type")
+		}
+		private, err := cryptokey.Decrypt(string(key.PrivateKey))
+		if err != nil {
+			return fmt.Errorf("decrypt persisted SSH host key: %w", err)
+		}
 		privateKeyPath := fmt.Sprintf("%s/ssh_host_%s_key", config.Get().Paths.SshHostKeyDir, key.Type)
 		publicKeyPath := privateKeyPath + ".pub"
 
-		err := os.WriteFile(privateKeyPath, key.PrivateKey, 0600)
+		err = writeHostKeyFile(privateKeyPath, []byte(private), 0600)
 		if err != nil {
 			return err
 		}
 
-		err = os.WriteFile(publicKeyPath, key.PublicKey, 0644)
+		err = writeHostKeyFile(publicKeyPath, key.PublicKey, 0644)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Replace a complete file atomically, without following a pre-existing symlink
+// or retaining permissions from an older, overly permissive private key file.
+func writeHostKeyFile(path string, data []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".gobastion-host-key-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close(); _ = os.Remove(f.Name()) }()
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }

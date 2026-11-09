@@ -27,7 +27,7 @@ func TestDeletedGroupRevokesGuestDatabase(t *testing.T) {
 				}
 			}
 			member := models.UserGroup{UserID: u.ID, GroupID: g.ID, Role: models.GroupRoleGuest}
-			grant := models.GroupGuestDBAccess{UserID: u.ID, GroupID: g.ID, Username: "reader", Host: "fixture.example", Port: 3306, Protocol: "mysql", Password: "fixture-password"}
+			grant := models.GroupGuestDBAccess{UserID: u.ID, GroupID: g.ID, Username: "reader", Host: "fixture.example", Port: 3306, Protocol: "mysql", Password: encryptedDBFixture(t, "fixture-password")}
 			for _, row := range []any{&member, &grant} {
 				if err := db.Create(row).Error; err != nil {
 					t.Fatal(err)

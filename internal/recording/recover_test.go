@@ -20,7 +20,7 @@ import (
 
 func recoveryFixture(t *testing.T) (string, string, string, *os.File) {
 	t.Helper()
-	archive := t.TempDir()
+	archive := privateTestArchive(t)
 	current, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +166,12 @@ func TestRecoveryRejectsSymlinksAndDestinationEscape(t *testing.T) {
 	}
 }
 func TestPersistentDBSpoolRecovery(t *testing.T) {
-	archive := t.TempDir()
+	archive := privateTestArchive(t)
+	account := "alice"
+	if os.Geteuid() == 0 {
+		archive = rootRecoveryArchive(t, filepath.Join(t.TempDir(), "archive"), "victim")
+		account = "victim"
+	}
 	spool, err := NewDBSpool(archive)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +179,8 @@ func TestPersistentDBSpoolRecovery(t *testing.T) {
 	if !strings.HasPrefix(spool.Path, archive) {
 		t.Fatal("DB spool is not on archive volume")
 	}
-	lock, err := Prepare(spool.WorkPath, "alice/fixture/session.ttyrec.gz", "session.ttyrec")
+	destination := filepath.Join(account, "fixture", "session.ttyrec.gz")
+	lock, err := Prepare(spool.WorkPath, destination, "session.ttyrec")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +190,7 @@ func TestPersistentDBSpoolRecovery(t *testing.T) {
 	_ = lock.Close()
 	spool.Close()
 	Recover(archive, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if got := readGzip(t, filepath.Join(archive, "alice/fixture/session.ttyrec.gz")); got != "db recording" {
+	if got := readGzip(t, filepath.Join(archive, destination)); got != "db recording" {
 		t.Fatal(got)
 	}
 }
@@ -228,8 +234,9 @@ func TestRecoveryAcrossOwners(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires disposable root integration container")
 	}
-	archive := t.TempDir()
-	for _, name := range []string{"postgres", "mysql"} {
+	accounts := []string{"victim", "recording-test"}
+	archive := rootRecoveryArchive(t, filepath.Join(t.TempDir(), "archive"), accounts...)
+	for _, name := range accounts {
 		account, err := user.Lookup(name)
 		if err != nil {
 			t.Fatal(err)
@@ -239,9 +246,6 @@ func TestRecoveryAcrossOwners(t *testing.T) {
 			t.Fatal(err)
 		}
 		parent := filepath.Join(archive, name, "fixture")
-		if err := os.MkdirAll(parent, 0700); err != nil {
-			t.Fatal(err)
-		}
 		spool, err := os.MkdirTemp(parent, ".ssh-record-")
 		if err != nil {
 			t.Fatal(err)
@@ -257,13 +261,16 @@ func TestRecoveryAcrossOwners(t *testing.T) {
 		if err := os.Chown(spool, uid, -1); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Chmod(spool, 0700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Chown(filepath.Join(spool, raw), uid, -1); err != nil {
 			t.Fatal(err)
 		}
 		_ = lock.Close()
 	}
 	Recover(archive, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for _, name := range []string{"postgres", "mysql"} {
+	for _, name := range accounts {
 		path := filepath.Join(archive, name, "fixture", "session.ttyrec.gz")
 		if got := readGzip(t, path); got != name {
 			t.Fatal(got)
@@ -284,7 +291,7 @@ func TestRecoveryAcrossOwners(t *testing.T) {
 }
 
 func TestRecoverySkipsActivePublication(t *testing.T) {
-	archive := t.TempDir()
+	archive := privateTestArchive(t)
 	current, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +325,16 @@ func TestRecoverySkipsActivePublication(t *testing.T) {
 }
 
 func TestRecoveryRetriesTemporaryFallback(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "unavailable")
+	base := t.TempDir()
+	if err := os.Chmod(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(base, "unavailable")
+	account := "alice"
+	if os.Geteuid() == 0 {
+		account = "victim"
+	}
+	destination := filepath.Join(account, "fixture", "session.ttyrec.gz")
 	if err := os.WriteFile(archive, []byte("unavailable"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +343,7 @@ func TestRecoveryRetriesTemporaryFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock, err := Prepare(spool.WorkPath, "alice/fixture/session.ttyrec.gz", "session.ttyrec")
+	lock, err := Prepare(spool.WorkPath, destination, "session.ttyrec")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,11 +360,54 @@ func TestRecoveryRetriesTemporaryFallback(t *testing.T) {
 	if err := os.Remove(archive); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(archive, 0700); err != nil {
+	if os.Geteuid() == 0 {
+		rootRecoveryArchive(t, archive, "victim")
+	} else if err := os.Mkdir(archive, 0700); err != nil {
 		t.Fatal(err)
 	}
 	Recover(archive, logger)
-	if got := readGzip(t, filepath.Join(archive, "alice/fixture/session.ttyrec.gz")); got != "fallback" {
+	if got := readGzip(t, filepath.Join(archive, destination)); got != "fallback" {
 		t.Fatal(got)
 	}
+}
+
+// rootRecoveryArchive models the production archive layout. The caller's
+// disposable test parent is root-owned and private; no real archive is touched.
+func rootRecoveryArchive(t *testing.T, archive string, accounts ...string) string {
+	t.Helper()
+	group, err := recordingGroupID("gobastion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(archive, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(archive, 0, group); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(archive, 0751); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range accounts {
+		if err := ProvisionAccount(archive, name); err != nil {
+			t.Fatal(err)
+		}
+		uid, err := recordingUsernameUID(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base, err := openArchiveDirectory(archive, ".", uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := openArchiveSubdirectory(base, filepath.Join(name, "fixture"), uid)
+		_ = base.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := server.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return archive
 }

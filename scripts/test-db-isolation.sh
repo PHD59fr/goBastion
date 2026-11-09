@@ -49,6 +49,10 @@ psql -h127.0.0.1 -p55432 -Upostgres -dpostgres -c 'CREATE DATABASE policytest' >
 mariadb --protocol=tcp -h127.0.0.1 -P53306 -uroot -e 'CREATE DATABASE policytest'
 mariadb --protocol=tcp -h127.0.0.1 -P53306 -uroot -e "CREATE USER 'credentialuser'@'127.0.0.1' IDENTIFIED BY 'sandbox-secret'"
 GOB_POLICY_INTEGRATION=1 /policy.test -test.run 'TestConcurrentAdministratorRemoval|TestCommandLifecycleIntegration' -test.v
+# Recording recovery fixtures need managed local identities. Keep these users
+# confined to this disposable integration container.
+adduser -D -H -u 1000 -G gobastion victim
+adduser -D -H -u 1001 -G gobastion recording-test
 /recording.test -test.v
 GOB_POLICY_INTEGRATION=1 /session.test -test.run '^TestLoginHistoryIntegration$' -test.v
 psql -h127.0.0.1 -p55432 -Upostgres -dpostgres -c "CREATE ROLE credentialuser LOGIN PASSWORD 'sandbox-secret'" >/dev/null

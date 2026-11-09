@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm/schema"
 
 	"goBastion/internal/config"
+	"goBastion/internal/secretstore"
 )
 
 const (
@@ -229,6 +230,12 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("parse schema for export: %w", err)
 		}
+		// An offline upgrade must be able to back up a pre-observability schema
+		// before schema migration. This table contains operational counts only.
+		if sch.Table == "observation_counters" && !src.Migrator().HasTable(model) {
+			payload.Tables = append(payload.Tables, exportTable{Name: sch.Table, Rows: []map[string]encodedCell{}})
+			continue
+		}
 
 		rows, err := exportTableRows(src, sch, log)
 		if err != nil {
@@ -273,7 +280,18 @@ func Export(src *gorm.DB, w io.Writer, log *slog.Logger) error {
 }
 
 // Import reads an encrypted logical JSON export from r and restores it into an empty DB.
-func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
+func Import(db *gorm.DB, r io.Reader, log *slog.Logger) error {
+	return importDatabase(db, r, log, false)
+}
+
+// ImportForSecretMigration restores an old encrypted logical backup and
+// upgrades its secrets in the same transaction. Only the offline root console
+// migration command exposes this operation; normal imports reject plaintext.
+func ImportForSecretMigration(db *gorm.DB, r io.Reader, log *slog.Logger) error {
+	return importDatabase(db, r, log, true)
+}
+
+func importDatabase(db *gorm.DB, r io.Reader, log *slog.Logger, migrateSecrets bool) (importErr error) {
 	// Limit import size to prevent OOM from malicious input.
 	raw, err := io.ReadAll(io.LimitReader(r, config.Get().DBExport.ImportMaxSize))
 	if err != nil {
@@ -413,6 +431,16 @@ func Import(db *gorm.DB, r io.Reader, log *slog.Logger) (importErr error) {
 		}
 	}
 
+	var secretErr error
+	if migrateSecrets {
+		_, secretErr = secretstore.Migrate(tx, secretstore.Options{Apply: true, AllowPlaintext: true})
+	} else {
+		secretErr = secretstore.ValidateStored(tx)
+	}
+	if secretErr != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("imported secrets failed validation: %w", secretErr)
+	}
 	return tx.Commit().Error
 }
 
@@ -436,7 +464,7 @@ func validateImportTables(db *gorm.DB, tables []exportTable) error {
 		expected[table.Name] = true
 	}
 	for table, seen := range expected {
-		if !seen {
+		if !seen && table != "observation_counters" {
 			return fmt.Errorf("required table %s is missing from import", table)
 		}
 	}

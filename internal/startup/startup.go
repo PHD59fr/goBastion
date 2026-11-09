@@ -162,18 +162,13 @@ func runStartup(db *gorm.DB, log *slog.Logger, syncer *gosync.Syncer) int {
 	return 3
 }
 
-func runSyncUser(db *gorm.DB, syncer *gosync.Syncer, username string) int {
+func runSyncUser(_ *gorm.DB, syncer *gosync.Syncer, username string) int {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if !validation.IsValidUsername(username) {
 		fmt.Fprintln(os.Stderr, "Invalid username.")
 		return 2
 	}
-	var u models.User
-	if err := db.Where("username = ?", username).First(&u).Error; err != nil {
-		fmt.Fprintf(os.Stderr, "User %q not found: %v\n", username, err)
-		return 1
-	}
-	if err := syncer.CreateUserFromDB(u); err != nil {
+	if err := syncer.SyncUserByName(username); err != nil {
 		fmt.Fprintf(os.Stderr, "User sync failed: %v\n", err)
 		return 1
 	}

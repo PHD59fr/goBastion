@@ -2,6 +2,7 @@ package account
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -114,7 +115,7 @@ type UserCreationOptions struct {
 // CreateUser creates the DB record, registers the ingress key and creates the OS user.
 func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, pubKey string, options UserCreationOptions) error {
 	username = strings.ToLower(strings.TrimSpace(username))
-	if !validation.IsValidUsername(username) {
+	if !validation.IsValidManagedUsername(username) {
 		return fmt.Errorf("invalid username: %s", username)
 	}
 
@@ -126,7 +127,15 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 		newUser *models.User
 		err     error
 	)
-	if err = db.Transaction(func(tx *gorm.DB) error {
+	if err = withAccountChange(db, func(tx *gorm.DB) error {
+		var tombstones int64
+		if e := tx.Unscoped().Model(&models.User{}).Where("LOWER(username) = ? AND deleted_at IS NOT NULL", username).Count(&tombstones).Error; e != nil {
+			return e
+		}
+		if tombstones != 0 {
+			return fmt.Errorf("retired login name cannot be reused")
+		}
+
 		newUser, err = createDBUser(tx, username, options)
 		if err != nil {
 			return err
@@ -141,13 +150,17 @@ func CreateUser(db *gorm.DB, adapter osadapter.SystemAdapter, username string, p
 
 	syncer := gosync.New(db, adapter, *slog.Default())
 	if err = syncer.CreateUserFromDB(*newUser); err != nil {
-		// Compensate DB changes when OS sync fails to avoid DB/OS drift.
-		if delErr := db.Unscoped().Where("user_id = ?", newUser.ID).Delete(&models.IngressKey{}).Error; delErr != nil {
-			slog.Error("compensation_failed", slog.String("event", "cleanup_ingress_keys"), slog.Any("error", delErr))
+		// A failed OS sync may have partially published access. Preserve an
+		// identity tombstone first; if that write fails, also disable the row.
+		revokeErr := db.Delete(newUser).Error
+		if revokeErr != nil {
+			disableErr := db.Model(&models.User{}).Where("id = ?", newUser.ID).Update("enabled", false).Error
+			err = errors.Join(err, fmt.Errorf("failed creation tombstone: %w", revokeErr), disableErr)
 		}
-		if delErr := db.Unscoped().Delete(&models.User{}, "id = ?", newUser.ID).Error; delErr != nil {
-			slog.Error("compensation_failed", slog.String("event", "cleanup_user"), slog.Any("error", delErr))
+		if keyErr := db.Unscoped().Where("user_id = ?", newUser.ID).Delete(&models.IngressKey{}).Error; keyErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed creation key cleanup: %w", keyErr))
 		}
+
 		return err
 	}
 	return nil

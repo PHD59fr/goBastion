@@ -122,23 +122,37 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 	}
 
 	gormLogCfg := gormLogger.Config{
-		SlowThreshold: cfg.InternalDB.SlowQueryThreshold,
-		LogLevel:      gormLogger.Silent,
-		Colorful:      true,
+		SlowThreshold:        cfg.InternalDB.SlowQueryThreshold,
+		LogLevel:             gormLogger.Silent,
+		Colorful:             false,
+		ParameterizedQueries: true,
 	}
 
 	var dbLog gormLogger.Interface
 	if log != nil {
 		dbLog = gormLogger.New(logger.NewGormLogger(log), gormLogCfg)
 	} else {
-		dbLog = gormLogger.Default.LogMode(gormLogger.Info)
+		dbLog = gormLogger.Default.LogMode(gormLogger.Silent)
 	}
 
 	tConn := time.Now()
 	db, err := gorm.Open(dialector, &gorm.Config{Logger: dbLog})
 	if err != nil {
+		if db != nil {
+			if pool, poolErr := db.DB(); poolErr == nil {
+				_ = pool.Close()
+			}
+		}
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			if pool, poolErr := db.DB(); poolErr == nil {
+				_ = pool.Close()
+			}
+		}
+	}()
 	if driver == "sqlite" {
 		if err := ensureSQLitePermissions(dsn); err != nil {
 			return nil, err
@@ -150,7 +164,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 
 	tMig := time.Now()
 	if runMigrate {
-		if err = migrate(db, driver); err != nil {
+		if err = startupMigrate(db.Statement.Context, db, driver, log); err != nil {
 			return nil, fmt.Errorf("database migration failed for driver %s: %w", driver, err)
 		}
 		if log != nil {
@@ -158,14 +172,6 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 		}
 	} else if log != nil {
 		log.Info("db_migrate_skip", slog.String("reason", "non-root session"))
-	}
-
-	tBool := time.Now()
-	if runMigrate && driver == "postgres" {
-		fixPostgresBoolColumns(db, log)
-	}
-	if log != nil && driver == "postgres" {
-		log.Info("db_bool_fix", slog.Duration("took", time.Since(tBool)))
 	}
 
 	tCfg := time.Now()
@@ -185,6 +191,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 		log.Info("db_init_done", slog.Duration("total", time.Since(t0)))
 	}
 
+	initialized = true
 	return db, nil
 }
 
@@ -219,7 +226,7 @@ func ensureSQLitePermissions(dsn string) error {
 // Columns created by older images without explicit type tags may be text.
 // Uses a USING expression safe for both text ('false'/'true') and boolean values.
 // Skips columns that are already boolean to avoid unnecessary ALTER TABLE locks.
-func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
+func fixPostgresBoolColumns(db *gorm.DB) error {
 	type colFix struct{ table, column string }
 
 	fixes := []colFix{
@@ -236,30 +243,37 @@ func fixPostgresBoolColumns(db *gorm.DB, log *slog.Logger) {
 		// Check current column type — skip if already boolean.
 		var dataType string
 		if err := db.Raw(
-			`SELECT data_type FROM information_schema.columns WHERE table_name = ? AND column_name = ?`,
+			`SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
 			f.table, f.column,
 		).Scan(&dataType).Error; err != nil {
-			continue
+			return fmt.Errorf("inspect PostgreSQL boolean column %s.%s: %w", f.table, f.column, err)
+		}
+		if dataType == "" {
+			return fmt.Errorf("missing PostgreSQL boolean column %s.%s after schema migration", f.table, f.column)
 		}
 		if dataType == "boolean" {
 			continue
 		}
+		var invalid int64
+		check := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IS NOT NULL AND lower(btrim("%s"::text)) NOT IN ('true','t','1','false','f','0','')`, f.table, f.column, f.column)
+		if err := db.Raw(check).Scan(&invalid).Error; err != nil {
+			return fmt.Errorf("validate PostgreSQL boolean column %s.%s: %w", f.table, f.column, err)
+		}
+		if invalid != 0 {
+			return fmt.Errorf("refusing ambiguous PostgreSQL boolean values in %s.%s; repair from a verified backup before migration", f.table, f.column)
+		}
 
 		sql := fmt.Sprintf(
 			`ALTER TABLE IF EXISTS "%s" ALTER COLUMN "%s" TYPE boolean `+
-				`USING CASE WHEN "%s"::text = ANY(ARRAY['false','f','0','']) THEN false ELSE true END`,
-			f.table, f.column, f.column,
+				`USING CASE WHEN "%s" IS NULL THEN NULL WHEN lower(btrim("%s"::text)) = ANY(ARRAY['true','t','1']) THEN true ELSE false END`,
+			f.table, f.column, f.column, f.column,
 		)
 
-		if err := db.Exec(sql).Error; err != nil && log != nil {
-			log.Warn("db_bool_migrate",
-				slog.String("event", "db_bool_migrate"),
-				slog.String("table", f.table),
-				slog.String("column", f.column),
-				slog.String("error", err.Error()),
-			)
+		if err := db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("migrate PostgreSQL boolean column %s.%s: %w", f.table, f.column, err)
 		}
 	}
+	return nil
 }
 
 // migrate runs GORM AutoMigrate for all managed models and creates custom indexes.
@@ -612,5 +626,6 @@ func ManagedModelsInDependencyOrder() []any {
 		&models.GroupDBAccess{},
 		&models.GroupGuestDBAccess{},
 		&models.DatabaseAlias{},
+		&models.ObservationCounter{},
 	}
 }

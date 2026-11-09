@@ -150,6 +150,10 @@ func TestValidateImportTablesRejectsMissingAndDuplicateTables(t *testing.T) {
 func TestMain(m *testing.M) {
 	// Avoid accidental leakage from caller environment
 	_ = os.Unsetenv("DB_EXPORT_KEY")
+	_ = os.Setenv("EGRESS_ENC_KEY", "PvHlWvN638cmg6oz6ixYa/gsYFNBqD6K1d87+A+8DMo=")
+	for _, name := range []string{"EGRESS_ENC_KEY_FILE", "EGRESS_ENC_KEY_ID", "EGRESS_ENC_KEYS", "EGRESS_ENC_KEYS_FILE"} {
+		_ = os.Unsetenv(name)
+	}
 	os.Exit(m.Run())
 }
 

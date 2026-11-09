@@ -1,14 +1,18 @@
+// Package cryptokey protects secrets at rest. Configuration errors are fatal to
+// every nonempty secret operation; plaintext storage is never a fallback.
 package cryptokey
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -18,166 +22,395 @@ import (
 
 const (
 	envKey          = "EGRESS_ENC_KEY"
-	encryptedPrefix = "gob:v1:"
+	envKeyID        = "EGRESS_ENC_KEY_ID"
+	envKeys         = "EGRESS_ENC_KEYS"
+	encryptedPrefix = "gob:v2:"
+	legacyPrefix    = "gob:v1:"
+	maxConfigBytes  = 1 << 20
 )
+
+type keySet struct {
+	activeID string
+	active   cipher.AEAD
+	keys     map[string]cipher.AEAD
+}
 
 var (
-	gcm     cipher.AEAD
 	gcmOnce sync.Once
+	loaded  *keySet
+	loadErr error
 )
 
-// Enabled reports whether egress key encryption is configured.
-func Enabled() bool {
-	initGCM()
-	return gcm != nil
+// Validate checks the mandatory encryption configuration. It never includes
+// secret material or file contents in its errors. Configuration is immutable
+// for the lifetime of a process; restart after changing keys.
+func Validate() error {
+	gcmOnce.Do(func() { loaded, loadErr = loadKeys() })
+	return loadErr
 }
 
-// Encrypt encrypts plaintext using AES-256-GCM with a random nonce.
-// Returns a versioned value containing base64(nonce || ciphertext).
+// Enabled reports whether the mandatory encryption configuration is valid.
+func Enabled() bool { return Validate() == nil }
+
+// ActiveKeyID returns the identifier used for newly encrypted values.
+func ActiveKeyID() (string, error) {
+	if err := Validate(); err != nil {
+		return "", err
+	}
+	return loaded.activeID, nil
+}
+
+// Encrypt writes gob:v2:<key-id>:base64(nonce || ciphertext). The full header
+// is authenticated as AAD, binding both the version and key identifier.
 func Encrypt(plaintext string) (string, error) {
-	if !Enabled() {
-		return "", fmt.Errorf("egress key encryption not configured (set %s)", envKey)
+	if err := Validate(); err != nil {
+		return "", err
 	}
-	nonce := make([]byte, gcm.NonceSize())
+	nonce := make([]byte, loaded.active.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("generate nonce: %w", err)
+		return "", errors.New("generate encryption nonce failed")
 	}
-	ct := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return encryptedPrefix + base64.StdEncoding.EncodeToString(ct), nil
+	header := encryptedPrefix + loaded.activeID + ":"
+	ciphertext := loaded.active.Seal(nonce, nonce, []byte(plaintext), []byte(header))
+	return header + base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// Decrypt accepts both the current versioned format and legacy unprefixed
-// base64(nonce || ciphertext) values.
+// Decrypt authenticates v2 ciphertext, or legacy v1/unprefixed ciphertext.
+// Legacy values are tried against the active and historical keys. Plaintext,
+// malformed envelopes, and unavailable historical keys always return errors.
 func Decrypt(encoded string) (string, error) {
-	if !Enabled() {
-		return "", fmt.Errorf("egress key encryption not configured (set %s)", envKey)
+	if err := Validate(); err != nil {
+		return "", err
 	}
-	payload := strings.TrimPrefix(encoded, encryptedPrefix)
-	data, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return "", fmt.Errorf("base64 decode: %w", err)
+	if strings.HasPrefix(encoded, encryptedPrefix) {
+		id, payload, ok := strings.Cut(strings.TrimPrefix(encoded, encryptedPrefix), ":")
+		if !ok || !validID(id) {
+			return "", errors.New("invalid encrypted secret envelope")
+		}
+		aead, ok := loaded.keys[id]
+		if !ok {
+			return "", errors.New("encrypted secret key ID is unavailable")
+		}
+		return open(aead, payload, []byte(encryptedPrefix+id+":"))
 	}
-	ns := gcm.NonceSize()
-	if len(data) < ns {
-		return "", fmt.Errorf("ciphertext too short")
+	if strings.HasPrefix(encoded, "gob:") && !strings.HasPrefix(encoded, legacyPrefix) {
+		return "", errors.New("unsupported encrypted secret version")
 	}
-	nonce, ct := data[:ns], data[ns:]
-	pt, err := gcm.Open(nil, nonce, ct, nil)
-	if err != nil {
-		return "", fmt.Errorf("decrypt: %w", err)
+	payload := strings.TrimPrefix(encoded, legacyPrefix)
+	if plaintext, err := open(loaded.active, payload, nil); err == nil {
+		return plaintext, nil
 	}
-	return string(pt), nil
+	for id, aead := range loaded.keys {
+		if id == loaded.activeID {
+			continue
+		}
+		if plaintext, err := open(aead, payload, nil); err == nil {
+			return plaintext, nil
+		}
+	}
+	return "", errors.New("secret ciphertext authentication failed")
 }
 
-// DecryptOrPassThrough returns the plaintext for both encrypted and legacy plaintext values.
-// Marked encrypted values always fail closed when the key is missing or invalid.
-// Unmarked values retain legacy plaintext compatibility.
+func open(aead cipher.AEAD, payload string, aad []byte) (string, error) {
+	data, err := base64.StdEncoding.Strict().DecodeString(payload)
+	if err != nil || base64.StdEncoding.EncodeToString(data) != payload || len(data) < aead.NonceSize()+aead.Overhead() {
+		return "", errors.New("invalid encrypted secret payload")
+	}
+	plaintext, err := aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], aad)
+	if err != nil {
+		return "", errors.New("secret ciphertext authentication failed")
+	}
+	return string(plaintext), nil
+}
+
+// DecryptOrPassThrough retains its historical name for callers. Only an
+// explicitly empty optional secret passes through; nonempty plaintext fails.
 func DecryptOrPassThrough(raw string) (string, error) {
-	if !Enabled() {
-		if strings.HasPrefix(raw, encryptedPrefix) {
-			return "", fmt.Errorf("encrypted value cannot be decrypted: %s is not configured", envKey)
-		}
-		return raw, nil
+	if raw == "" {
+		return "", nil
 	}
-	plain, err := Decrypt(raw)
-	if err != nil {
-		if strings.HasPrefix(raw, encryptedPrefix) {
-			return "", fmt.Errorf("decrypt marked encrypted value: %w", err)
-		}
-		// Legacy plaintext value (stored before encryption was enabled).
-		return raw, nil
-	}
-	return plain, nil
+	return Decrypt(raw)
 }
 
-// ReEncryptIfNeeded takes a plaintext value and encrypts it if EGRESS_ENC_KEY is set.
-// If encryption is not enabled, returns the value unchanged.
-func ReEncryptIfNeeded(plaintext string) (string, error) {
-	if !Enabled() {
-		return plaintext, nil
+// ReEncryptIfNeeded encrypts plaintext or rotates authenticated ciphertext to
+// the active v2 key. Marked but invalid ciphertext is rejected.
+func ReEncryptIfNeeded(value string) (string, error) {
+	if err := Validate(); err != nil {
+		return "", err
 	}
-	// If already encrypted, don't double-encrypt.
-	if IsEncrypted(plaintext) {
-		return plaintext, nil
+	plaintext, err := Decrypt(value)
+	if err == nil {
+		if !NeedsRotation(value) {
+			return value, nil
+		}
+		return Encrypt(plaintext)
 	}
-	return Encrypt(plaintext)
+	if strings.HasPrefix(value, "gob:") {
+		return "", err
+	}
+	return Encrypt(value)
 }
 
-// IsEncrypted recognizes the versioned format and authenticates legacy blobs.
+// IsEncrypted authenticates a value instead of merely checking its prefix.
 func IsEncrypted(raw string) bool {
-	if strings.HasPrefix(raw, encryptedPrefix) {
-		if !Enabled() {
-			return false
-		}
-		_, err := Decrypt(raw)
-		return err == nil
-	}
-	// Backward compatibility for unprefixed ciphertext written by older releases:
-	// only accept it when its GCM authentication tag verifies with the active key.
-	if !Enabled() {
-		return false
-	}
 	_, err := Decrypt(raw)
 	return err == nil
 }
 
-// readKeyFromEnv reads EGRESS_ENC_KEY from env or fallback config file.
-func readKeyFromEnv() string {
-	raw := os.Getenv(envKey)
-	if raw != "" {
-		return raw
+// NeedsRotation returns false only for authenticated v2 ciphertext using the
+// active key. Call Decrypt first when an error must be distinguished from an
+// older ciphertext that can be rotated.
+func NeedsRotation(raw string) bool {
+	if err := Validate(); err != nil {
+		return true
 	}
-	f, err := os.Open(config.Get().Paths.DbConfFile)
+	if !strings.HasPrefix(raw, encryptedPrefix+loaded.activeID+":") {
+		return true
+	}
+	return !IsEncrypted(raw)
+}
+
+func validID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func loadKeys() (*keySet, error) {
+	values, err := readSettings()
 	if err != nil {
-		return ""
+		return nil, err
+	}
+	raw, err := resolveSecret(values, envKey)
+	if err != nil {
+		return nil, err
+	}
+	key, err := decodeKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must contain a canonical base64 AES-256 key", envKey)
+	}
+	id := "default"
+	if value, ok := values[envKeyID]; ok {
+		id = value
+	}
+	if !validID(id) {
+		return nil, errors.New("EGRESS_ENC_KEY_ID must contain 1-64 letters, digits, dots, underscores or hyphens")
+	}
+	active, err := newAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	result := &keySet{activeID: id, active: active, keys: map[string]cipher.AEAD{id: active}}
+	historical, err := resolveSecret(values, envKeys)
+	if err != nil {
+		return nil, err
+	}
+	if historical == "" {
+		return result, nil
+	}
+	keyring, err := parseKeyring(historical)
+	if err != nil {
+		return nil, err
+	}
+	for previousID, previousRaw := range keyring {
+		if !validID(previousID) {
+			return nil, errors.New("EGRESS_ENC_KEYS contains an invalid key ID")
+		}
+		previous, err := decodeHistoricalKey(previousRaw)
+		if err != nil {
+			return nil, errors.New("EGRESS_ENC_KEYS contains an invalid AES key")
+		}
+		if previousID == id {
+			if !bytes.Equal(previous, key) {
+				return nil, errors.New("EGRESS_ENC_KEYS conflicts with the active key ID")
+			}
+			continue
+		}
+		aead, err := newAEAD(previous)
+		if err != nil {
+			return nil, err
+		}
+		result.keys[previousID] = aead
+	}
+	return result, nil
+}
+
+func newAEAD(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, errors.New("initialize encryption cipher failed")
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, errors.New("initialize authenticated encryption failed")
+	}
+	return aead, nil
+}
+
+func decodeKey(raw string) ([]byte, error) {
+	decoded, err := decodeHistoricalKey(raw)
+	if err != nil || len(decoded) != 32 {
+		return nil, errors.New("key must be canonical base64 encoding of exactly 32 bytes")
+	}
+	return decoded, nil
+}
+
+// Historical keys are decryption-only. Previous releases accepted AES-128 and
+// AES-192, so these keys must remain usable for authenticated offline upgrades.
+// Newly encrypted values always use the strictly AES-256 active key.
+func decodeHistoricalKey(raw string) ([]byte, error) {
+	decoded, err := base64.StdEncoding.Strict().DecodeString(raw)
+	if err != nil || base64.StdEncoding.EncodeToString(decoded) != raw {
+		return nil, errors.New("historical key must be canonical base64 encoding of an AES key")
+	}
+	switch len(decoded) {
+	case 16, 24, 32:
+		return decoded, nil
+	default:
+		return nil, errors.New("historical key must encode 16, 24 or 32 bytes")
+	}
+}
+
+// parseKeyring rejects duplicate JSON members; encoding/json's ordinary map
+// decoder would silently accept the last value, hiding configuration mistakes.
+func parseKeyring(raw string) (map[string]string, error) {
+	invalid := errors.New("EGRESS_ENC_KEYS must be a JSON object of unique key IDs to base64 keys")
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, invalid
+	}
+	keys := make(map[string]string)
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return nil, invalid
+		}
+		id, ok := token.(string)
+		if !ok {
+			return nil, invalid
+		}
+		if _, exists := keys[id]; exists {
+			return nil, invalid
+		}
+		var value string
+		if err := decoder.Decode(&value); err != nil {
+			return nil, invalid
+		}
+		keys[id] = value
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, invalid
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, invalid
+	}
+	return keys, nil
+}
+
+func resolveSecret(values map[string]string, name string) (string, error) {
+	direct, hasDirect := values[name]
+	file, hasFile := values[name+"_FILE"]
+	if hasDirect && hasFile {
+		return "", fmt.Errorf("%s and %s_FILE cannot both be configured", name, name)
+	}
+	if !hasFile {
+		return direct, nil
+	}
+	if file == "" {
+		return "", fmt.Errorf("%s_FILE must identify a readable secret file", name)
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		return "", fmt.Errorf("cannot read %s_FILE", name)
 	}
 	defer func() { _ = f.Close() }()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if k, v, ok := strings.Cut(line, "="); ok && k == envKey {
-			return v
-		}
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
+	if err != nil || len(data) > maxConfigBytes {
+		return "", fmt.Errorf("cannot read %s_FILE", name)
 	}
-	return ""
+	// Docker/Kubernetes secret files commonly include a single final newline.
+	return strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r"), nil
 }
 
-// initGCM lazily reads the key from environment or config file.
-func initGCM() {
-	gcmOnce.Do(func() {
-		raw := readKeyFromEnv()
-		if raw == "" {
-			return
-		}
-		key, err := decodeKey(raw)
-		if err != nil {
-			slog.Error("egress_enc_key_invalid", slog.String("error", err.Error()))
-			return
-		}
-		block, err := aes.NewCipher(key)
-		if err != nil {
-			slog.Error("egress_enc_cipher_failed", slog.String("error", err.Error()))
-			return
-		}
-		aead, err := cipher.NewGCM(block)
-		if err != nil {
-			slog.Error("egress_enc_gcm_failed", slog.String("error", err.Error()))
-			return
-		}
-		gcm = aead
-	})
+func readSettings() (map[string]string, error) {
+	return readSettingsFrom(config.Get().Paths.DbConfFile)
 }
 
-// decodeKey accepts a base64-encoded key (16/24/32 bytes) or a 32-byte raw passphrase.
-func decodeKey(raw string) ([]byte, error) {
-	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
-		switch len(decoded) {
-		case 16, 24, 32:
-			return decoded, nil
+func readSettingsFrom(path string) (map[string]string, error) {
+	names := []string{envKey, envKey + "_FILE", envKeyID, envKeys, envKeys + "_FILE"}
+	// An explicitly supplied active key makes the environment the complete
+	// encryption configuration. ForceCommand children may inherit these settings
+	// while being unable to read root's bootstrap directory. Do not consult it,
+	// or inherit stale key IDs/keyrings from a different configuration source.
+	_, hasActiveKey := os.LookupEnv(envKey)
+	_, hasActiveFile := os.LookupEnv(envKey + "_FILE")
+	if hasActiveKey || hasActiveFile {
+		values := make(map[string]string)
+		for _, name := range names {
+			if value, ok := os.LookupEnv(name); ok {
+				values[name] = value
+			}
+		}
+		return values, nil
+	}
+	known := make(map[string]bool)
+	for _, name := range names {
+		known[name] = true
+	}
+	values := make(map[string]string)
+	f, err := os.Open(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, errors.New("cannot read encryption bootstrap configuration")
+	}
+	if err == nil {
+		defer func() { _ = f.Close() }()
+		scanner := bufio.NewScanner(io.LimitReader(f, maxConfigBytes+1))
+		scanner.Buffer(make([]byte, 4096), maxConfigBytes)
+		total := 0
+		for scanner.Scan() {
+			line := scanner.Text()
+			total += len(line) + 1
+			if total > maxConfigBytes {
+				return nil, errors.New("encryption bootstrap configuration is too large")
+			}
+			name, value, ok := strings.Cut(line, "=")
+			if !ok || !known[name] {
+				continue
+			}
+			if _, exists := values[name]; exists {
+				return nil, errors.New("duplicate encryption bootstrap setting")
+			}
+			values[name] = value
+		}
+		if scanner.Err() != nil {
+			return nil, errors.New("cannot read encryption bootstrap configuration")
 		}
 	}
-	if len(raw) == 32 {
-		return []byte(raw), nil
+	// Environment overrides each secret family atomically, so an environment
+	// key does not accidentally combine with a stale bootstrap _FILE setting.
+	for _, name := range []string{envKey, envKeys} {
+		direct, hasDirect := os.LookupEnv(name)
+		file, hasFile := os.LookupEnv(name + "_FILE")
+		if hasDirect || hasFile {
+			delete(values, name)
+			delete(values, name+"_FILE")
+			if hasDirect {
+				values[name] = direct
+			}
+			if hasFile {
+				values[name+"_FILE"] = file
+			}
+		}
 	}
-	return nil, fmt.Errorf("key must be base64-encoded 16/24/32-byte key or 32-byte passphrase (got %d bytes)", len(raw))
+	if id, ok := os.LookupEnv(envKeyID); ok {
+		values[envKeyID] = id
+	}
+	return values, nil
 }

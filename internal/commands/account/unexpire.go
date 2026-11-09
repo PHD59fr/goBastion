@@ -67,11 +67,23 @@ func Unexpire(db *gorm.DB, currentUser *models.User, args []string) error {
 		return fmt.Errorf("user %q is already enabled", username)
 	}
 
-	if err := db.Model(&u).Updates(map[string]any{
-		"enabled":         true,
-		"last_login_at":   time.Time{},
-		"last_login_from": "",
-	}).Error; err != nil {
+	if err := withAccountChange(db, func(tx *gorm.DB) error {
+		var fresh models.User
+		if err := tx.First(&fresh, "id = ?", u.ID).Error; err != nil {
+			return err
+		}
+		if fresh.Enabled {
+			return fmt.Errorf("account already enabled")
+		}
+		result := tx.Model(&fresh).Where("enabled = ?", false).Updates(map[string]any{"enabled": true, "last_login_at": time.Time{}, "last_login_from": ""})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("account changed while being enabled")
+		}
+		return nil
+	}); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Unexpire",
 			BlockType: "error",
@@ -80,6 +92,9 @@ func Unexpire(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
+	if err := syncModifiedAccount(u.Username); err != nil {
+		return fmt.Errorf("account enabled but privileged reconciliation failed: %w", err)
+	}
 	console.DisplayBlock(console.ContentBlock{
 		Title:     "Account Unexpire",
 		BlockType: "success",

@@ -131,7 +131,17 @@ func recoverOne(archive string, spool *os.Root, path string, isSSH bool, log *sl
 	if rawStat, ok := rawInfo.Sys().(*syscall.Stat_t); !ok || int(rawStat.Uid) != owner {
 		return
 	}
-	if err := recompress(archive, spool, raw, m, owner); err != nil {
+	publicationOwner := owner
+	if !isSSH && owner == 0 {
+		// Root DB spools are service-owned, while their destination belongs
+		// to the admitted local account recorded in the private manifest.
+		publicationOwner, err = recordingAccountUID(m.Destination)
+		if err != nil {
+			log.Error("recording_recovery_failed", "spool", path, "reason", "account_unavailable")
+			return
+		}
+	}
+	if err := recompress(archive, spool, raw, m, publicationOwner); err != nil {
 		log.Error("recording_recovery_failed", "spool", path, "error", err)
 		return
 	}
@@ -266,7 +276,15 @@ func cleanStaging(staging *os.Root, path string, archive *os.Root) {
 	}
 	if int(stat.Uid) != 0 {
 		parts := strings.Split(filepath.ToSlash(path), "/")
-		account, err := user.Lookup(parts[0])
+		var account *user.User
+		if len(parts) == 1 {
+			// Legacy session staging may live below the archive root. Its
+			// inode owner identifies the account; current session staging
+			// is nested below the isolated account/server directory.
+			account, err = user.LookupId(strconv.Itoa(int(stat.Uid)))
+		} else {
+			account, err = user.Lookup(parts[0])
+		}
 		if err != nil || account.Uid != strconv.Itoa(int(stat.Uid)) {
 			return
 		}

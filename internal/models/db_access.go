@@ -10,7 +10,7 @@ import (
 
 // SelfDBAccess grants a user personal access to a database server.
 // Follows the same pattern as SelfAccess: stores Host/Port/Protocol/Username directly.
-// Password is stored encrypted when EGRESS_ENC_KEY is configured, otherwise plaintext.
+// Nonempty Password values must be encrypted with the mandatory keyring.
 type SelfDBAccess struct {
 	ID             uuid.UUID  `gorm:"type:uuid;primaryKey"`
 	UserID         uuid.UUID  `gorm:"type:uuid;not null;index;constraint:OnDelete:CASCADE"`
@@ -19,7 +19,7 @@ type SelfDBAccess struct {
 	Port           int64      `gorm:"not null"`
 	Protocol       string     `gorm:"not null"` // mysql, postgres, redis
 	Username       string     `gorm:"not null"`
-	Password       string     `gorm:"default:null"` // encrypted if configured, nullable (client prompts if empty)
+	Password       string     `gorm:"default:null"` // authenticated ciphertext, nullable (client prompts if empty)
 	Database       string     `gorm:"default:null"` // specific DB name (nullable = connect without selecting)
 	Comment        string     `gorm:"default:null"`
 	AllowedFrom    string     `gorm:"default:null"` // CIDRs
@@ -44,7 +44,7 @@ type GroupDBAccess struct {
 	Port           int64      `gorm:"not null"`
 	Protocol       string     `gorm:"not null"`
 	Username       string     `gorm:"not null"`
-	Password       string     `gorm:"default:null"` // encrypted if configured, nullable
+	Password       string     `gorm:"default:null"` // authenticated ciphertext, nullable
 	Database       string     `gorm:"default:null"`
 	Comment        string     `gorm:"default:null"`
 	AllowedFrom    string     `gorm:"default:null"`
@@ -71,7 +71,7 @@ type GroupGuestDBAccess struct {
 	Port        int64      `gorm:"not null"`
 	Protocol    string     `gorm:"not null"`
 	Username    string     `gorm:"not null"`
-	Password    string     `gorm:"default:null"` // encrypted if configured, nullable
+	Password    string     `gorm:"default:null"` // authenticated ciphertext, nullable
 	Database    string     `gorm:"default:null"`
 	Comment     string     `gorm:"default:null"`
 	AllowedFrom string     `gorm:"default:null"`

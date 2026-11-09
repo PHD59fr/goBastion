@@ -14,6 +14,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// The helper reloads committed policy under the root reconciliation lock.
+var syncModifiedAccount = func(username string) error {
+	_, err := system.ExecCommand("/usr/bin/sudo", "-n", "/usr/local/sbin/gobastion-sync-user", username)
+	return err
+}
+
 // Modify updates the system role of a user account.
 func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 	fs := flag.NewFlagSet("accountModify", flag.ContinueOnError)
@@ -133,13 +139,13 @@ func Modify(db *gorm.DB, currentUser *models.User, args []string) error {
 		return err
 	}
 
-	if err := system.UpdateSudoers(&u); err != nil {
+	if err := syncModifiedAccount(u.Username); err != nil {
 		log := slog.Default()
-		log.Error("sudoers_update_failed", slog.String("user", u.Username), slog.String("error", err.Error()))
+		log.Error("account_reconciliation_failed", slog.String("user", u.Username), slog.String("error", err.Error()))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Account Modify",
 			BlockType: "warning",
-			Sections:  []console.SectionContent{{SubTitle: "Warning", Body: []string{fmt.Sprintf("User role updated but sudoers file could not be updated: %v. Contact your admin.", err)}}},
+			Sections:  []console.SectionContent{{SubTitle: "Warning", Body: []string{fmt.Sprintf("User role updated but privileged account/recording access reconciliation failed: %v. Contact your admin.", err)}}},
 		})
 		return err
 	}

@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"goBastion/internal/config"
 	internalDB "goBastion/internal/db"
+	"goBastion/internal/observability"
 	"goBastion/internal/osadapter"
+	"goBastion/internal/secretstore"
 	"goBastion/internal/session"
 	"goBastion/internal/startup"
+	"goBastion/internal/telemetry"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/logger"
 
@@ -50,6 +55,14 @@ func shouldBootstrapInstanceConfig() bool {
 }
 
 func main() {
+	code := runMain()
+	if err := telemetry.ShutdownDefault(context.Background()); err != nil {
+		slog.Warn("trace_shutdown_incomplete")
+	}
+	os.Exit(code)
+}
+
+func runMain() int {
 	tStart := time.Now()
 
 	// Install the logger first so bootstrap logs (config.Load) are written to
@@ -60,6 +73,16 @@ func main() {
 
 	// Phase 1: Bootstrap config from env vars (DB_DRIVER, DB_DSN, INSTANCE_ID).
 	config.Load()
+	if _, err := telemetry.ConfigureSessionFromEnv(log); err != nil {
+		log.Error("tracing_configuration_invalid")
+		return 1
+	}
+	logger.SetTraceResolver(telemetry.TraceIDs)
+	// Fail before opening/migrating a database or executing privileged helpers.
+	if err := cryptokey.Validate(); err != nil {
+		log.Error("persistent_secret_configuration_invalid", slog.Any("error", err))
+		return 1
+	}
 
 	// Phase 2: Initialize the database (connect + migrate) first. The instance
 	// config lives in the DB, so this must happen before any config access.
@@ -67,13 +90,49 @@ func main() {
 	// and --sync invocations connect to the same DB but skip the expensive
 	// AutoMigrate — the master process already ran it at startup.
 	runMigrate := shouldRunMigrate()
+	_, bootstrapSpan := telemetry.Start(context.Background(), "startup", telemetry.Component("startup"))
 	db, err := internalDB.Init(log, runMigrate)
+	if err != nil {
+		bootstrapSpan.Failure()
+	} else {
+		bootstrapSpan.Success()
+	}
+	bootstrapSpan.End()
 	if err != nil {
 		log.Error("Failed to initialize database",
 			slog.Any("error", err),
 			slog.String("error_text", err.Error()),
 		)
-		os.Exit(1)
+		return 1
+	}
+	if raw := os.Getenv("OBS_ENABLED"); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			log.Error("observability_configuration_invalid")
+			return 1
+		}
+		if enabled && !hasArg("--dbImport") && !hasArg("--dbExport") {
+			store, err := observability.NewStore(db, config.InstanceID())
+			if err != nil {
+				log.Error("observability_configuration_invalid")
+				return 1
+			}
+			logger.SetEventObserver(store)
+		}
+	}
+	// Every execution has loaded its DB connection and immutable keyring. Keep
+	// bootstrap credentials out of children, including root startup helpers.
+	for _, name := range []string{"DB_DSN", "EGRESS_ENC_KEY", "EGRESS_ENC_KEY_FILE", "EGRESS_ENC_KEYS", "EGRESS_ENC_KEYS_FILE", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
+		_ = os.Unsetenv(name)
+	}
+	if !hasArg("--dbImport") && !hasArg("--dbExport") {
+		_ = os.Unsetenv("DB_EXPORT_KEY")
+	}
+	if isRootNonSSH() && !hasArg("--dbImport") && !hasArg("--dbExport") {
+		if err := secretstore.ValidateStored(db); err != nil {
+			log.Error("persistent_secret_validation_failed", slog.Any("error", err))
+			return 1
+		}
 	}
 
 	// Phase 3: Check whether this instance's config row is present, then load
@@ -84,7 +143,7 @@ func main() {
 		if err := config.LoadFromDB(db); err != nil {
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				log.Error("config_load_from_db_failed", slog.Any("error", err))
-				os.Exit(1)
+				return 1
 			}
 			// Keep a pristine database empty until the first administrator is
 			// created. This is also what makes a freshly migrated target suitable
@@ -100,13 +159,13 @@ func main() {
 		_ = cryptokey.Enabled()
 		_ = os.Unsetenv("DB_DSN")
 		_ = os.Unsetenv("EGRESS_ENC_KEY")
-		os.Exit(session.RunDBSupervisor(db, log, os.Args[2:]))
+		return session.RunDBSupervisor(db, log, os.Args[2:])
 	}
 	adapter := osadapter.NewLinuxAdapter()
 
 	if isRootNonSSH() {
 		exitCode := startup.Run(db, log, adapter)
-		os.Exit(exitCode)
+		return exitCode
 	}
 
 	// Materialize the encryption primitive before removing bootstrap secrets
@@ -121,5 +180,5 @@ func main() {
 	}
 
 	log.Info("startup_total", slog.Duration("took", time.Since(tStart)))
-	session.Run(db, log)
+	return session.Run(db, log)
 }

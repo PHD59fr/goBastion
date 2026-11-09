@@ -34,11 +34,6 @@ func isManagerOrAbove(ug *UserGroup) bool {
 	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper()
 }
 
-// isManagerOrMember returns true for owner, aclkeeper, gatekeeper, member roles.
-func isManagerOrMember(ug *UserGroup) bool {
-	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember()
-}
-
 // isManagerOrMemberOrGuest returns true for any explicit group membership.
 func isManagerOrMemberOrGuest(ug *UserGroup) bool {
 	return ug.IsOwner() || ug.IsACLKeeper() || ug.IsGateKeeper() || ug.IsMember() || ug.IsGuest()

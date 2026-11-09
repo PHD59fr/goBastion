@@ -1,0 +1,57 @@
+extensions:
+  file_storage/queue:
+    directory: ${env:OTEL_QUEUE_DIRECTORY}
+
+receivers:
+  otlp/local:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+  filelog/gobastion:
+    include:
+      - /goBastion.log
+    start_at: beginning
+    storage: file_storage/queue
+    operators:
+      - id: parse-gobastion-json
+        type: json_parser
+        parse_from: body
+        parse_to: attributes
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlphttp/remote:
+    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+    headers:
+      authorization: ${env:OTEL_EXPORTER_OTLP_AUTH}
+    tls:
+      ca_file: ${env:OTEL_EXPORTER_OTLP_CA_FILE}
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 10m
+
+service:
+  extensions: [file_storage/queue]
+  pipelines:
+    logs:
+      receivers: [filelog/gobastion]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/remote]
+    traces:
+      receivers: [otlp/local]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/remote]

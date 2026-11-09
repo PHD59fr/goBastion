@@ -37,7 +37,7 @@ func DisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	}
 	code = strings.TrimSpace(code)
 
-	if !totp.Verify(user.TOTPSecret, code) {
+	if !totp.VerifyStoredSecret(user.TOTPSecret, code) {
 		log.Warn("totp_disable_denied", slog.String("user", user.Username), slog.String("reason", "bad_code"))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable TOTP",

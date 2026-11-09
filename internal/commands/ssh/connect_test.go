@@ -16,6 +16,7 @@ import (
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
+	"goBastion/internal/utils/cryptokey"
 )
 
 // --- test helpers ---
@@ -82,7 +83,7 @@ func mustCreateGroupAccess(t *testing.T, db *gorm.DB, groupID uuid.UUID, usernam
 func mustCreateSelfEgressKey(t *testing.T, db *gorm.DB, userID uuid.UUID) {
 	t.Helper()
 	key := models.SelfEgressKey{
-		UserID: userID, PubKey: "pub", PrivKey: "priv",
+		UserID: userID, PubKey: "pub", PrivKey: encryptedFixture(t, "priv"),
 		Type: "ed25519", Size: 256, Fingerprint: "fp",
 	}
 	if err := db.Create(&key).Error; err != nil {
@@ -93,7 +94,7 @@ func mustCreateSelfEgressKey(t *testing.T, db *gorm.DB, userID uuid.UUID) {
 func mustCreateGroupEgressKey(t *testing.T, db *gorm.DB, groupID uuid.UUID) {
 	t.Helper()
 	key := models.GroupEgressKey{
-		GroupID: groupID, PubKey: "pub", PrivKey: "priv",
+		GroupID: groupID, PubKey: "pub", PrivKey: encryptedFixture(t, "priv"),
 		Type: "ed25519", Size: 256, Fingerprint: "fp",
 	}
 	if err := db.Create(&key).Error; err != nil {
@@ -674,8 +675,8 @@ func TestConnectLogsRequestedAndEffectiveTargets(t *testing.T) {
 
 	t.Setenv("SSH_CLIENT", "90.103.139.92 35118 22")
 
-	if err := Connect(db, user, *logger, "hub"); err != nil {
-		t.Fatalf("Connect returned error: %v", err)
+	if err := Connect(db, user, *logger, "hub"); err == nil || !strings.Contains(err.Error(), "no usable SSH egress key") {
+		t.Fatalf("Connect should report missing egress key: %v", err)
 	}
 
 	entries := parseJSONLogLines(t, &logBuf)
@@ -709,8 +710,8 @@ func TestConnectLogsExplicitRequestedUserUnchanged(t *testing.T) {
 
 	t.Setenv("SSH_CLIENT", "90.103.139.92 35118 22")
 
-	if err := Connect(db, user, *logger, "deploy@myserver"); err != nil {
-		t.Fatalf("Connect returned error: %v", err)
+	if err := Connect(db, user, *logger, "deploy@myserver"); err == nil || !strings.Contains(err.Error(), "no usable SSH egress key") {
+		t.Fatalf("Connect should report missing egress key: %v", err)
 	}
 
 	entries := parseJSONLogLines(t, &logBuf)
@@ -856,4 +857,13 @@ func TestIPv6AccessResolution(t *testing.T) {
 			})
 		}
 	}
+}
+
+func encryptedFixture(t *testing.T, plaintext string) string {
+	t.Helper()
+	ciphertext, err := cryptokey.Encrypt(plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ciphertext
 }

@@ -8,9 +8,7 @@ import (
 	"os/signal"
 	"os/user"
 	"strconv"
-	"sync/atomic"
 	"syscall"
-	"time"
 
 	"goBastion/internal/commands/ssh"
 	"goBastion/internal/config"
@@ -102,30 +100,13 @@ func RunDBSupervisor(db *gorm.DB, log *slog.Logger, args []string) int {
 	// The controller is root, so UID-based sync termination alone cannot revoke it.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	defer cancel()
-	stop := make(chan struct{})
-	defer close(stop)
-	var revoked atomic.Bool
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				var fresh models.User
-				if db.First(&fresh, "id = ?", u.ID).Error != nil || !fresh.Enabled || fresh.SystemUser {
-					revoked.Store(true)
-					cancel()
-					return
-				}
-			}
-		}
-	}()
+	monitor := startDBActorMonitor(ctx, db, u.ID, cancel)
+	defer monitor.stop()
 	log = log.With("session_id", id, "user", u.Username, "target", access.Host, "access_source", access.Source)
 	log.Info("db_session_start")
 	err = dbConnector.ConnectContext(ctx, db, u, access)
-	log.Info("db_session_end", "error", err, "revoked", revoked.Load())
+	err = monitor.finish(ctx, err)
+	log.Info("db_session_end", "error", err, "revoked", monitor.revoked.Load())
 	if err != nil {
 		return 1
 	}

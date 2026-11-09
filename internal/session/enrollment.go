@@ -22,7 +22,7 @@ func enrollmentRequest(args []string) bool {
 }
 
 func checkMFAForRequest(db *gorm.DB, u *models.User, log *slog.Logger, args []string) bool {
-	if config.Get().RequireMFA.Enabled && (!u.TOTPEnabled || u.TOTPSecret == "") && enrollmentRequest(args) {
+	if config.Get().RequireMFA.Enabled && !u.TOTPEnabled && enrollmentRequest(args) {
 		// Preserve the independent password factor; only the missing TOTP check is waived.
 		return checkPasswordMFA(u, log)
 	}

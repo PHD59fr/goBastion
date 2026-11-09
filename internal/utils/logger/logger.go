@@ -12,8 +12,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"goBastion/internal/config"
 )
 
@@ -45,7 +47,7 @@ func slogLevelToGelf(l slog.Level) int {
 //	time          ISO 8601 timestamp
 //	_<key>        all additional slog attributes prefixed with _
 type jsonHandler struct {
-	mu       sync.Mutex
+	mu       *sync.Mutex
 	w        io.Writer
 	host     string
 	min      slog.Level
@@ -55,7 +57,7 @@ type jsonHandler struct {
 // newJSONHandler creates a new structured JSON log handler writing to w.
 func newJSONHandler(w io.Writer) *jsonHandler {
 	host, _ := os.Hostname()
-	return &jsonHandler{w: w, host: host, min: slog.LevelInfo}
+	return &jsonHandler{mu: &sync.Mutex{}, w: w, host: host, min: slog.LevelInfo}
 }
 
 // Enabled returns true if the level meets the minimum threshold.
@@ -68,7 +70,7 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 // Output includes both GELF 1.1 standard fields and human-readable fields:
 //
 //	{"version":"1.1","host":"goBastion","short_message":"user_login","timestamp":1743200175,"level":6,"time":"2026-03-28T00:06:15.123Z","msg":"user_login","_user":"alice"}
-func (h *jsonHandler) Handle(_ context.Context, r slog.Record) error {
+func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 	m := map[string]any{
 		// GELF 1.1 standard fields
 		"version":       "1.1",
@@ -80,12 +82,17 @@ func (h *jsonHandler) Handle(_ context.Context, r slog.Record) error {
 		"msg":  r.Message,
 		"time": r.Time.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 	}
+	for key, value := range eventFields(ctx, r, h.preAttrs) {
+		m[key] = value
+	}
 	// Emit pre-attrs added via log.With(...).
 	for _, a := range h.preAttrs {
+		a = safeAttribute(a)
 		m["_"+a.Key] = a.Value.Any()
 	}
 	// Emit per-record attrs; record attrs win over pre-attrs on key collision.
 	r.Attrs(func(a slog.Attr) bool {
+		a = safeAttribute(a)
 		m["_"+a.Key] = a.Value.Any()
 		return true
 	})
@@ -94,6 +101,7 @@ func (h *jsonHandler) Handle(_ context.Context, r slog.Record) error {
 	if err != nil {
 		return err
 	}
+	data = []byte(sanitizeLogText(string(data)))
 	data = append(data, '\n')
 	data = bytes.ReplaceAll(data, []byte("\\u003c"), []byte("<"))
 	data = bytes.ReplaceAll(data, []byte("\\u003e"), []byte(">"))
@@ -109,7 +117,7 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	merged := make([]slog.Attr, len(h.preAttrs)+len(attrs))
 	copy(merged, h.preAttrs)
 	copy(merged[len(h.preAttrs):], attrs)
-	return &jsonHandler{w: h.w, host: h.host, min: h.min, preAttrs: merged}
+	return &jsonHandler{mu: h.mu, w: h.w, host: h.host, min: h.min, preAttrs: merged}
 }
 
 // WithGroup is a no-op; JSON does not support attribute groups.
@@ -118,6 +126,7 @@ func (h *jsonHandler) WithGroup(_ string) slog.Handler { return h }
 // multiHandler fans out log records to multiple slog.Handler implementations.
 type multiHandler struct {
 	handlers []slog.Handler
+	preAttrs []slog.Attr
 }
 
 // Enabled returns true if any of the underlying handlers accepts the level.
@@ -132,6 +141,18 @@ func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 // Handle dispatches the log record to all underlying handlers.
 func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	r = r.Clone()
+	r.AddAttrs(slog.String("event_id", uuid.NewString()))
+	if err := observeEvent(ctx, r, h.preAttrs); err != nil {
+		// Use the underlying outputs directly to avoid recursive observations.
+		failure := slog.NewRecord(time.Now(), slog.LevelWarn, "observability_counter_update_failed", 0)
+		failure.AddAttrs(slog.String("reason", "counter_store_unavailable"))
+		for _, handler := range h.handlers {
+			if handler.Enabled(ctx, failure.Level) {
+				_ = handler.Handle(ctx, failure)
+			}
+		}
+	}
 	for _, handler := range h.handlers {
 		if handler.Enabled(ctx, r.Level) {
 			if err := handler.Handle(ctx, r.Clone()); err != nil {
@@ -148,7 +169,7 @@ func (h *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for i, handler := range h.handlers {
 		handlers[i] = handler.WithAttrs(attrs)
 	}
-	return &multiHandler{handlers: handlers}
+	return &multiHandler{handlers: handlers, preAttrs: append(append([]slog.Attr(nil), h.preAttrs...), attrs...)}
 }
 
 // WithGroup propagates the group name to all underlying handlers.
@@ -157,13 +178,14 @@ func (h *multiHandler) WithGroup(name string) slog.Handler {
 	for i, handler := range h.handlers {
 		handlers[i] = handler.WithGroup(name)
 	}
-	return &multiHandler{handlers: handlers}
+	return &multiHandler{handlers: handlers, preAttrs: h.preAttrs}
 }
 
 // syslogHandler routes slog records to the system syslog daemon (best-effort).
 type syslogHandler struct {
-	writer syslogWriter
-	level  slog.Level
+	writer   syslogWriter
+	level    slog.Level
+	preAttrs []slog.Attr
 }
 
 type syslogWriter interface {
@@ -199,12 +221,14 @@ func (h *syslogHandler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 // Handle writes the log message to the syslog daemon.
-func (h *syslogHandler) Handle(_ context.Context, r slog.Record) error {
-	msg := sanitizeLogText(r.Message)
-	r.Attrs(func(a slog.Attr) bool {
-		msg += " " + sanitizeLogText(a.Key) + "=" + sanitizeLogText(a.Value.String())
-		return true
-	})
+func (h *syslogHandler) Handle(ctx context.Context, r slog.Record) error {
+	var output bytes.Buffer
+	json := newJSONHandler(&output)
+	json.preAttrs = h.preAttrs
+	if err := json.Handle(ctx, r); err != nil {
+		return err
+	}
+	msg := sanitizeLogText(strings.TrimSuffix(output.String(), "\n"))
 	switch {
 	case r.Level >= slog.LevelError:
 		return h.writer.Err(msg)
@@ -216,7 +240,9 @@ func (h *syslogHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 // WithAttrs is a no-op for the syslog handler.
-func (h *syslogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *syslogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &syslogHandler{writer: h.writer, level: h.level, preAttrs: append(append([]slog.Attr(nil), h.preAttrs...), attrs...)}
+}
 
 // WithGroup is a no-op for the syslog handler.
 func (h *syslogHandler) WithGroup(_ string) slog.Handler { return h }
@@ -232,7 +258,7 @@ func (w *slogWriter) Write(p []byte) (n int, err error) {
 
 // plainTextHandler writes human-readable log records to an io.Writer.
 type plainTextHandler struct {
-	mu       sync.Mutex
+	mu       *sync.Mutex
 	w        io.Writer
 	min      slog.Level
 	preAttrs []slog.Attr
@@ -240,7 +266,7 @@ type plainTextHandler struct {
 
 // newPlainTextHandler creates a handler that writes formatted text lines.
 func newPlainTextHandler(w io.Writer) *plainTextHandler {
-	return &plainTextHandler{w: w, min: slog.LevelInfo}
+	return &plainTextHandler{mu: &sync.Mutex{}, w: w, min: slog.LevelInfo}
 }
 
 // Enabled returns true if the level meets the minimum threshold.
@@ -263,6 +289,7 @@ func (h *plainTextHandler) Handle(_ context.Context, r slog.Record) error {
 	b.WriteString(sanitizeLogText(r.Message))
 
 	emitAttr := func(a slog.Attr) bool {
+		a = safeAttribute(a)
 		b.WriteByte(' ')
 		b.WriteString(sanitizeLogText(a.Key))
 		b.WriteByte('=')
@@ -286,7 +313,7 @@ func (h *plainTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	merged := make([]slog.Attr, len(h.preAttrs)+len(attrs))
 	copy(merged, h.preAttrs)
 	copy(merged[len(h.preAttrs):], attrs)
-	return &plainTextHandler{w: h.w, min: h.min, preAttrs: merged}
+	return &plainTextHandler{mu: h.mu, w: h.w, min: h.min, preAttrs: merged}
 }
 
 // WithGroup is a no-op.

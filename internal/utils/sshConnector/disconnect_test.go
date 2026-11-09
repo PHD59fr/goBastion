@@ -27,6 +27,9 @@ func TestSSHDisconnectFinishesRecording(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
 			base := t.TempDir()
+			if err := os.Chmod(base, 0700); err != nil {
+				t.Fatal(err)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestSSHRecordingSignalHelper$")

@@ -115,7 +115,9 @@ func TestOSHQuotedIngressKey(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			attempted = nil
-			runNonInteractiveMode(db, &user, log, tt.command, tt.args)
+			if err := runNonInteractiveMode(db, &user, log, tt.command, tt.args); !errors.Is(err, stop) {
+				t.Fatalf("registration failure was not propagated: %v", err)
+			}
 			if attempted == nil {
 				t.Fatal("valid quoted key did not reach registration")
 			}

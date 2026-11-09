@@ -172,7 +172,12 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 		log.Warn("ssh_connect", slog.String("reason", "access_denied"), slog.String("error", err.Error()))
 		return fmt.Errorf("access filter failed: %w", err)
 	}
+	return connectWithKeys(db, user, log, accesses, remoteCmd, formatJumpHosts(hops), effectiveTarget, sshConnector.SshConnection)
+}
 
+// connectWithKeys runs the selected SSH access. The runner argument keeps the
+// retry decision testable without starting an SSH client or weakening its setup.
+func connectWithKeys(db *gorm.DB, user models.User, log *slog.Logger, accesses []models.AccessRight, remoteCmd string, jumpHosts []string, target sshLogTarget, run func(*gorm.DB, models.User, models.AccessRight) error) error {
 	if len(accesses) > 0 {
 		fmt.Printf("Trying keys ...\n")
 		var lastConnErr error
@@ -203,12 +208,17 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 
 			log.Info("ssh_connect", slog.String("to", access.Source), slog.String("key_id", access.KeyId.String()))
 			access.RemoteCmd = remoteCmd
-			access.JumpHosts = formatJumpHosts(hops)
-			err = sshConnector.SshConnection(db, user, access)
+			access.JumpHosts = jumpHosts
+			err := run(db, user, access)
 			if err != nil {
 				log.Error("ssh_close", slog.String("to", access.Source), slog.String("error", err.Error()))
 				fmt.Printf("SSH connection to %s failed: %v\n", access.Source, err)
 				lastConnErr = err
+				// A remote command may have run before SSH returned an error,
+				// including exit status 255. Never execute it with another key.
+				if remoteCmd != "" {
+					return err
+				}
 				continue
 			}
 			log.Info("ssh_close", slog.String("to", access.Source))
@@ -220,10 +230,10 @@ func Connect(db *gorm.DB, user models.User, logger slog.Logger, params string) e
 	}
 
 	log.Warn("ssh_connect", slog.String("reason", "no_valid_key"))
-	fmt.Printf("No usable SSH egress key found for %s@%s:%s.\n", sshUser, sshHost, sshPort)
+	fmt.Printf("No usable SSH egress key found for %s@%s:%s.\n", target.user, target.host, target.port)
 	fmt.Println("Generate one with:")
 	fmt.Println("  selfGenerateEgressKey --type ed25519")
-	return nil
+	return fmt.Errorf("no usable SSH egress key found for %s@%s:%s", target.user, target.host, target.port)
 }
 
 // inferSSHUsername resolves the SSH username to use when connecting to host:port
@@ -517,7 +527,6 @@ func buildGroupAccessRight(db *gorm.DB, log *slog.Logger, ga models.GroupAccess,
 		MFARequired:    ga.Group.MFARequired,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
-	maybeReEncryptKey(db, log, "group", key.ID, key.PrivKey)
 	return access, nil
 }
 
@@ -554,39 +563,12 @@ func buildSelfAccessRight(db *gorm.DB, log *slog.Logger, sa models.SelfAccess, r
 		PrivateKey:     privateKey,
 	}
 	access.Username = normalizeWildcardUsername(access.Username, requestedUsername)
-	maybeReEncryptKey(db, log, "self", key.ID, key.PrivKey)
 	return access, nil
 }
 
-// decryptPrivKey returns the plaintext private key, handling both encrypted and legacy plaintext values.
+// decryptPrivKey authenticates stored ciphertext before exposing a private key.
 func decryptPrivKey(raw string) (string, error) {
 	return cryptokey.DecryptOrPassThrough(raw)
-}
-
-// maybeReEncryptKey re-encrypts a plaintext egress key if EGRESS_ENC_KEY is now set.
-// Runs synchronously to ensure the re-encryption is persisted before the session ends.
-func maybeReEncryptKey(db *gorm.DB, log *slog.Logger, keyType string, keyID uuid.UUID, currentPrivKey string) {
-	if !cryptokey.Enabled() {
-		return
-	}
-	if cryptokey.IsEncrypted(currentPrivKey) {
-		return // already encrypted
-	}
-	encrypted, err := cryptokey.Encrypt(currentPrivKey)
-	if err != nil {
-		log.Warn("re_encrypt_key", slog.String("error", err.Error()))
-		return
-	}
-	var updateErr error
-	switch keyType {
-	case "self":
-		updateErr = db.Model(&models.SelfEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
-	case "group":
-		updateErr = db.Model(&models.GroupEgressKey{}).Where("id = ?", keyID).Update("priv_key", encrypted).Error
-	}
-	if updateErr != nil {
-		log.Warn("re_encrypt_key", slog.String("key_type", keyType), slog.String("error", updateErr.Error()))
-	}
 }
 
 // normalizeWildcardUsername replaces a wildcard username '*' with the requested username.
@@ -634,7 +616,7 @@ func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 			return false
 		}
 		code = strings.TrimSpace(code)
-		if totpUtil.Verify(user.TOTPSecret, code) {
+		if totpUtil.VerifyStoredSecret(user.TOTPSecret, code) {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
 			return true
 		}

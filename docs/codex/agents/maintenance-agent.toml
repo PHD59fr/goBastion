@@ -1,0 +1,3 @@
+model = "gpt-6-luna"
+model_reasoning_effort = "medium"
+developer_instructions = "Maintain goBastion documentation and repository metadata. Keep descriptions concise, consistent with source and README, and explicit about pending or unverified work. Preserve existing user changes and avoid unrelated code edits. Do not report tests or operational checks as passing unless they were run and observed."

@@ -20,6 +20,81 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestCheckMFAEnabledTOTPRequiresStoredSecret(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		enabled, required   bool
+		secret, backupCodes string
+		want                bool
+	}{
+		{name: "optional unenrolled account", want: true},
+		{name: "required unenrolled account", required: true},
+		{name: "enabled without secret", enabled: true},
+		{name: "enabled without secret under global enforcement", enabled: true, required: true},
+		{name: "backup codes do not bypass an incomplete enabled profile", enabled: true, backupCodes: `["unconsumed-backup-hash"]`},
+		{name: "enabled with authenticated secret", enabled: true, secret: "JBSWY3DPEHPK3PXP", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config.ResetForTesting()
+			_ = config.Load()
+			t.Cleanup(config.ResetForTesting)
+			cfg := config.DefaultConfig()
+			cfg.RequireMFA.Enabled = tc.required
+			cfg.MFA.MaxAttempts = 1
+			config.SetForTesting(cfg)
+			user := models.User{Username: "mfa-profile", TOTPEnabled: tc.enabled, BackupCodes: tc.backupCodes}
+			input, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.secret != "" {
+				user.TOTPSecret = encryptedFixture(t, tc.secret)
+				code, err := totp.GenerateCode(tc.secret, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writer.WriteString(code + "\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = writer.Close()
+			original := os.Stdin
+			os.Stdin = input
+			t.Cleanup(func() { os.Stdin = original; _ = input.Close() })
+			var log bytes.Buffer
+			if got := checkMFA(nil, &user, slog.New(slog.NewTextHandler(&log, nil))); got != tc.want {
+				t.Fatalf("MFA admission = %t, want %t", got, tc.want)
+			}
+			if user.BackupCodes != tc.backupCodes {
+				t.Fatal("incomplete profile check consumed backup codes")
+			}
+			if tc.enabled && tc.secret == "" && !strings.Contains(log.String(), "enabled_totp_missing_secret") {
+				t.Fatal("incomplete enabled TOTP profile was not audited")
+			}
+		})
+	}
+}
+
+func TestEnrollmentExemptionDoesNotResetAnIncompleteEnabledFactor(t *testing.T) {
+	config.ResetForTesting()
+	_ = config.Load()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.DefaultConfig()
+	cfg.RequireMFA.Enabled = true
+	config.SetForTesting(cfg)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, args := range [][]string{{"-osh selfSetupTOTP"}, {"-osh", "selfSetupTOTP"}} {
+		unenrolled := models.User{Username: "new-user"}
+		if !checkMFAForRequest(nil, &unenrolled, log, args) {
+			t.Fatal("unenrolled account cannot begin enrollment")
+		}
+		incomplete := models.User{Username: "broken-profile", TOTPEnabled: true}
+		if checkMFAForRequest(nil, &incomplete, log, args) {
+			t.Fatal("enabled factor with missing seed bypassed MFA through enrollment")
+		}
+	}
+}
+
 func TestDatabaseConnectionEnforcesPolicies(t *testing.T) {
 	for _, tc := range []struct {
 		name                         string
@@ -49,7 +124,7 @@ func TestDatabaseConnectionEnforcesPolicies(t *testing.T) {
 			}
 			u := models.User{Username: "audit", Role: models.RoleUser, Enabled: true}
 			if tc.validCode {
-				u.TOTPSecret = "JBSWY3DPEHPK3PXP"
+				u.TOTPSecret = encryptedFixture(t, "JBSWY3DPEHPK3PXP")
 			}
 			mustPolicyCreate(t, db, &u)
 			g := models.Group{Name: "audit", MFARequired: tc.mfa}
@@ -78,7 +153,7 @@ func TestDatabaseConnectionEnforcesPolicies(t *testing.T) {
 			}
 			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 			if tc.validCode {
-				code, err := totp.GenerateCode(u.TOTPSecret, time.Now())
+				code, err := totp.GenerateCode("JBSWY3DPEHPK3PXP", time.Now())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -94,7 +169,13 @@ func TestDatabaseConnectionEnforcesPolicies(t *testing.T) {
 				os.Stdin = input
 				defer func() { os.Stdin = original; _ = input.Close() }()
 			}
-			runNonInteractiveMode(db, &u, slog.New(slog.NewTextHandler(io.Discard, nil)), "--db", []string{"reader@audit.invalid:3306:mysql"})
+			dispatchErr := runNonInteractiveMode(db, &u, slog.New(slog.NewTextHandler(io.Discard, nil)), "--db", []string{"reader@audit.invalid:3306:mysql"})
+			if tc.wantLaunch && dispatchErr != nil {
+				t.Fatalf("authorized DB dispatch failed: %v", dispatchErr)
+			}
+			if !tc.wantLaunch && dispatchErr == nil {
+				t.Fatal("denied DB dispatch returned success")
+			}
 			_, err = os.Stat(marker)
 			if tc.wantLaunch && err != nil {
 				t.Fatalf("authorized DB client did not launch: %v", err)
@@ -132,7 +213,7 @@ func TestSFTPSessionEnforcesAccountMFA(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			u := models.User{Username: name, Role: models.RoleUser, Enabled: true, PasswordHash: "invalid-hash", TOTPEnabled: true, TOTPSecret: "invalid-secret"}
+			u := models.User{Username: name, Role: models.RoleUser, Enabled: true, PasswordHash: "invalid-hash", TOTPEnabled: true, TOTPSecret: encryptedFixture(t, "invalid-secret")}
 			if policy != "password" {
 				u.PasswordHash = ""
 			}
@@ -142,7 +223,7 @@ func TestSFTPSessionEnforcesAccountMFA(t *testing.T) {
 			}
 			mustPolicyCreate(t, db, &u)
 			mustPolicyCreate(t, db, &models.SelfAccess{UserID: u.ID, Username: "deploy", Server: "audit.invalid", Port: 22, Protocol: "sftp"})
-			mustPolicyCreate(t, db, &models.SelfEgressKey{UserID: u.ID, PrivKey: "invalid-private-key", PubKey: "invalid"})
+			mustPolicyCreate(t, db, &models.SelfEgressKey{UserID: u.ID, PrivKey: encryptedFixture(t, "invalid-private-key"), PubKey: "invalid"})
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, "ssh-keyscan"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
 				t.Fatal(err)

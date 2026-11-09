@@ -42,6 +42,41 @@ func TestRedactAuditArgs(t *testing.T) {
 			want: []string{"--password-file", "/safe/path", "--user", "alice"},
 		},
 		{
+			name: "credential-bearing positional URLs and MySQL DSN",
+			args: []string{"postgres://alice:secret@db/test", "redis://:secret@db/0", "alice:secret@tcp(db:3306)/test"},
+			want: []string{auditRedactedValue, auditRedactedValue, auditRedactedValue},
+		},
+		{
+			name: "quoted PostgreSQL keyword DSN",
+			args: []string{"host=db user=alice password='secret with spaces' dbname=test"},
+			want: []string{auditRedactedValue},
+		},
+		{
+			name: "DSN flag and case-insensitive secret flag",
+			args: []string{"--dsn", "opaque-secret", "--API_KEY=secret", "PGPASSWORD=secret"},
+			want: []string{"--dsn", auditRedactedValue, "--API_KEY=" + auditRedactedValue, "PGPASSWORD=" + auditRedactedValue},
+		},
+		{
+			name: "URL query credentials and encoded key inside a flag",
+			args: []string{"postgres://db/test?password=secret", "--connection=https://db/?%74oken=secret"},
+			want: []string{auditRedactedValue, auditRedactedValue},
+		},
+		{
+			name: "separated assignment operator",
+			args: []string{"--password", "=", "secret", "--host", "db"},
+			want: []string{"--password", auditRedactedValue, auditRedactedValue, "--host", "db"},
+		},
+		{
+			name: "PostgreSQL assignment tokens",
+			args: []string{"host=db", "password", "=", "secret", "pwd=", "secret2", "token", "=secret3"},
+			want: []string{"host=db", "password", auditRedactedValue, auditRedactedValue, "pwd=" + auditRedactedValue, auditRedactedValue, "token", auditRedactedValue},
+		},
+		{
+			name: "public connection targets",
+			args: []string{"postgres://db/test", "--host=db", "alice@db", "host=db user=alice"},
+			want: []string{"postgres://db/test", "--host=db", "alice@db", "host=db user=alice"},
+		},
+		{
 			name: "nil arguments",
 			args: nil,
 			want: nil,
@@ -68,6 +103,26 @@ func TestRedactAuditCommand(t *testing.T) {
 		command string
 		want    string
 	}{
+		{
+			name:    "PostgreSQL assignment with whitespace",
+			command: "-osh connect host=db password = credential user=alice",
+			want:    "-osh connect host=db password [REDACTED] [REDACTED] user=alice",
+		},
+		{
+			name:    "PostgreSQL assignment with separated value",
+			command: "-osh connect host=db password= credential user=alice",
+			want:    "-osh connect host=db password=[REDACTED] [REDACTED] user=alice",
+		},
+		{
+			name:    "positional credential URL",
+			command: "-osh connect 'postgres://alice:credential@db/test'",
+			want:    "-osh connect [REDACTED]",
+		},
+		{
+			name:    "quoted keyword DSN",
+			command: `-osh connect "host=db password=credential user=alice"`,
+			want:    "-osh connect [REDACTED]",
+		},
 		{
 			name:    "original SSH command with separate value",
 			command: "-osh selfAddDBAccess --host db.example --password secret --user alice",

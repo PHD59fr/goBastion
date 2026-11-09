@@ -12,18 +12,5 @@ if ! printf "%s" "$user" | grep -Eq '^[a-z0-9][a-z0-9._-]{0,31}$'; then
   exit 2
 fi
 
-if entry=$(getent passwd "$user" 2>/dev/null); then
-  uid=$(printf '%s' "$entry" | cut -d: -f3)
-  if [ "$uid" -lt 1000 ]; then
-    echo "refusing to manage system account" >&2
-    exit 2
-  fi
-fi
-
-if ! getent passwd "$user" >/dev/null 2>&1; then
-  /usr/sbin/adduser --disabled-password --gecos "" "$user"
-fi
-
-# All bastion accounts need access to the SQLite database and shared recording
-# tree after the main application drops root privileges.
-/usr/sbin/addgroup "$user" gobastion
+case "$user" in gobastion|nobody|gobastion-session) echo "reserved account" >&2; exit 2 ;; esac
+exec /usr/local/sbin/gobastion-sync-user "$user"

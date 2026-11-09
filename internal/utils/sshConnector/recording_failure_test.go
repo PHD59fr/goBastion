@@ -2,6 +2,7 @@ package sshConnector
 
 import (
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"github.com/glebarez/sqlite"
 	"goBastion/internal/config"
@@ -10,27 +11,41 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestSSHRecordingPublication(t *testing.T) {
-	for _, failure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("failure_%t", failure), func(t *testing.T) { testSSHRecordingPublication(t, failure) })
+	for _, tc := range []struct {
+		publicationFailure bool
+		recorderExit       int
+	}{
+		{publicationFailure: false},
+		{publicationFailure: true},
+		{recorderExit: 255},
+	} {
+		t.Run(fmt.Sprintf("publish_failure_%t_exit_%d", tc.publicationFailure, tc.recorderExit), func(t *testing.T) {
+			testSSHRecordingPublication(t, tc.publicationFailure, tc.recorderExit)
+		})
 	}
 }
-func testSSHRecordingPublication(t *testing.T, failure bool) {
+func testSSHRecordingPublication(t *testing.T, failure bool, recorderExit int) {
 	config.ResetForTesting()
 	_ = config.Load()
 	t.Cleanup(config.ResetForTesting)
 	cfg := config.DefaultConfig()
 	cfg.Paths.HomeBaseDir = t.TempDir()
 	cfg.Paths.TtyrecDir = t.TempDir()
+	if err := os.Chmod(cfg.Paths.TtyrecDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	cfg.TTYRec.Enabled = true
 	config.SetForTesting(cfg)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GOB_SESSION_ID", "")
+	t.Setenv("GOB_TEST_RECORD_PARENT", filepath.Join(cfg.Paths.TtyrecDir, "alice", "fixture.example"))
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +73,10 @@ func testSSHRecordingPublication(t *testing.T, failure bool) {
 printf 'recorded-session' > "$2"
 `
 	if failure {
-		script += `mkdir "$(dirname "$(dirname "$2")")/$(basename "$2").gz"` + "\n"
+		script += `mkdir "$GOB_TEST_RECORD_PARENT/$(basename "$2").gz"` + "\n"
+	}
+	if recorderExit != 0 {
+		script += fmt.Sprintf("exit %d\n", recorderExit)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "ttyrec"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -68,8 +86,14 @@ printf 'recorded-session' > "$2"
 	if failure && (err == nil || !strings.Contains(err.Error(), "publishing gzip")) {
 		t.Fatalf("expected publication failure, got %v", err)
 	}
-	if !failure && err != nil {
+	if !failure && recorderExit == 0 && err != nil {
 		t.Fatal(err)
+	}
+	if recorderExit != 0 {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != recorderExit {
+			t.Fatalf("recorded command error lost exit status %d: %v", recorderExit, err)
+		}
 	}
 	var saved []string
 	if err := filepath.WalkDir(cfg.Paths.TtyrecDir, func(path string, d fs.DirEntry, err error) error {
@@ -131,8 +155,15 @@ printf 'recorded-session' > "$2"
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(entries) != 1 {
-			t.Fatalf("temporary recording left behind: %v", entries)
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), ".ssh-record-") {
+				spoolEntries, err := os.ReadDir(filepath.Join(filepath.Dir(saved[0]), entry.Name()))
+				if err != nil || len(spoolEntries) != 0 {
+					t.Fatalf("spool not empty: %v, %v", spoolEntries, err)
+				}
+			} else if entry.Name() != filepath.Base(saved[0]) {
+				t.Fatalf("unexpected recording entry: %s", entry.Name())
+			}
 		}
 	}
 }
