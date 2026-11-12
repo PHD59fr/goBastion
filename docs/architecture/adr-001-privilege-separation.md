@@ -20,6 +20,8 @@ and key material in memory.
 
 DB client sessions use a distinct privileged supervisor, broker, and NsJail path
 (`internal/session/db_supervisor.go`, `internal/dbsandbox`, `cmd/dbworker`).
+Direct `--db` ForceCommand requests are routed to that supervisor before the
+unprivileged Go session process receives the control-plane bootstrap.
 `internal/secretbroker` provides a local Unix-domain socket with peer-UID checks
 and an operation allowlist, but ForceCommand session operations do not use it for
 database or secret access.

@@ -14,9 +14,12 @@ type ActiveSession struct {
 	InstanceID string `gorm:"index;not null"`
 	Username   string `gorm:"index;not null"`
 	PID        int    `gorm:"not null"`
-	Kind       string `gorm:"not null"`
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// ProcessIdentity binds PID to its kernel start time and PID namespace.
+	// Empty identities are retained for live legacy sessions until they drain.
+	ProcessIdentity string `gorm:"size:80;not null;default:''"`
+	Kind            string `gorm:"not null"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 func (s *ActiveSession) BeforeCreate(*gorm.DB) error {

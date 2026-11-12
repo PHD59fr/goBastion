@@ -57,25 +57,31 @@ func GenerateCode(secret string, t time.Time) (string, error) {
 
 // Verify checks the code against the secret with ±1 time step tolerance for clock drift.
 func Verify(secret, code string) bool {
+	_, matched := MatchingStep(secret, code, time.Now())
+	return matched
+}
+
+// MatchingStep returns the accepted time step so persisted authentication can
+// consume it atomically. Raw enrollment verification does not consume a step.
+func MatchingStep(secret, code string, now time.Time) (int64, bool) {
 	if len(code) != 6 {
-		return false
+		return 0, false
 	}
 	for i := range len(code) {
 		if code[i] < '0' || code[i] > '9' {
-			return false
+			return 0, false
 		}
 	}
-	now := time.Now()
 	for _, delta := range []time.Duration{0, 30 * time.Second, -30 * time.Second} {
 		expected, err := GenerateCode(secret, now.Add(delta))
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if hmac.Equal([]byte(expected), []byte(code)) {
-			return true
+			return now.Add(delta).Unix() / 30, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // OtpAuthURL returns the otpauth:// URI for QR-code enrollment with standard authenticator apps.

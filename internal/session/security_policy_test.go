@@ -42,7 +42,7 @@ func TestCheckMFAEnabledTOTPRequiresStoredSecret(t *testing.T) {
 			cfg.RequireMFA.Enabled = tc.required
 			cfg.MFA.MaxAttempts = 1
 			config.SetForTesting(cfg)
-			user := models.User{Username: "mfa-profile", TOTPEnabled: tc.enabled, BackupCodes: tc.backupCodes}
+			user := models.User{Username: "mfa-profile", Enabled: true, TOTPEnabled: tc.enabled, BackupCodes: tc.backupCodes}
 			input, writer, err := os.Pipe()
 			if err != nil {
 				t.Fatal(err)
@@ -61,8 +61,18 @@ func TestCheckMFAEnabledTOTPRequiresStoredSecret(t *testing.T) {
 			original := os.Stdin
 			os.Stdin = input
 			t.Cleanup(func() { os.Stdin = original; _ = input.Close() })
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AutoMigrate(&models.User{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&user).Error; err != nil {
+				t.Fatal(err)
+			}
 			var log bytes.Buffer
-			if got := checkMFA(nil, &user, slog.New(slog.NewTextHandler(&log, nil))); got != tc.want {
+			if got := checkMFA(db, &user, slog.New(slog.NewTextHandler(&log, nil))); got != tc.want {
 				t.Fatalf("MFA admission = %t, want %t", got, tc.want)
 			}
 			if user.BackupCodes != tc.backupCodes {

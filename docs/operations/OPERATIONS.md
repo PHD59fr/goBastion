@@ -60,7 +60,15 @@ Back up the control-plane database using the selected engine's consistent backup
 
 ## Reconciliation and SSH files
 
+The MFA replay state, shared attempt budget and active-session process identity
+use additive database columns. Root startup must complete schema migration before
+upgraded ForceCommand sessions run. Coordinate binary and helper upgrades across
+instances: older binaries do not consume TOTP steps or enforce the shared
+attempt budget, and older session records have no process identity.
+
 Root startup, periodic sync, manual root sync, and the privileged single-user helper use the node-local `/run/gobastion/reconcile.lock`. It has a 30-second acquisition timeout; failure prevents that reconciliation from applying. Do not unlink or replace the lock inode while a process may use it. It does not coordinate nodes or close SSH admission.
+
+The container retries a failed periodic sync after `SYNC_RETRY_SECONDS` (default 10, range 1–60) and resumes the normal `SYNC_INTERVAL_SECONDS` delay after success. It removes `/run/gobastion/sync.healthy` on failure and recreates it after a successful pass. `/run/gobastion/sync.last_success` records the Unix timestamp of the last successful pass. The Compose healthcheck requires the marker and a running `sshd`; an unexpected sync-worker exit stops the container. These files report local reconciliation health only, not successful SSH admission or cluster-wide policy convergence.
 
 Privileged SSH key/known-host publication requires an absolute home base with root-owned, non-symlink, non-group/other-writable components. Managed account UIDs must be 1000–64999. Each home and `.ssh` directory must belong to the resolved UID and not be group/other writable; `.ssh` should be mode `0700`. Unsafe existing ownership or modes fail closed. Repair only verified account directories with an explicit administrator procedure; do not recursively chown untrusted trees.
 

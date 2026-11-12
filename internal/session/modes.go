@@ -951,6 +951,24 @@ func resetStdIn() {
 func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	ip := system.ClientIPFromEnv()
 
+	if user.TOTPEnabled && user.TOTPSecret == "" {
+		log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.String("reason", "enabled_totp_missing_secret"))
+		fmt.Fprintln(os.Stderr, "⛔ MFA is enabled but its secret is missing. Contact your administrator to recover your account.")
+		return false
+	}
+
+	var reservation *mfa.Attempt
+	// Charge the shared budget before prompting for any configured factor.
+	if user.PasswordHash != "" || user.TOTPEnabled {
+		var err error
+		reservation, err = mfa.ReserveAttempt(db, user, config.Get().MFA.MaxAttempts, time.Now())
+		if err != nil {
+			log.Warn("mfa_failure", slog.String("reason", "attempt_budget_unavailable"), slog.String("user", user.Username))
+			fmt.Fprintln(os.Stderr, "⛔ MFA unavailable or attempt limit reached. Retry later.")
+			return false
+		}
+	}
+
 	// Password MFA check (independent of TOTP)
 	if user.PasswordHash != "" {
 		log.Info("mfa_challenge", slog.String("event", "mfa_password"), slog.String("user", user.Username), slog.String("from", ip))
@@ -960,6 +978,10 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 		if err != nil {
 			log.Warn("mfa_error", slog.String("event", "mfa_password"), slog.String("user", user.Username), slog.String("error", err.Error()))
 			fmt.Fprintln(os.Stderr, "⛔ Could not read password.")
+			return false
+		}
+		if !reservation.Valid(time.Now()) {
+			log.Warn("mfa_failure", slog.String("reason", "attempt_reservation_expired"), slog.String("user", user.Username))
 			return false
 		}
 		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), pass) != nil {
@@ -976,22 +998,25 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	}
 
 	// TOTP check
-	if user.TOTPEnabled && user.TOTPSecret == "" {
-		log.Warn("mfa_failure", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip), slog.String("reason", "enabled_totp_missing_secret"))
-		fmt.Fprintln(os.Stderr, "⛔ MFA is enabled but its secret is missing. Contact your administrator to recover your account.")
-		return false
-	}
 	if !user.TOTPEnabled {
 		// Global MFA enforcement: if required, a missing TOTP secret is fatal.
 		if config.Get().RequireMFA.Enabled {
 			fmt.Println("⛔ MFA (TOTP) is required. Run selfSetupTOTP to enable it before connecting.")
 			return false
 		}
-		return true
+		return reservation.Success() == nil
 	}
 	log.Info("mfa_challenge", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
 
 	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
+		if attempt > 1 {
+			var err error
+			reservation, err = mfa.ReserveAttempt(db, user, config.Get().MFA.MaxAttempts, time.Now())
+			if err != nil {
+				log.Warn("mfa_failure", slog.String("reason", "attempt_budget_unavailable"), slog.String("user", user.Username))
+				return false
+			}
+		}
 		fmt.Printf("🔐 Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
 		reader := bufio.NewReader(os.Stdin)
 		code, err := reader.ReadString('\n')
@@ -1002,10 +1027,19 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 		}
 		code = strings.TrimSpace(code)
 
-		// Try TOTP first
-		if totp.VerifyStoredSecret(user.TOTPSecret, code) {
+		if !reservation.Valid(time.Now()) {
+			log.Warn("mfa_failure", slog.String("reason", "attempt_reservation_expired"), slog.String("user", user.Username))
+			return false
+		}
+		// Try TOTP first; the validated time step is consumed in the database.
+		matchedTOTP, verifyErr := mfa.VerifyAndConsumeTOTP(db, user, code)
+		if verifyErr != nil {
+			log.Warn("mfa_error", slog.String("reason", "totp_consumption_failed"), slog.String("user", user.Username))
+			return false
+		}
+		if matchedTOTP {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username), slog.String("from", ip))
-			return true
+			return reservation.Success() == nil
 		}
 
 		// Try backup code
@@ -1017,7 +1051,7 @@ func checkMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 				remaining := totp.CountBackupCodes(user.BackupCodes)
 				log.Info("mfa_success", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("from", ip))
 				fmt.Printf("✅ Backup code accepted. %d code(s) remaining.\n", remaining)
-				return true
+				return reservation.Success() == nil
 			}
 		}
 

@@ -56,9 +56,9 @@ services:
         soft: 65535
         hard: 65535
     healthcheck:
-      # This is a basic process check; application-level readiness should be
-      # defined separately (e.g. dedicated probe endpoint or control-plane check).
-      test: ["CMD-SHELL", "pidof sshd >/dev/null"]
+      # Require both sshd and a successful startup or periodic reconciliation.
+      # This remains a local process check, not a complete admission probe.
+      test: ["CMD-SHELL", "pidof sshd >/dev/null && test -f /run/gobastion/sync.healthy"]
       interval: 30s
       timeout: 5s
       retries: 3

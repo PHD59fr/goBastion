@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS active_sessions (
     instance_id text NOT NULL,
     username    text NOT NULL,
     pid         bigint NOT NULL,
+    process_identity varchar(80) NOT NULL DEFAULT '',
     kind        text NOT NULL,
     created_at  timestamptz,
     updated_at  timestamptz
@@ -48,6 +49,9 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at   timestamptz,
     totp_secret     text,
     totp_enabled    boolean NOT NULL DEFAULT false,
+    totp_last_step  bigint NOT NULL DEFAULT 0,
+    mfa_window_start bigint NOT NULL DEFAULT 0,
+    mfa_window_attempts integer NOT NULL DEFAULT 0,
     password_hash   text,
     backup_codes    text,
     created_at      timestamptz,

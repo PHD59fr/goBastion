@@ -7,6 +7,9 @@ keyring. SQLite files and WAL are writable by the shared bastion group. Code
 running locally as a bastion Unix account can therefore affect database integrity
 and access secrets available to that process. A PostgreSQL backend does not
 remove direct session access to database credentials and encryption keys.
+Direct `--db` ForceCommand requests instead enter the existing root database
+supervisor before the unprivileged session process receives the bootstrap. Other
+session and administrative paths still retain the control-plane access above.
 
 This local-code/filesystem threat is distinct from an SSH client restricted to
 the ForceCommand protocol. Isolation of the database and keys from session
@@ -15,7 +18,7 @@ processes is not implemented.
 ## SSH and privileged operations
 
 The image configures public-key SSH authentication, disables root/password SSH
-login and agent/TCP forwarding, and uses a ForceCommand session helper. The
+login and agent/TCP/Unix-socket forwarding, and uses a ForceCommand session helper. The
 container sshd configuration sets `AuthorizedKeysFile none` and uses
 `AuthorizedKeysCommand /app/goBastion --authorizedKeys %u` as root. The trusted
 key lookup returns only canonical ingress keys for enabled, non-system accounts
@@ -25,7 +28,10 @@ consulted by sshd in that configuration.
 
 Session policy is refreshed before command dispatch. Authentication supports the
 configured password, TOTP, PIV and recovery-code flows; an enabled TOTP profile
-with an empty seed is refused.
+with an empty seed is refused. Accepted TOTP time steps are consumed atomically
+in the shared database, and password/TOTP challenges use a bounded per-account
+attempt budget. Enrollment confirmation checks a newly generated seed before
+it is activated.
 
 Privileged helpers delegate account requests to root reconciliation, which reads
 database policy under a node-local lock. Root creation uses fixed native
@@ -77,11 +83,12 @@ Upstream TLS verifies the original target identity; there is no plaintext or
 unverified fallback.
 
 Actor monitoring cancels a session on missing, disabled or system account state,
-query failure or timeout. Cancellation also returns failure when a connector
-suppresses the cancellation error. Drivers must honor context cancellation.
-The actor monitor does not refresh target grants or implement cluster-wide
-revocation. Namespace, seccomp and AppArmor enforcement depend on the deployed
-host and container configuration.
+account authorization or selected database-grant changes, query failure or
+timeout. Cancellation also returns failure when a connector suppresses the
+cancellation error. Drivers must honor context cancellation. Polling the shared
+database bounds detection but does not make admission and revocation atomic or
+implement cluster-wide session limits. Namespace, seccomp and AppArmor
+enforcement depend on the deployed host and container configuration.
 
 ## Recordings
 
@@ -121,7 +128,7 @@ log delivery and end-to-end telemetry retention are not established. See
 Active-active consistency, coordinated drain/failover, transparent session
 migration, scoped JIT SCP/SFTP tickets and authenticated realm federation are
 not implemented. Realm relay metadata does not authenticate qualified remote
-identities. TOTP replay/authorization coverage and complete host-profile,
+identities. Cross-dialect TOTP replay verification and complete host-profile,
 protocol, disaster-recovery and multi-node testing remain incomplete.
 
 The [threat model](THREAT_MODEL.md) identifies assets and assumptions.

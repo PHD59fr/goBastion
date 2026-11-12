@@ -3,14 +3,15 @@ package totp
 import (
 	"bufio"
 	"fmt"
+	"goBastion/internal/config"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
-	"goBastion/internal/utils/totp"
 
 	"gorm.io/gorm"
 )
@@ -29,6 +30,10 @@ func DisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 		return fmt.Errorf("TOTP is not enabled on this account")
 	}
 
+	reservation, reserveErr := mfa.ReserveAttempt(db, user, config.Get().MFA.MaxAttempts, time.Now())
+	if reserveErr != nil {
+		return fmt.Errorf("MFA unavailable or attempt limit reached; retry later")
+	}
 	fmt.Print("Enter your current TOTP code to confirm: ")
 	reader := bufio.NewReader(os.Stdin)
 	code, err := reader.ReadString('\n')
@@ -37,7 +42,11 @@ func DisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 	}
 	code = strings.TrimSpace(code)
 
-	if !totp.VerifyStoredSecret(user.TOTPSecret, code) {
+	if !reservation.Valid(time.Now()) {
+		return fmt.Errorf("MFA confirmation expired; retry")
+	}
+	matched, verifyErr := mfa.VerifyAndConsumeTOTP(db, user, code)
+	if verifyErr != nil || !matched {
 		log.Warn("totp_disable_denied", slog.String("user", user.Username), slog.String("reason", "bad_code"))
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Disable TOTP",
@@ -49,6 +58,9 @@ func DisableTOTP(db *gorm.DB, user *models.User, log *slog.Logger) error {
 		return fmt.Errorf("invalid TOTP code")
 	}
 
+	if err := reservation.Success(); err != nil {
+		return fmt.Errorf("MFA completion failed")
+	}
 	user.TOTPSecret = ""
 	user.TOTPEnabled = false
 	user.BackupCodes = ""

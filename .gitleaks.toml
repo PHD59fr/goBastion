@@ -48,6 +48,13 @@ regexes = ['''^fedcba9876543210fedcba9876543210$''']
 paths = ['''(^|/)internal/db/secret_import_test\.go$''']
 
 [[rules.allowlists]]
+description = "Public RFC 6238 TOTP seed used only in the re-enrollment test"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$''']
+paths = ['''(^|/)internal/mfa/profile_test\.go$''']
+
+[[rules.allowlists]]
 description = "Literal flag in the audit redaction regression; not an API credential"
 condition = "AND"
 regexTarget = "secret"

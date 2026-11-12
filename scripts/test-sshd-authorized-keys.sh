@@ -194,6 +194,8 @@ grep -qx 'authorizedkeysfile none' /tmp/sshd-effective.conf
 grep -qx 'authorizedkeyscommand /app/goBastion --authorizedKeys %u' /tmp/sshd-effective.conf
 grep -qx 'authorizedkeyscommanduser root' /tmp/sshd-effective.conf
 grep -qx 'forcecommand /usr/bin/sudo -n /usr/local/sbin/gobastion-session "$SSH_ORIGINAL_COMMAND"' /tmp/sshd-effective.conf
+grep -qx 'allowstreamlocalforwarding no' /tmp/sshd-effective.conf
+grep -qx 'disableforwarding yes' /tmp/sshd-effective.conf
 cat > /run/gobastion/db.conf << EOF
 DB_DRIVER=sqlite
 DB_DSN=/var/lib/goBastion/test.db
@@ -226,6 +228,19 @@ if ! echo "$out" | grep -q AUTH_OK; then
   echo "--- ssh stderr ---"; cat /tmp/ssh-valid.err || true
   echo "--- authorized_keys command test ---"; /app/goBastion --authorizedKeys testuser || true
   echo "--- sshd log ---"; tail -120 /tmp/sshd.log || true
+  exit 1
+fi
+
+echo "== Unix socket forwarding denied without a session =="
+if timeout 10 ssh $ssh_opts -o ExitOnForwardFailure=yes -i /mnt/ssh/valid \
+  -N -R /tmp/gobastion-forbidden-forward.sock:/tmp/target.sock \
+  testuser@127.0.0.1 >/tmp/ssh-streamlocal.out 2>/tmp/ssh-streamlocal.err; then
+  echo "Unix socket forwarding unexpectedly accepted" >&2
+  exit 1
+fi
+if ! grep -Eiq 'remote port forwarding failed|administratively prohibited|forwarding disabled' /tmp/ssh-streamlocal.err; then
+  echo "Unix socket forwarding failure was not a forwarding refusal" >&2
+  cat /tmp/ssh-streamlocal.err >&2
   exit 1
 fi
 
@@ -325,6 +340,25 @@ product_ssh() {
 step=product-command
 product_ssh '-osh accountInfo --user admin' > /tmp/product-info.out 2>/tmp/product-info.err
 grep -q 'Username: admin' /tmp/product-info.out
+echo "== DB request routed to root supervisor =="
+step=product-db-supervisor-route
+cat > /usr/local/sbin/gobastion-db-session <<'DB_SUPERVISOR'
+#!/bin/sh
+set -eu
+[ "$(id -u)" -eq 0 ]
+[ "${SUDO_USER:-}" = admin ]
+[ "$#" -eq 2 ] && [ "$1" = target ] && [ "$2" = --pg ]
+echo DB_SUPERVISOR_ROUTE_OK
+exit 42
+DB_SUPERVISOR
+chmod 0700 /usr/local/sbin/gobastion-db-session
+if product_ssh '--db target --pg' > /tmp/product-db-route.out 2>/tmp/product-db-route.err; then
+  echo 'DB supervisor stub unexpectedly returned success' >&2; exit 1
+else
+  status=$?
+  test "$status" -eq 42
+fi
+grep -qx DB_SUPERVISOR_ROUTE_OK /tmp/product-db-route.out
 echo "== real command error status =="
 step=product-error-status
 if product_ssh '-osh noSuchE2ECommand' > /tmp/product-invalid.out 2>/tmp/product-invalid.err; then

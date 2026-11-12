@@ -42,6 +42,7 @@ drain_sessions() {
 cleanup() {
 	status=${1:-0}
 	trap - TERM INT EXIT
+	rm -f /run/gobastion/sync.healthy
 	printf '{"version":"1.1","host":"%s","timestamp":%s,"level":6,"short_message":"shutting down","_mode":"system","_event":"shutdown"}\n' \
 		"${HOSTNAME:-goBastion}" "$(date +%s)"
 	if [ -n "$SSHD_PID" ]; then
@@ -120,6 +121,33 @@ if ! printf '%s' "$SYNC_INTERVAL" | grep -Eq '^[1-9][0-9]*$'; then
 	echo "SYNC_INTERVAL_SECONDS must be a positive integer" >&2
 	exit 2
 fi
+SYNC_RETRY="${SYNC_RETRY_SECONDS:-10}"
+if ! printf '%s' "$SYNC_RETRY" | grep -Eq '^[1-9][0-9]?$' || [ "$SYNC_RETRY" -gt 60 ]; then
+	echo "SYNC_RETRY_SECONDS must be an integer between 1 and 60" >&2
+	exit 2
+fi
+SYNC_HEALTH_FILE=/run/gobastion/sync.healthy
+SYNC_LAST_SUCCESS_FILE=/run/gobastion/sync.last_success
+rm -f "$SYNC_HEALTH_FILE"
+
+periodic_sync() {
+	sync_binary=$1
+	sync_delay=$SYNC_INTERVAL
+	while true; do
+		sleep "$sync_delay" || return 1
+		if "$sync_binary" --sync; then
+			date +%s > "$SYNC_LAST_SUCCESS_FILE" || return 1
+			: > "$SYNC_HEALTH_FILE" || return 1
+			sync_delay=$SYNC_INTERVAL
+		else
+			sync_status=$?
+			rm -f "$SYNC_HEALTH_FILE" || return 1
+			printf '{"version":"1.1","host":"%s","timestamp":%s,"level":3,"short_message":"periodic synchronization failed; retrying","_mode":"system","_event":"sync_failed","_exit_code":%s,"_retry_seconds":%s}\n' \
+				"${HOSTNAME:-goBastion}" "$(date +%s)" "$sync_status" "$SYNC_RETRY" >&2
+			sync_delay=$SYNC_RETRY
+		fi
+	done
+}
 
 # Reconcile permissions for persisted volumes and accounts created by older
 # images. Database access is still a separate control-plane hardening gap.
@@ -170,6 +198,8 @@ while true; do
       "${HOSTNAME:-goBastion}" "$(date +%s)" "${HOSTNAME:-goBastion}"
     sleep 5
 done
+date +%s > "$SYNC_LAST_SUCCESS_FILE"
+: > "$SYNC_HEALTH_FILE"
 
 # SQLite may create its main file with 0644 independently of the umask. The
 # root bootstrap has finished, so normalize it before accepting SSH sessions.
@@ -186,10 +216,9 @@ esac
 # Enforce DB as source of truth at configurable intervals.
 # Logs drift (rogue users, key changes) and corrects it automatically.
 # Override with SYNC_INTERVAL_SECONDS env var (default: 300 = 5 minutes).
-(while true; do
-    sleep "$SYNC_INTERVAL"
-    /app/goBastion --sync
-done) &
+# A failed pass marks health degraded and retries; an unexpected worker exit
+# is fatal to PID 1 so the container cannot serve indefinitely without sync.
+periodic_sync /app/goBastion &
 SYNC_PID=$!
 
 # ── sshd ─────────────────────────────────────────────────────────────────────
@@ -447,6 +476,10 @@ AWK_PID=$!
 /usr/sbin/sshd -D -e > "$SSHD_LOG_PIPE" 2>&1 &
 SSHD_PID=$!
 while kill -0 "$SSHD_PID" 2>/dev/null; do
+	if ! kill -0 "$SYNC_PID" 2>/dev/null; then
+		echo '{"event_type":"periodic_sync_worker_failed","decision":"error"}' >&2
+		cleanup 1
+	fi
   if [ -n "$OBS_PID" ] && ! kill -0 "$OBS_PID" 2>/dev/null; then
     echo '{"event_type":"observability_daemon_failed","decision":"error"}' >&2
     cleanup 1

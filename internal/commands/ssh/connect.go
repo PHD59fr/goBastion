@@ -23,7 +23,6 @@ import (
 	"goBastion/internal/utils/sshConnector"
 	"goBastion/internal/utils/system"
 	"goBastion/internal/utils/tcpProxy"
-	totpUtil "goBastion/internal/utils/totp"
 	"goBastion/internal/utils/transfer"
 	"goBastion/internal/utils/validation"
 
@@ -654,6 +653,12 @@ func CheckJITMFA(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 
 func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 	for attempt := 1; attempt <= config.Get().MFA.MaxAttempts; attempt++ {
+		reservation, reserveErr := mfa.ReserveAttempt(db, user, config.Get().MFA.MaxAttempts, time.Now())
+		if reserveErr != nil {
+			log.Warn("mfa_failure", slog.String("reason", "attempt_budget_unavailable"), slog.String("user", user.Username))
+			fmt.Fprintln(os.Stderr, "⛔ MFA unavailable or attempt limit reached. Retry later.")
+			return false
+		}
 		fmt.Printf("🔐 This group requires MFA. Enter TOTP code (or backup code) [attempt %d/%d]: ", attempt, config.Get().MFA.MaxAttempts)
 		reader := bufio.NewReader(os.Stdin)
 		code, err := reader.ReadString('\n')
@@ -663,9 +668,18 @@ func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 			return false
 		}
 		code = strings.TrimSpace(code)
-		if totpUtil.VerifyStoredSecret(user.TOTPSecret, code) {
+		if !reservation.Valid(time.Now()) {
+			log.Warn("mfa_failure", slog.String("reason", "attempt_reservation_expired"), slog.String("user", user.Username))
+			return false
+		}
+		matchedTOTP, verifyErr := mfa.VerifyAndConsumeTOTP(db, user, code)
+		if verifyErr != nil {
+			log.Warn("mfa_error", slog.String("reason", "totp_consumption_failed"), slog.String("user", user.Username))
+			return false
+		}
+		if matchedTOTP {
 			log.Info("mfa_success", slog.String("event", "mfa_totp"), slog.String("user", user.Username))
-			return true
+			return reservation.Success() == nil
 		}
 		if user.BackupCodes != "" {
 			matched, err := mfa.VerifyAndConsumeBackupCode(db, user, code)
@@ -673,7 +687,7 @@ func promptTOTP(db *gorm.DB, user *models.User, log *slog.Logger) bool {
 				log.Warn("mfa_error", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username), slog.String("error", err.Error()))
 			} else if matched {
 				log.Info("mfa_success", slog.String("event", "mfa_backup_code"), slog.String("user", user.Username))
-				return true
+				return reservation.Success() == nil
 			}
 		}
 		if attempt < config.Get().MFA.MaxAttempts {

@@ -19,17 +19,22 @@ const (
 
 var errDBActorRevoked = errors.New("database session authorization revoked")
 
-// dbActorMonitor checks the actor's continued existence and enabled state. It
-// does not refresh target grants or provide distributed admission guarantees.
+// dbActorMonitor checks actor state and, for the production supervisor, the
+// selected target grant. Polling shared DB state bounds revocation latency;
+// it does not make admission and revocation atomic.
 type dbActorMonitor struct {
-	cancel  context.CancelFunc
-	done    chan struct{}
-	revoked atomic.Bool
+	cancel             context.CancelFunc
+	done               chan struct{}
+	revoked            atomic.Bool
+	checkAuthorization func(context.Context, *gorm.DB, models.User) error
 }
 
-func startDBActorMonitor(parent context.Context, db *gorm.DB, actorID uuid.UUID, revoke context.CancelFunc) *dbActorMonitor {
+func startDBActorMonitor(parent context.Context, db *gorm.DB, actorID uuid.UUID, revoke context.CancelFunc, checks ...func(context.Context, *gorm.DB, models.User) error) *dbActorMonitor {
 	ctx, cancel := context.WithCancel(parent)
 	monitor := &dbActorMonitor{cancel: cancel, done: make(chan struct{})}
+	if len(checks) > 0 {
+		monitor.checkAuthorization = checks[0]
+	}
 	go func() {
 		defer close(monitor.done)
 		ticker := time.NewTicker(dbActorPollInterval)
@@ -68,6 +73,9 @@ func (m *dbActorMonitor) run(ctx context.Context, db *gorm.DB, actorID uuid.UUID
 			queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
 			var fresh models.User
 			err := db.WithContext(queryCtx).First(&fresh, "id = ?", actorID).Error
+			if err == nil && fresh.Enabled && !fresh.SystemUser && m.checkAuthorization != nil {
+				err = m.checkAuthorization(queryCtx, db, fresh)
+			}
 			if err == nil {
 				err = queryCtx.Err()
 			}
