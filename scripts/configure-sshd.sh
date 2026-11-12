@@ -49,6 +49,8 @@ LogLevel VERBOSE
 SyslogFacility AUTH
 AllowAgentForwarding no
 AllowTcpForwarding no
+AllowStreamLocalForwarding no
+DisableForwarding yes
 PubkeyAuthentication yes
 AuthorizedKeysFile none
 AuthorizedKeysCommand /app/goBastion --authorizedKeys %u
@@ -63,7 +65,7 @@ awk '
     sub(/^[[:space:]]*/, "", line)
     split(line, fields, /[[:space:]=]+/)
     name = tolower(fields[1])
-    if (name ~ /^(permitrootlogin|passwordauthentication|loglevel|syslogfacility|allowagentforwarding|allowtcpforwarding|pubkeyauthentication|authorizedkeysfile|authorizedkeyscommand|authorizedkeyscommanduser|banner|forcecommand|subsystem)$/) next
+    if (name ~ /^(permitrootlogin|passwordauthentication|loglevel|syslogfacility|allowagentforwarding|allowtcpforwarding|allowstreamlocalforwarding|disableforwarding|pubkeyauthentication|authorizedkeysfile|authorizedkeyscommand|authorizedkeyscommanduser|banner|forcecommand|subsystem)$/) next
     print
   }
 ' "$config" >> "$temporary"

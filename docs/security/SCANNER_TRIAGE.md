@@ -54,6 +54,7 @@ exclusion. Fixture values must never protect a deployment.
 | AES fixture beginning `PvHlWvN638` and ending `8DMo=` | Deterministic encryption/rotation and subprocess tests in explicitly listed files. |
 | `0123456789abcdef0123456789abcdef` | Logical export/import test input. |
 | `fedcba9876543210fedcba9876543210` | Incorrect export-key test input. |
+| RFC 6238 TOTP seed decoding to `12345678901234567890` | Re-enrollment test in `internal/mfa/profile_test.go` only. |
 | `--API_KEY=secret` | Exact audit-argument literal in `internal/session/audit_logging_test.go`. |
 
 [.gitleaksignore](../../.gitleaksignore) contains one historical fingerprint for

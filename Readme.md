@@ -288,6 +288,8 @@ goBastion supports multiple second-factor authentication methods that stack: pas
 
 Once TOTP is enabled, the bastion prompts for a 6-digit code at interactive and one-shot command logins. Opaque SFTP and TCP proxy streams cannot carry an MFA prompt: these modes refuse connections when account password MFA, account TOTP, or global `require_mfa` is enabled. They also refuse accesses requiring group JIT MFA.
 
+Each accepted TOTP time step is consumed in the shared database, so that step cannot authenticate again for the account. Password and TOTP prompts share a per-account attempt budget over 60 seconds; successful verification refunds its reservation. A database error denies the challenge.
+
 Global mandatory MFA permits only the explicit command `-osh selfSetupTOTP` for an unenrolled account, after checking the independent password factor if configured. After enrollment, reconnect normally. Account status, role and OSH restrictions are reloaded after authentication; changes to authentication factors require a fresh connection.
 
 #### Backup Codes
@@ -553,7 +555,7 @@ opens only after upstream certificate verification and authentication succeed.
 
 Each client runs in a separate NsJail filesystem, PID, IPC, user and network namespace. The root filesystem is read-only; the temporary home and `/tmp` are private writable mounts. Procfs is absent, and the client has no Linux capabilities. Clients cannot see the bastion database, SSH keys, bootstrap secrets, sudo helpers, control sockets or other sessions. A shell opened by a DB client remains confined. A private broker can open at most 128 connections per session, all to the IP/port pinned when the session starts; reconnecting to another host is not allowed. Original hostnames and numeric IPv4/IPv6 addresses are retained for TLS validation.
 
-Recordings stay outside the sandbox. The supervisor checks account disable/removal/system status every second, with a one-second query deadline. Query errors/timeouts cancel the connector and return failure even if it suppresses cancellation; duration expiry also stops the sandbox. Target grant changes are not refreshed by this actor monitor, and database drivers must honor context cancellation. `session.idle_timeout` also applies to DB sessions, with or without recording: terminal input/output and DB traffic reset the inactivity timer. An idle timeout stops the sandbox and preserves the recording collected so far. The root supervisor handles the DB session registry. No existing access or credential migration is required.
+Recordings stay outside the sandbox. The supervisor checks account authorization and the selected target grant every second, with a one-second query deadline. Query errors/timeouts cancel the connector and return failure even if it suppresses cancellation; duration expiry also stops the sandbox. Database drivers must honor context cancellation. `session.idle_timeout` also applies to DB sessions, with or without recording: terminal input/output and DB traffic reset the inactivity timer. An idle timeout stops the sandbox and preserves the recording collected so far. The root supervisor handles the DB session registry. Existing installations require the additive schema migration before upgraded sessions start.
 
 If compression or publication fails, a nonempty DB recording is retained in its
 private `0700` spool directory. The `db_recording_retained` error event reports
@@ -1010,8 +1012,8 @@ The following commands require admin or superowner by default, but can be grante
 | `groupDelGuestAccess`    | ✅    | ✅        | ✅         |        |       |
 | `groupAddGuestDBAccess`  | ✅    | ✅        | ✅         |        |       |
 | `groupDelGuestDBAccess`  | ✅    | ✅        | ✅         |        |       |
-| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅ (own only) |
-| `groupListGuestDBAccesses` | ✅  | ✅        | ✅         | ✅     | ✅ (own only) |
+| `groupListGuestAccesses` | ✅    | ✅        | ✅         | ✅     | ✅¹ |
+| `groupListGuestDBAccesses` | ✅  | ✅        | ✅         | ✅     | ✅¹ |
 | `groupAddMember`         | ✅    | ✅        |            |        |       |
 | `groupDelMember`         | ✅    | ✅        |            |        |       |
 | `groupGenerateEgressKey` | ✅    |           |            |        |       |
@@ -1019,13 +1021,15 @@ The following commands require admin or superowner by default, but can be grante
 | `groupDelAlias`          | ✅    | ✅        | ✅         |        |       |
 | `groupAddDBAlias`        | ✅    | ✅        | ✅         |        |       |
 | `groupDelDBAlias`        | ✅    | ✅        | ✅         |        |       |
-| `groupInfo`              | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
-| `groupList`              | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
-| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
-| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
-| `groupListDBAccesses`    | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
-| `groupListDBAliases`     | ✅    | ✅        | ✅         | ✅     | ✅ (`security.group_visibility.mode`) |
-| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     | ✅ (`security.egress_key_visibility.mode`) |
+| `groupInfo`              | ✅    | ✅        | ✅         | ✅     | ✅² |
+| `groupList`              | ✅    | ✅        | ✅         | ✅     | ✅² |
+| `groupListAccesses`      | ✅    | ✅        | ✅         | ✅     | ✅² |
+| `groupListAliases`       | ✅    | ✅        | ✅         | ✅     | ✅² |
+| `groupListDBAccesses`    | ✅    | ✅        | ✅         | ✅     | ✅² |
+| `groupListDBAliases`     | ✅    | ✅        | ✅         | ✅     | ✅² |
+| `groupListEgressKeys`    | ✅    | ✅        | ✅         | ✅     | ✅³ |
+
+¹ Own grants only. ² Subject to `security.group_visibility.mode`. ³ Subject to `security.egress_key_visibility.mode`.
 
 ### 👤 **Self Permissions**
 
@@ -1287,6 +1291,7 @@ In **goBastion**, the configuration is stored in the database (table `bastion_in
 | `DB_DSN` | Database connection string |
 | `INSTANCE_ID` | Instance identifier (defaults to hostname, then `"master"`) |
 | `SYNC_INTERVAL_SECONDS` | Delay in seconds between two automatic `--sync` runs (default: `300`) |
+| `SYNC_RETRY_SECONDS` | Delay before retrying a failed automatic `--sync` (default: `10`; valid range: `1`–`60`) |
 | `DRAIN_TIMEOUT_SECONDS` | Seconds to wait for active managed user sessions to exit during shutdown after stopping new SSH admissions (default: `30`) |
 
 Everything else (account policies, feature toggles, session limits...) is managed via the `bastionConfig` interactive command or stored directly in the `bastion_instances` table as a JSON blob.

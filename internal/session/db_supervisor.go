@@ -100,7 +100,7 @@ func RunDBSupervisor(db *gorm.DB, log *slog.Logger, args []string) int {
 	// The controller is root, so UID-based sync termination alone cannot revoke it.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	defer cancel()
-	monitor := startDBActorMonitor(ctx, db, u.ID, cancel)
+	monitor := startDBActorMonitor(ctx, db, u.ID, cancel, dbSessionAuthorizationCheck(u, args[0], args[1:], access))
 	defer monitor.stop()
 	log = log.With("session_id", id, "user", u.Username, "target", access.Host, "access_source", access.Source)
 	log.Info("db_session_start")

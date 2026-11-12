@@ -151,3 +151,41 @@ func TestUpdateTOTPPreservesAuthenticatedStoredSecret(t *testing.T) {
 		t.Fatal("invalid ciphertext changed persisted secret")
 	}
 }
+
+func TestTOTPReplayStateSurvivesSameSeedAndResetsOnReenrollment(t *testing.T) {
+	db, user := newBackupCodeTestUser(t)
+	user.TOTPSecret = encryptedTOTP(t, "JBSWY3DPEHPK3PXP")
+	user.TOTPEnabled = true
+	user.TOTPLastStep = 12345
+	if err := db.Save(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	// A different ciphertext for the same seed must preserve consumption state.
+	user.TOTPSecret = encryptedTOTP(t, "JBSWY3DPEHPK3PXP")
+	if err := UpdateTOTP(db, user).Error; err != nil {
+		t.Fatal(err)
+	}
+	var fresh models.User
+	if err := db.First(&fresh, "id = ?", user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fresh.TOTPLastStep != 12345 {
+		t.Fatal("same seed reset replay state")
+	}
+	user.TOTPEnabled = false
+	user.TOTPSecret = ""
+	if err := UpdateTOTP(db, user).Error; err != nil {
+		t.Fatal(err)
+	}
+	user.TOTPEnabled = true
+	user.TOTPSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	if err := UpdateTOTP(db, user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&fresh, "id = ?", user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fresh.TOTPLastStep != 0 || !fresh.TOTPEnabled {
+		t.Fatal("new seed retained old replay state")
+	}
+}

@@ -8,6 +8,19 @@ if [ "$#" -gt 1 ] || [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
   exit 2
 fi
 
+# Database requests already have a root supervisor that authenticates SUDO_USER,
+# applies policy and MFA, and starts only fixed clients in NsJail. Dispatch them
+# before giving an unprivileged session process the control-plane bootstrap.
+# Disable pathname expansion: the supervisor, not the shell, validates argv.
+case "$original_command" in
+  --db|-db|--db\ *|-db\ *)
+    set -f
+    set -- $original_command
+    shift
+    exec /usr/local/sbin/gobastion-db-session "$@"
+    ;;
+esac
+
 # G1: pass bootstrap secrets to goBastion via an inherited, unlinked fd rather
 # than the process's initial environment, so secrets do not appear in
 # /proc/<pid>/environ. The child reads fd 3 once during bootstrap.

@@ -20,6 +20,8 @@ PermitRootLogin yes
 PasswordAuthentication yes
 AllowAgentForwarding yes
 AllowTcpForwarding yes
+AllowStreamLocalForwarding yes
+DisableForwarding no
 PubkeyAuthentication no
 Subsystem sftp /bin/sh
 ClientAliveInterval 25
@@ -32,11 +34,12 @@ for expected in \
   'AuthorizedKeysCommandUser root' \
   'ForceCommand /usr/bin/sudo -n /usr/local/sbin/gobastion-session "$SSH_ORIGINAL_COMMAND"' \
   'PermitRootLogin no' 'PasswordAuthentication no' \
-  'AllowAgentForwarding no' 'AllowTcpForwarding no' 'PubkeyAuthentication yes' \
+  'AllowAgentForwarding no' 'AllowTcpForwarding no' \
+  'AllowStreamLocalForwarding no' 'DisableForwarding yes' 'PubkeyAuthentication yes' \
   'ClientAliveInterval 25'; do
   grep -Fqx "$expected" "$config"
 done
-if grep -Eq '^([^#]*old|[[:space:]]*Subsystem[[:space:]])' "$config"; then
+if grep -Eq '^([^#]*old|[[:space:]]*Subsystem[[:space:]]|[[:space:]]*AllowStreamLocalForwarding[[:space:]]+yes|[[:space:]]*DisableForwarding[[:space:]]+no)' "$config"; then
   echo "conflicting active SSH directive survived" >&2
   exit 1
 fi
