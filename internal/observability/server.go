@@ -10,8 +10,10 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"gorm.io/gorm"
@@ -189,8 +191,26 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	var output bytes.Buffer
 	writeMetrics(&output, snapshot, pending, time.Now())
+	healthy := localSyncHealthy("/run/gobastion/sync.healthy", 0)
+	if s.cfg.SyncHealthy != nil {
+		healthy = s.cfg.SyncHealthy()
+	}
+	if healthy {
+		metric(&output, "gobastion_local_sync_healthy", "gauge", "One when the root-owned local reconciliation marker exists; zero otherwise. This does not prove SSH admission or cluster convergence.", 1)
+	} else {
+		metric(&output, "gobastion_local_sync_healthy", "gauge", "One when the root-owned local reconciliation marker exists; zero otherwise. This does not prove SSH admission or cluster convergence.", 0)
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write(output.Bytes())
+}
+
+func localSyncHealthy(path string, expectedUID uint32) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == expectedUID
 }
 
 func metric(w *bytes.Buffer, name, kind, help string, value any) {
@@ -201,7 +221,7 @@ func metric(w *bytes.Buffer, name, kind, help string, value any) {
 func writeMetrics(w *bytes.Buffer, snapshot Snapshot, pending *PendingStats, now time.Time) {
 	metric(w, "gobastion_sessions_active", "gauge", "Registered sessions for this instance; stale registry rows can remain until cleanup.", snapshot.ActiveSessions)
 	descriptions := []string{
-		"Sessions started by this instance.", "Access decisions denied by this instance.", "Authentication failures observed by this instance.", "MFA failures observed by this instance.", "Synchronization failures observed by this instance.", "Database connection errors observed by this instance.", "Recording archival failures observed by this instance.", "Realm authentication failures observed by this instance.",
+		"Sessions started by this instance.", "Access decisions denied by this instance.", "Authentication failures observed by this instance.", "MFA failures observed by this instance.", "Synchronization failures observed by this instance.", "Database connection errors observed by this instance.", "Recording archival failures observed by this instance.", "Realm authentication failures observed by this instance.", "Local actor revocations detected by this instance; termination is not confirmed.", "Local revocation registry cleanup deadlines exceeded by this instance.", "Recording integrity failures observed by this instance.",
 	}
 	for index, name := range counterNames {
 		metric(w, name, "counter", descriptions[index], snapshot.Counters[name])

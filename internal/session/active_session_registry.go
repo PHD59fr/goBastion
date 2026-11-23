@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
@@ -16,9 +18,20 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	activeSessionAdmissionTimeout = 3 * time.Second
+	activeSessionCleanupTimeout   = 2 * time.Second
+)
+
+var errSessionLimitReached = errors.New("maximum concurrent sessions reached")
+
 func registerActiveSession(db *gorm.DB, currentUser *models.User, sessionID, kind string) (func(), error) {
+	if db == nil || currentUser == nil {
+		return nil, errors.New("session registration requires database and actor")
+	}
 	instanceID := config.InstanceID()
 	limit := config.Get().Session.MaxConcurrentSessions
+	actor := snapshotActorAuthState(currentUser)
 	identity, err := processIdentity(os.Getpid())
 	if err != nil {
 		return nil, fmt.Errorf("identify active session process: %w", err)
@@ -32,9 +45,26 @@ func registerActiveSession(db *gorm.DB, currentUser *models.User, sessionID, kin
 		Kind:            kind,
 	}
 
-	if err := db.Transaction(func(tx *gorm.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), activeSessionAdmissionTimeout)
+	defer cancel()
+	if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := ctx.Err(); err != nil {
+			return errors.New("session admission timed out")
+		}
+		// MFA and policy checks precede registration. Refuse an actor changed
+		// since those checks before touching the registry or admitting a session.
+		var fresh models.User
+		if err := tx.First(&fresh, "id = ?", currentUser.ID).Error; err != nil {
+			return errors.New("session actor unavailable")
+		}
+		if fresh.Username != currentUser.Username || actor.revokedAgainst(fresh) {
+			return errors.New("session actor authorization changed")
+		}
+		if err := ctx.Err(); err != nil {
+			return errors.New("session admission timed out")
+		}
 		if err := cleanupStaleActiveSessions(tx, instanceID); err != nil {
-			return err
+			return errors.New("session registry unavailable")
 		}
 
 		if limit > 0 {
@@ -42,21 +72,49 @@ func registerActiveSession(db *gorm.DB, currentUser *models.User, sessionID, kin
 			if err := tx.Model(&models.ActiveSession{}).
 				Where("instance_id = ?", instanceID).
 				Count(&activeCount).Error; err != nil {
-				return err
+				return errors.New("session registry unavailable")
 			}
 			if activeCount >= int64(limit) {
-				return fmt.Errorf("maximum concurrent sessions reached on instance %s", instanceID)
+				return fmt.Errorf("%w on instance %s", errSessionLimitReached, instanceID)
 			}
 		}
-
-		return tx.Create(&record).Error
+		if err := ctx.Err(); err != nil {
+			return errors.New("session admission timed out")
+		}
+		if err := tx.Create(&record).Error; err != nil {
+			return errors.New("session registry unavailable")
+		}
+		if err := ctx.Err(); err != nil {
+			return errors.New("session admission timed out")
+		}
+		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelSerializable}); err != nil {
-		return nil, err
+		if errors.Is(err, errSessionLimitReached) {
+			return nil, err
+		}
+		return nil, errors.New("session registration denied")
 	}
 
 	return func() {
-		_ = db.Where("session_id = ?", sessionID).Delete(&models.ActiveSession{}).Error
+		releaseActiveSession(db, sessionID, activeSessionCleanupTimeout)
 	}, nil
+}
+
+// releaseActiveSession must not hold a finished session open while waiting for
+// the database. A failed cleanup leaves the row for local stale-process cleanup.
+func releaseActiveSession(db *gorm.DB, sessionID string, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&models.ActiveSession{}).Error
+	}()
+	// Keep teardown bounded even if a driver or callback ignores cancellation.
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func cleanupStaleActiveSessions(db *gorm.DB, instanceID string) error {

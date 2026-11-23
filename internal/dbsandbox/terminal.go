@@ -123,9 +123,13 @@ func runClient(cmd *exec.Cmd, master *os.File, touch func()) error {
 }
 
 func copyTerminalOutput(master *os.File, out io.Writer, done <-chan struct{}) error {
+	pollFD, err := terminalPollFD(master.Fd())
+	if err != nil {
+		return err
+	}
 	buffer := make([]byte, 32*1024)
 	for {
-		fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
+		fds := []unix.PollFd{{Fd: pollFD, Events: unix.POLLIN}}
 		if _, err := unix.Poll(fds, 100); err != nil {
 			if errors.Is(err, unix.EINTR) {
 				continue
@@ -153,4 +157,11 @@ func copyTerminalOutput(master *os.File, out io.Writer, done <-chan struct{}) er
 			return err
 		}
 	}
+}
+
+func terminalPollFD(fd uintptr) (int32, error) {
+	if fd > uintptr((1<<31)-1) {
+		return 0, fmt.Errorf("client terminal descriptor exceeds poll range")
+	}
+	return int32(fd), nil
 }

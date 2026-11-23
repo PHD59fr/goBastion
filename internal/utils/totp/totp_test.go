@@ -31,6 +31,16 @@ func TestOtpAuthURL_EncodesLabelAndQueryValues(t *testing.T) {
 	}
 }
 
+func TestGenerateCodeRejectsPreEpochTime(t *testing.T) {
+	const secret = "JBSWY3DPEHPK3PXP"
+	if _, err := GenerateCode(secret, time.Unix(-1, 0)); err == nil {
+		t.Fatal("negative Unix time wrapped into a future TOTP counter")
+	}
+	if _, err := GenerateCode(secret, time.Unix(0, 0)); err != nil {
+		t.Fatalf("Unix epoch should be a valid TOTP counter: %v", err)
+	}
+}
+
 func TestGenerateBackupCodes_CountAndLength(t *testing.T) {
 	cfg := config.Get().TOTP
 	codes, jsonStr, err := GenerateBackupCodes()

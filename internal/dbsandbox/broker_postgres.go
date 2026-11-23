@@ -144,15 +144,19 @@ func (b *broker) postgres(native net.Conn) error {
 }
 
 func (b *broker) postgresCancel(ctx context.Context, pid uint32, secret []byte) error {
+	request, err := postgresCancelRequest(pid, secret)
+	if err != nil {
+		return err
+	}
 	remote, err := b.dial(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = remote.Close() }()
 	_ = remote.SetDeadline(time.Now().Add(5 * time.Second))
-	request := binary.BigEndian.AppendUint32(nil, 8)
-	request = binary.BigEndian.AppendUint32(request, 80877103)
-	if _, err := remote.Write(request); err != nil {
+	sslRequest := binary.BigEndian.AppendUint32(nil, 8)
+	sslRequest = binary.BigEndian.AppendUint32(sslRequest, 80877103)
+	if _, err := remote.Write(sslRequest); err != nil {
 		return err
 	}
 	var response [1]byte
@@ -166,10 +170,6 @@ func (b *broker) postgresCancel(ctx context.Context, pid uint32, secret []byte) 
 	if err := secure.HandshakeContext(ctx); err != nil {
 		return err
 	}
-	request = binary.BigEndian.AppendUint32(nil, uint32(12+len(secret)))
-	request = binary.BigEndian.AppendUint32(request, 80877102)
-	request = binary.BigEndian.AppendUint32(request, pid)
-	request = append(request, secret...)
 	if _, err := secure.Write(request); err != nil {
 		return err
 	}
@@ -178,6 +178,19 @@ func (b *broker) postgresCancel(ctx context.Context, pid uint32, secret []byte) 
 		return nil
 	}
 	return err
+}
+
+// The client library accepts variable-length cancellation keys. Keep a bounded
+// request before converting its complete length to the wire field.
+func postgresCancelRequest(pid uint32, secret []byte) ([]byte, error) {
+	const maxSecretBytes = 4096
+	if len(secret) < 4 || len(secret) > maxSecretBytes {
+		return nil, fmt.Errorf("invalid PostgreSQL cancellation key length")
+	}
+	request := binary.BigEndian.AppendUint32(nil, uint32(12+len(secret)))
+	request = binary.BigEndian.AppendUint32(request, 80877102)
+	request = binary.BigEndian.AppendUint32(request, pid)
+	return append(request, secret...), nil
 }
 
 func postgresError(conn net.Conn, message string) error {

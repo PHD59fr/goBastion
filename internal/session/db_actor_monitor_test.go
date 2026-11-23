@@ -37,12 +37,15 @@ func actorMonitorFixture(t *testing.T) (*gorm.DB, *sql.DB, models.User) {
 	return db, pool, actor
 }
 
-func testDBActorMonitor(t *testing.T, parent context.Context, db *gorm.DB, actor models.User, queryTimeout time.Duration) (*dbActorMonitor, chan<- time.Time, context.Context) {
+func testDBActorMonitor(t *testing.T, parent context.Context, db *gorm.DB, actor models.User, queryTimeout time.Duration, checks ...func(context.Context, *gorm.DB, models.User) error) (*dbActorMonitor, chan<- time.Time, context.Context) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(parent)
 	sessionCtx, revoke := context.WithCancel(parent)
 	t.Cleanup(revoke)
 	monitor := &dbActorMonitor{cancel: cancel, done: make(chan struct{})}
+	if len(checks) > 0 {
+		monitor.checkAuthorization = checks[0]
+	}
 	ticks := make(chan time.Time, 1)
 	go func() {
 		defer close(monitor.done)

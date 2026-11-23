@@ -215,7 +215,7 @@ func (s *Syncer) CreateSystemUsersFromSystemToDb() error {
 		return nil
 	}
 
-	output, err := s.os.ExecCommand("getent", "passwd")
+	output, err := s.os.ExecCommand("/usr/bin/getent", "passwd")
 	if err != nil {
 		return fmt.Errorf("error listing users: %w, output: %s", err, output)
 	}
@@ -418,7 +418,7 @@ func (s *Syncer) KnownHostsEntriesFromSystemToDb(user *models.User) error {
 	sshDir := filepath.Join(config.Get().Paths.HomeBaseDir, user.Username, ".ssh")
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
 
-	file, err := os.Open(knownHostsPath)
+	file, err := os.OpenFile(knownHostsPath, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s.db.Where("user_id = ?", user.ID).Delete(&models.KnownHostsEntry{}).Error
@@ -426,6 +426,10 @@ func (s *Syncer) KnownHostsEntriesFromSystemToDb(user *models.User) error {
 		return fmt.Errorf("failed to open known_hosts: %w", err)
 	}
 	defer func(f *os.File) { _ = f.Close() }(file)
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("invalid known_hosts file")
+	}
 
 	existingEntries := make(map[string]bool)
 	scanner := bufio.NewScanner(file)
@@ -654,7 +658,7 @@ func (s *Syncer) EnforceFromDB() (resultErr error) {
 }
 
 func (s *Syncer) userHasProcesses(username string) (bool, error) {
-	out, err := s.os.ExecCommand("pgrep", "-u", username)
+	out, err := s.os.ExecCommand("/usr/bin/pgrep", "-u", username)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {

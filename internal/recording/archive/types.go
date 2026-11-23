@@ -20,6 +20,7 @@ import (
 
 const (
 	Version          = 1
+	StreamingVersion = 2
 	DefaultChunkSize = 64 << 10
 	MaxChunkSize     = 1 << 20
 	MaxSegments      = 1 << 20
@@ -59,6 +60,9 @@ type Provenance struct {
 type Options struct {
 	ChunkSize   int
 	Compression string
+	// Streaming selects version 2, which permits short intermediate frames.
+	// The default version 1 only permits a short final frame.
+	Streaming bool
 }
 
 // CaptureOutcome is a signed assertion by the finalizing service, not proof of
@@ -129,6 +133,7 @@ func (m Manifest) CanonicalJSON() []byte  { return bytes.Clone(m.canonical) }
 func (m Manifest) Signature() []byte      { return bytes.Clone(m.signature) }
 func (m Manifest) Provenance() Provenance { return m.data.Context.Provenance }
 func (m Manifest) ArchiveID() string      { return m.data.Context.ArchiveID }
+func (m Manifest) Version() int            { return m.data.Context.Version }
 func (m Manifest) SignerKeyID() string    { return m.data.Context.SignerKeyID }
 func (m Manifest) RecipientKeyIDs() []string {
 	return append([]string(nil), m.data.Context.RecipientIDs...)
@@ -193,7 +198,7 @@ func validTime(t time.Time) bool {
 }
 
 func validateContext(c contextData) error {
-	if c.Version != Version || c.Cipher != "AES-256-GCM" || c.KeyWrap != "RSA-OAEP-SHA256" || c.Signature != "Ed25519" || c.ContentType != "ttyrec" || c.Compression != "none" && c.Compression != "gzip" || c.ChunkSize < 1 || c.ChunkSize > MaxChunkSize || !validHex(c.ArchiveID, 16) || !validFingerprint(c.SignerKeyID, "ed25519-sha256:") {
+	if c.Version != Version && c.Version != StreamingVersion || c.Cipher != "AES-256-GCM" || c.KeyWrap != "RSA-OAEP-SHA256" || c.Signature != "Ed25519" || c.ContentType != "ttyrec" || c.Compression != "none" && c.Compression != "gzip" || c.ChunkSize < 1 || c.ChunkSize > MaxChunkSize || !validHex(c.ArchiveID, 16) || !validFingerprint(c.SignerKeyID, "ed25519-sha256:") {
 		return ErrInvalidArchive
 	}
 	if len(c.RecipientIDs) < 1 || len(c.RecipientIDs) > MaxRecipients {
@@ -268,8 +273,14 @@ func validateManifest(m manifestData) error {
 		if m.PlaintextBytes != 0 || m.CiphertextBytes != 0 {
 			return ErrInvalidArchive
 		}
-	} else if m.PlaintextBytes <= (m.Segments-1)*uint64(m.Context.ChunkSize) || m.PlaintextBytes > m.Segments*uint64(m.Context.ChunkSize) {
-		return ErrInvalidArchive
+	} else {
+		minimum := (m.Segments-1)*uint64(m.Context.ChunkSize) + 1
+		if m.Context.Version == StreamingVersion {
+			minimum = m.Segments // Every streaming frame contains at least one byte.
+		}
+		if m.PlaintextBytes < minimum || m.PlaintextBytes > m.Segments*uint64(m.Context.ChunkSize) {
+			return ErrInvalidArchive
+		}
 	}
 	if m.CiphertextBytes != m.PlaintextBytes+m.Segments*(frameHeaderBytes+gcmOverhead) {
 		return ErrInvalidArchive

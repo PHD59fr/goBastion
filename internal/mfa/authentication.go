@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	internaldb "goBastion/internal/db"
 	"goBastion/internal/models"
 	"goBastion/internal/utils/cryptokey"
 	"goBastion/internal/utils/totp"
@@ -26,9 +27,10 @@ func ReserveAttempt(db *gorm.DB, user *models.User, maximum int, now time.Time) 
 	if db == nil || user == nil || maximum <= 0 {
 		return nil, errors.New("MFA attempt reservation requires database, account and positive limit")
 	}
+	accountAllowed := fmt.Sprintf("id = ? AND %s AND %s", internaldb.BoolTrueExpr(db, "enabled"), internaldb.BoolFalseExpr(db, "system_user"))
 	for range 16 {
 		var fresh models.User
-		if err := db.Select("id", "mfa_window_start", "mfa_window_attempts").Where("id = ? AND enabled = ? AND system_user = ?", user.ID, true, false).First(&fresh).Error; err != nil {
+		if err := db.Select("id", "mfa_window_start", "mfa_window_attempts").Where(accountAllowed, user.ID).First(&fresh).Error; err != nil {
 			return nil, fmt.Errorf("MFA attempt reservation: %w", err)
 		}
 		start, attempts := fresh.MFAWindowStart, fresh.MFAWindowAttempts
@@ -39,7 +41,7 @@ func ReserveAttempt(db *gorm.DB, user *models.User, maximum int, now time.Time) 
 			return nil, ErrAttemptLimit
 		}
 		result := db.Model(&models.User{}).
-			Where("id = ? AND enabled = ? AND system_user = ? AND mfa_window_start = ? AND mfa_window_attempts = ?", user.ID, true, false, fresh.MFAWindowStart, fresh.MFAWindowAttempts).
+			Where(accountAllowed+" AND mfa_window_start = ? AND mfa_window_attempts = ?", user.ID, fresh.MFAWindowStart, fresh.MFAWindowAttempts).
 			Updates(map[string]any{"mfa_window_start": start, "mfa_window_attempts": attempts + 1})
 		if result.Error != nil {
 			return nil, fmt.Errorf("MFA attempt reservation: %w", result.Error)
@@ -109,8 +111,14 @@ func verifyAndConsumeTOTPAt(db *gorm.DB, user *models.User, code string, now tim
 	if !matched {
 		return false, nil
 	}
+	totpEnabled := internaldb.BoolFalseExpr(db, "totp_enabled")
+	if user.TOTPEnabled {
+		totpEnabled = internaldb.BoolTrueExpr(db, "totp_enabled")
+	}
+	profileMatches := fmt.Sprintf("id = ? AND %s AND %s AND %s AND totp_secret = ? AND totp_last_step < ?",
+		internaldb.BoolTrueExpr(db, "enabled"), internaldb.BoolFalseExpr(db, "system_user"), totpEnabled)
 	result := db.Model(&models.User{}).
-		Where("id = ? AND enabled = ? AND system_user = ? AND totp_enabled = ? AND totp_secret = ? AND totp_last_step < ?", user.ID, true, false, user.TOTPEnabled, user.TOTPSecret, step).
+		Where(profileMatches, user.ID, user.TOTPSecret, step).
 		Update("totp_last_step", step)
 	if result.Error != nil {
 		return false, fmt.Errorf("TOTP consumption: %w", result.Error)

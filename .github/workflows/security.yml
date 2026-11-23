@@ -4,7 +4,7 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: "30 4 * * 1"
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
 # Scans run on untrusted pull requests without repository write permissions,
@@ -24,6 +24,34 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
+  fuzz:
+    name: Bounded parser fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Fuzz command parser and archive verifier
+        env:
+          GOMAXPROCS: "2"
+        run: |
+          go test -p 1 ./internal/utils/commandline -run '^$' -fuzz '^FuzzScan$' -fuzztime=30s -parallel=1
+          go test -p 1 ./internal/recording/archive -run '^$' -fuzz '^FuzzVerifyArchive$' -fuzztime=30s -parallel=1
+      - name: Preserve failing fuzz inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-fuzz-failures
+          path: |
+            internal/utils/commandline/testdata/fuzz/
+            internal/recording/archive/testdata/fuzz/
+          if-no-files-found: warn
+
   source:
     name: Source / ${{ matrix.scanner }}
     runs-on: ubuntu-latest
@@ -48,7 +76,7 @@ jobs:
         run: |
           case "$SCANNER" in
             govulncheck) go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 ;;
-            gosec) go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0 ;;
+            gosec) go install -ldflags='-X main.Version=2.30.0' github.com/securego/gosec/v2/cmd/gosec@v2.30.0 ;;
             gitleaks) go install github.com/zricethezav/gitleaks/v8@v8.30.1 ;;
             *) exit 2 ;;
           esac
@@ -65,10 +93,14 @@ jobs:
               govulncheck -show verbose ./... 2>&1 | tee "$REPORT_DIR/govulncheck.txt"
               ;;
             gosec)
-              # Report-only: reviewed findings are tracked in the inventory and
-              # regressions are gated by the baseline comparison below.
-              gosec -nosec=true -fmt=sarif -out="$REPORT_DIR/gosec.sarif" ./... || true
-              python3 scripts/gosec-baseline.py "$REPORT_DIR/gosec.sarif"
+              python3 -m unittest discover -s scripts/tests -p 'test_gosec_baseline.py'
+              # SARIF omits Go loading errors. Preserve native JSON from this
+              # same invocation and distinguish reviewed findings from failure.
+              scan_status=0
+              gosec -nosec=true -fmt=sarif -out="$REPORT_DIR/gosec.sarif" \
+                -stdout -verbose=json ./... > "$REPORT_DIR/gosec.json" || scan_status=$?
+              python3 scripts/gosec-baseline.py "$REPORT_DIR/gosec.sarif" \
+                --scan-report "$REPORT_DIR/gosec.json" --scanner-exit-code "$scan_status"
               ;;
             gitleaks)
               gitleaks git --log-opts="--all" --redact=100 --ignore-gitleaks-allow \
@@ -173,6 +205,19 @@ jobs:
         env:
           IMAGE_TARGET: ${{ matrix.target }}
         run: docker build --target "$IMAGE_TARGET" --tag "gobastion-security:$IMAGE_TARGET" .
+      - name: Check runtime audit and account retirement
+        env:
+          IMAGE_TARGET: ${{ matrix.target }}
+        run: |
+          container_id=$(docker create --network none \
+            --tmpfs /run:size=16m,mode=0755 --tmpfs /tmp:size=64m,mode=1777 \
+            --tmpfs /var/lib/goBastion:size=32m,mode=0755 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/scripts/test-security-runtime.sh,target=/test-security-runtime.sh,readonly" \
+            --entrypoint /bin/sh "gobastion-security:$IMAGE_TARGET" -c \
+            'chown root:gobastion /var/lib/goBastion && chmod 2770 /var/lib/goBastion && exec /bin/sh /test-security-runtime.sh')
+          trap 'docker rm -fv "$container_id" >/dev/null 2>&1 || true' EXIT
+          docker start -a "$container_id"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" -eq 0
       - name: Generate image SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:

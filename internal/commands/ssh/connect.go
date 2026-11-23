@@ -40,6 +40,30 @@ const (
 	scoreSelfExact     = 4
 )
 
+type reportedError struct{ err error }
+
+func (e reportedError) Error() string { return e.err.Error() }
+func (e reportedError) Unwrap() error { return e.err }
+
+// Reported marks an error whose user-facing message was already written.
+func Reported(err error) error {
+	if err == nil {
+		return nil
+	}
+	return reportedError{err: err}
+}
+
+// IsReported reports whether err was already presented to the user.
+func IsReported(err error) bool {
+	var target reportedError
+	return errors.As(err, &target)
+}
+
+func isHostKeyVerificationError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "host key verification failed") || strings.Contains(msg, "remote host identification has changed")
+}
+
 // accessCandidate holds a candidate access entry and its selection score.
 type accessCandidate struct {
 	selfAccess  *models.SelfAccess
@@ -219,12 +243,14 @@ func connectWithKeys(db *gorm.DB, user models.User, log *slog.Logger, accesses [
 			err := run(db, user, access)
 			if err != nil {
 				log.Error("ssh_close", slog.String("to", access.Source), slog.String("error", err.Error()))
-				_, _ = fmt.Fprintf(out, "SSH connection to %s failed: %v\n", access.Source, err)
+				_, _ = fmt.Fprintf(out, "%s Connection to %s failed: %v\n", utils.FgRedB("✖"), access.Source, err)
 				lastConnErr = err
 				// A remote command may have run before SSH returned an error,
 				// including exit status 255. Never execute it with another key.
-				if remoteCmd != "" {
-					return err
+				// Host key verification failures are host-specific, not key-specific;
+				// retrying other egress keys would only repeat the same error.
+				if remoteCmd != "" || isHostKeyVerificationError(err) {
+					return Reported(err)
 				}
 				continue
 			}
@@ -232,7 +258,7 @@ func connectWithKeys(db *gorm.DB, user models.User, log *slog.Logger, accesses [
 			return nil
 		}
 		if lastConnErr != nil {
-			return lastConnErr
+			return Reported(lastConnErr)
 		}
 	}
 

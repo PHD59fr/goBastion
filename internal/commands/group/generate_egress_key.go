@@ -66,13 +66,13 @@ func GenerateEgressKey(db *gorm.DB, currentUser *models.User, args []string) err
 		})
 		return fmt.Errorf("invalid key type: %s", keyType)
 	}
-	if keyType == "rsa" && keySize < 2048 {
+	if err := sshkey.ValidateGenerationSize(keyType, keySize); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
 			BlockType: "error",
-			Sections:  []console.SectionContent{{SubTitle: "Weak Key Size", Body: []string{"RSA key size must be at least 2048 bits."}}},
+			Sections:  []console.SectionContent{{SubTitle: "Invalid Key Size", Body: []string{"RSA: 2048–8192 bits; ECDSA: 256, 384 or 521 bits; Ed25519: 256 bits."}}},
 		})
-		return fmt.Errorf("RSA key size must be at least 2048 bits")
+		return err
 	}
 
 	var group models.Group

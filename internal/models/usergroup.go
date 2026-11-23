@@ -23,10 +23,14 @@ const (
 )
 
 type User struct {
-	ID                uuid.UUID `gorm:"type:uuid;primaryKey"`
-	Username          string    `gorm:"not null;index:idx_username_deletedat"`
-	Role              string    `gorm:"not null"` // "admin" or "user"
-	Enabled           bool      `gorm:"type:boolean;default:true"`
+	ID       uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Username string    `gorm:"not null;index:idx_username_deletedat"`
+	Role     string    `gorm:"not null"` // "admin" or "user"
+	Enabled  bool      `gorm:"type:boolean;default:true"`
+	// RevocationEpoch advances on explicit account lockout. It is never reset
+	// when the account is enabled again, so a live session cannot miss a short
+	// disable/re-enable interval between authorization polls.
+	RevocationEpoch   int64     `gorm:"not null;default:0"`
 	OSHOnly           bool      `gorm:"type:boolean;default:false"` // when true, account may execute only -osh commands
 	SuperOwner        bool      `gorm:"type:boolean;default:false"` // implicit owner privileges on all groups
 	SystemUser        bool      `gorm:"type:boolean;default:false"`

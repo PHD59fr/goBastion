@@ -472,3 +472,145 @@ func TestArchiveCaptureOutcomeIsSignedAndInvalidFinalizationIsSticky(t *testing.
 		}
 	}
 }
+
+func TestArchiveStreamingV2RoundTripAndV1Compatibility(t *testing.T) {
+	keys, signers := archiveKeys(t)
+	plain := fixturePayload()
+	trusted := []ed25519.PublicKey{signerPublic(signers[0])}
+
+	write := func(versioned bool, flushes []int) ([]byte, Manifest) {
+		t.Helper()
+		var dst bytes.Buffer
+		w, err := NewWriter(&dst, fixtureProvenance(), []*rsa.PublicKey{&keys[0].PublicKey}, signers[0], Options{ChunkSize: 32, Compression: "gzip", Streaming: versioned})
+		if err != nil {
+			t.Fatal(err)
+		}
+		off := 0
+		for _, n := range flushes {
+			if n > 0 {
+				if _, err := w.Write(plain[off : off+n]); err != nil {
+					t.Fatal(err)
+				}
+				off += n
+			}
+			if err := w.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if off < len(plain) {
+			if _, err := w.Write(plain[off:]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		m, err := w.Manifest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dst.Bytes(), m
+	}
+
+	v2, mv2 := write(true, []int{1, 7, 0, 13})
+	if mv2.Version() != StreamingVersion {
+		t.Fatalf("version = %d, want %d", mv2.Version(), StreamingVersion)
+	}
+	if mv2.Segments() < 4 {
+		t.Fatalf("expected short intermediate frames, got %d segments", mv2.Segments())
+	}
+	var decoded bytes.Buffer
+	if _, err := Decrypt(bytes.NewReader(v2), int64(len(v2)), &decoded, trusted, []*rsa.PrivateKey{keys[0]}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded.Bytes(), plain) {
+		t.Fatal("v2 round trip changed plaintext")
+	}
+	if _, err := Verify(bytes.NewReader(v2), trusted); err != nil {
+		t.Fatal(err)
+	}
+
+	v1, mv1 := write(false, nil)
+	if mv1.Version() != Version {
+		t.Fatalf("v1 version = %d", mv1.Version())
+	}
+	decoded.Reset()
+	if _, err := Decrypt(bytes.NewReader(v1), int64(len(v1)), &decoded, trusted, []*rsa.PrivateKey{keys[0]}); err != nil || !bytes.Equal(decoded.Bytes(), plain) {
+		t.Fatal("v1 round trip failed")
+	}
+
+	var dst bytes.Buffer
+	w, err := NewWriter(&dst, fixtureProvenance(), []*rsa.PublicKey{&keys[0].PublicKey}, signers[0], Options{ChunkSize: 32, Compression: "gzip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(plain[:7]); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), dst.Bytes()...)
+	if err := w.Flush(); !errors.Is(err, ErrInvalidArchive) {
+		t.Fatalf("v1 partial Flush = %v, want ErrInvalidArchive", err)
+	}
+	if !bytes.Equal(dst.Bytes(), before) {
+		t.Fatal("v1 partial Flush mutated stream")
+	}
+	if _, err := w.Write(plain[7:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	decoded.Reset()
+	if _, err := Decrypt(bytes.NewReader(dst.Bytes()), int64(dst.Len()), &decoded, trusted, []*rsa.PrivateKey{keys[0]}); err != nil || !bytes.Equal(decoded.Bytes(), plain) {
+		t.Fatal("v1 writer broken after rejected Flush")
+	}
+}
+
+func TestArchiveStreamingV2RejectsTamperingAndTruncation(t *testing.T) {
+	keys, signers := archiveKeys(t)
+	plain := fixturePayload()
+	trusted := []ed25519.PublicKey{signerPublic(signers[0])}
+	var dst bytes.Buffer
+	w, err := NewWriter(&dst, fixtureProvenance(), []*rsa.PublicKey{&keys[0].PublicKey}, signers[0], Options{ChunkSize: 32, Compression: "gzip", Streaming: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{5, 11, 3, len(plain) - 19} {
+		if _, err := w.Write(plain[:n]); err != nil {
+			t.Fatal(err)
+		}
+		plain = plain[n:]
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(plain) > 0 {
+		if _, err := w.Write(plain); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := dst.Bytes()
+	header, frames, trailer := archiveParts(t, data)
+	if len(frames) < 3 {
+		t.Fatal("fixture did not produce multiple v2 frames")
+	}
+	mutated := joinArchive(header, frames, trailer)
+	mutated[len(header)+frameHeaderBytes] ^= 1
+	var out bytes.Buffer
+	if _, err := Decrypt(bytes.NewReader(mutated), int64(len(mutated)), &out, trusted, []*rsa.PrivateKey{keys[0]}); err == nil || out.Len() != 0 {
+		t.Fatal("tampered v2 frame accepted or leaked plaintext")
+	}
+	reordered := joinArchive(header, [][]byte{frames[0], frames[2], frames[1]}, trailer)
+	out.Reset()
+	if _, err := Decrypt(bytes.NewReader(reordered), int64(len(reordered)), &out, trusted, []*rsa.PrivateKey{keys[0]}); err == nil || out.Len() != 0 {
+		t.Fatal("reordered v2 frames accepted")
+	}
+	truncated := joinArchive(header, frames[:len(frames)-1], trailer)
+	out.Reset()
+	if _, err := Decrypt(bytes.NewReader(truncated), int64(len(truncated)), &out, trusted, []*rsa.PrivateKey{keys[0]}); err == nil || out.Len() != 0 {
+		t.Fatal("truncated v2 stream accepted")
+	}
+}

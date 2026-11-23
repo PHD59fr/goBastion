@@ -91,7 +91,7 @@ func displayWelcome(currentUser models.User, mode welcomeMode) {
 		if currentUser.LastLoginFrom != "" {
 			msg += " from " + currentUser.LastLoginFrom
 		}
-		fmt.Println(msg)
+		fmt.Println(utils.FgCyan(msg))
 	}
 }
 

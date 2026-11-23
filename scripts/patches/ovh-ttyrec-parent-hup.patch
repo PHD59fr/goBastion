@@ -1,0 +1,82 @@
+diff --git a/ttyrec.c b/ttyrec.c
+--- a/ttyrec.c
++++ b/ttyrec.c
+@@ -802,6 +802,19 @@
+         }
+     }
+ 
++    // Publish both child PIDs before allowing shutdown or child-exit handlers.
++    sigset_t startup_signals;
++    sigset_t previous_signals;
++    sigemptyset(&startup_signals);
++    sigaddset(&startup_signals, SIGHUP);
++    sigaddset(&startup_signals, SIGTERM);
++    sigaddset(&startup_signals, SIGCHLD);
++    if (sigprocmask(SIG_BLOCK, &startup_signals, &previous_signals) == -1)
++    {
++        perror("sigprocmask");
++        fail();
++    }
++
+     child = fork();
+     if (child < 0)
+     {
+@@ -823,6 +836,11 @@
+         {
+             // we are still the child (parent of subchild)
+             me = "child";
++            if (sigprocmask(SIG_SETMASK, &previous_signals, NULL) == -1)
++            {
++                perror("sigprocmask");
++                fail();
++            }
+             dooutput();
+         }
+         else
+@@ -831,6 +849,11 @@
+             printdbg("subchild pid is %ld\r\n", (long int)getpid());
+             print_termios_info(0, "subchild stdin");
+             me = "subchild";
++            if (sigprocmask(SIG_SETMASK, &previous_signals, NULL) == -1)
++            {
++                perror("sigprocmask");
++                fail();
++            }
+             doshell(command, params);
+         }
+     }
+@@ -838,6 +861,11 @@
+     {
+         // we are the parent
+         me = "parent";
++        if (sigprocmask(SIG_SETMASK, &previous_signals, NULL) == -1)
++        {
++            perror("sigprocmask");
++            fail();
++        }
+         printdbg("parent pid is %ld\r\n", (long int)getpid());
+         sigwinch_handler_parent(SIGWINCH);
+         if (timeout_lock || timeout_kill)
+@@ -1630,6 +1658,10 @@
+         kill(subchild, SIGTERM);
+         (void)puts("\r\nttyrec: ending your session, sorry (kill timeout expired, you manually typed the kill key sequence, or we got a SIGTERM).\r");
+     }
++    else if (child > 0)
++    {
++        kill(child, SIGTERM);
++    }
+     done(EXIT_SUCCESS);
+ }
+ 
+@@ -1640,6 +1672,11 @@
+     if (subchild > 0)
+     {
+         kill(subchild, SIGTERM);
++    }
++    else if (child > 0)
++    {
++        // The caller may signal only the outer parent, including on parent death.
++        kill(child, SIGHUP);
+     }
+     done(EXIT_SUCCESS);
+ }

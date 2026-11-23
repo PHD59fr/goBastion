@@ -18,20 +18,23 @@ import (
 )
 
 const (
-	SessionsTotal                  = "gobastion_sessions_total"
-	AccessDeniedTotal              = "gobastion_access_denied_total"
-	AuthFailuresTotal              = "gobastion_auth_failures_total"
-	MFAFailuresTotal               = "gobastion_mfa_failures_total"
-	SyncFailuresTotal              = "gobastion_sync_failures_total"
-	DBConnectionErrorsTotal        = "gobastion_db_connection_errors_total"
-	RecordingArchivalFailuresTotal = "gobastion_recording_archival_failures_total"
-	RealmAuthFailuresTotal         = "gobastion_realm_auth_failures_total"
-	syncCount                      = "gobastion_sync_duration_seconds_count"
-	syncNanoseconds                = "gobastion_sync_duration_nanoseconds_sum"
-	recordTimeout                  = 2 * time.Second
+	SessionsTotal                         = "gobastion_sessions_total"
+	AccessDeniedTotal                     = "gobastion_access_denied_total"
+	AuthFailuresTotal                     = "gobastion_auth_failures_total"
+	MFAFailuresTotal                      = "gobastion_mfa_failures_total"
+	SyncFailuresTotal                     = "gobastion_sync_failures_total"
+	DBConnectionErrorsTotal               = "gobastion_db_connection_errors_total"
+	RecordingArchivalFailuresTotal        = "gobastion_recording_archival_failures_total"
+	RealmAuthFailuresTotal                = "gobastion_realm_auth_failures_total"
+	SessionRevocationsTotal               = "gobastion_session_revocations_total"
+	SessionRevocationCleanupTimeoutsTotal = "gobastion_session_revocation_cleanup_timeouts_total"
+	RecordingIntegrityFailuresTotal       = "gobastion_recording_integrity_failures_total"
+	syncCount                             = "gobastion_sync_duration_seconds_count"
+	syncNanoseconds                       = "gobastion_sync_duration_nanoseconds_sum"
+	recordTimeout                         = 2 * time.Second
 )
 
-var counterNames = []string{SessionsTotal, AccessDeniedTotal, AuthFailuresTotal, MFAFailuresTotal, SyncFailuresTotal, DBConnectionErrorsTotal, RecordingArchivalFailuresTotal, RealmAuthFailuresTotal}
+var counterNames = []string{SessionsTotal, AccessDeniedTotal, AuthFailuresTotal, MFAFailuresTotal, SyncFailuresTotal, DBConnectionErrorsTotal, RecordingArchivalFailuresTotal, RealmAuthFailuresTotal, SessionRevocationsTotal, SessionRevocationCleanupTimeoutsTotal, RecordingIntegrityFailuresTotal}
 var (
 	ErrInvalidObservation = errors.New("invalid observation metric or delta")
 	ErrObservationWrite   = errors.New("observation persistence failed")

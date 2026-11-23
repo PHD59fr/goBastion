@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"math"
 	"strings"
 
 	"goBastion/internal/models"
@@ -86,7 +87,19 @@ func Expire(db *gorm.DB, currentUser *models.User, args []string) error {
 		if err := requireOtherAdmin(tx, &fresh); err != nil {
 			return err
 		}
-		return tx.Model(&fresh).Update("enabled", false).Error
+		// The epoch persists across a later re-enable. A session polling from
+		// another node still observes the intervening revocation.
+		result := tx.Model(&fresh).Where("enabled = ? AND revocation_epoch < ?", true, math.MaxInt64).Updates(map[string]any{
+			"enabled":          false,
+			"revocation_epoch": gorm.Expr("revocation_epoch + 1"),
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("account changed while being disabled")
+		}
+		return nil
 	}); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title: "Account Expire", BlockType: "error",

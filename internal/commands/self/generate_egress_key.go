@@ -61,15 +61,15 @@ func GenerateEgressKey(db *gorm.DB, user *models.User, args []string) error {
 		})
 		return fmt.Errorf("invalid key type %q", keyType)
 	}
-	if keyType == "rsa" && keySize < 2048 {
+	if err := sshkey.ValidateGenerationSize(keyType, keySize); err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Generate Egress Key",
 			BlockType: "error",
 			Sections: []console.SectionContent{
-				{SubTitle: "Weak Key Size", Body: []string{"RSA key size must be at least 2048 bits."}},
+				{SubTitle: "Invalid Key Size", Body: []string{"RSA: 2048–8192 bits; ECDSA: 256, 384 or 521 bits; Ed25519: 256 bits."}},
 			},
 		})
-		return fmt.Errorf("RSA key size must be at least 2048 bits")
+		return err
 	}
 	tmpDir := filepath.Join(config.Get().Paths.HomeBaseDir, user.Username, ".tmp")
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {

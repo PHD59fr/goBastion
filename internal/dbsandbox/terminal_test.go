@@ -18,6 +18,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestTerminalPollFDBounds(t *testing.T) {
+	for _, fd := range []uintptr{0, (1 << 31) - 1} {
+		got, err := terminalPollFD(fd)
+		if err != nil || uintptr(got) != fd {
+			t.Fatalf("descriptor %d: got %d, error %v", fd, got, err)
+		}
+	}
+	for _, fd := range []uintptr{1 << 31, ^uintptr(0)} {
+		if _, err := terminalPollFD(fd); err == nil {
+			t.Fatalf("out-of-range descriptor %d accepted", fd)
+		}
+	}
+}
+
 // Pipes cannot detect job-control stops. Give the supervisor its own controlling
 // terminal, then launch ttyrec with the same attributes used by ConnectContext.
 func TestRecordingWithControllingTerminal(t *testing.T) {

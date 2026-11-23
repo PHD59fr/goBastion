@@ -44,6 +44,16 @@ import (
 var connectDB = dbConnector.Connect
 var captureCommandOutput = captureOutput
 
+func reportSessionRegistrationError(log *slog.Logger, username, kind string, err error) {
+	if errors.Is(err, errSessionLimitReached) {
+		log.Warn("session_limit_reached", slog.String("user", username), slog.String("kind", kind))
+		fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+		return
+	}
+	log.Warn("session_registration_denied", slog.String("user", username), slog.String("kind", kind), slog.String("reason", err.Error()))
+	fmt.Fprintln(os.Stderr, "⛔ Session denied: authorization or session registry unavailable.")
+}
+
 // Run is the main entry point after DB init: it looks up the current user,
 // runs the pre-connection checks, then dispatches to interactive or non-interactive mode.
 func Run(db *gorm.DB, log *slog.Logger) int {
@@ -108,8 +118,7 @@ func Run(db *gorm.DB, log *slog.Logger) int {
 		}
 		releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
 		if err != nil {
-			log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
-			fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+			reportSessionRegistrationError(log, currentUser.Username, "interactive_shell", err)
 			return 1
 		}
 		stopRevocation := startSessionActorMonitor(context.Background(), db, currentUser.ID, sessionID, currentUser, log)
@@ -150,8 +159,7 @@ func Run(db *gorm.DB, log *slog.Logger) int {
 			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, "interactive_shell")
 			if err != nil {
-				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("error", err.Error()))
-				fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+				reportSessionRegistrationError(log, currentUser.Username, "interactive_shell", err)
 				return 1
 			}
 			stopRevocation := startSessionActorMonitor(context.Background(), db, currentUser.ID, sessionID, currentUser, log)
@@ -197,8 +205,7 @@ func Run(db *gorm.DB, log *slog.Logger) int {
 			}
 			releaseSession, err := registerActiveSession(db, &currentUser, sessionID, sessionKind)
 			if err != nil {
-				log.Warn("session_limit_reached", slog.String("user", currentUser.Username), slog.String("kind", sessionKind), slog.String("error", err.Error()))
-				fmt.Println("⛔ Session denied: maximum concurrent sessions reached on this instance.")
+				reportSessionRegistrationError(log, currentUser.Username, sessionKind, err)
 				return 1
 			}
 			stopRevocation := startSessionActorMonitor(context.Background(), db, currentUser.ID, sessionID, currentUser, log)
@@ -371,10 +378,12 @@ func runNonInteractiveMode(db *gorm.DB, currentUser *models.User, log *slog.Logg
 		return nil
 	} else {
 		if err := cmdssh.Connect(db, *currentUser, *log, command); err != nil {
-			if cmdssh.IsOpaqueTransfer(command) {
-				fmt.Fprintln(os.Stderr, err)
-			} else {
-				fmt.Println(err)
+			if !cmdssh.IsReported(err) {
+				if cmdssh.IsOpaqueTransfer(command) {
+					fmt.Fprintln(os.Stderr, err)
+				} else {
+					fmt.Fprintln(os.Stderr, err)
+				}
 			}
 			return err
 		}

@@ -4,11 +4,64 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCreatedLogFileIsNotGroupReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.log")
+	file, err := openLogFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0057 != 0 {
+		t.Fatalf("created log mode exposes group read/execute or other access: %04o", info.Mode().Perm())
+	}
+}
+
+func TestOpenLogFileRejectsFinalSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := openLogFile(link); err == nil {
+		_ = file.Close()
+		t.Fatal("audit log symlink was accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("symlink target changed: %q, %v", data, err)
+	}
+}
+
+type shortAuditWriter struct{}
+
+func (shortAuditWriter) Write(p []byte) (int, error) { return len(p) / 2, nil }
+
+func TestHandlersReportShortAuditWrites(t *testing.T) {
+	for _, handler := range []slog.Handler{newJSONHandler(shortAuditWriter{}), newPlainTextHandler(shortAuditWriter{})} {
+		record := slog.NewRecord(time.Now(), slog.LevelWarn, "audit_event", 0)
+		if err := handler.Handle(context.Background(), record); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("short audit write was accepted: %T, %v", handler, err)
+		}
+	}
+}
 
 // newTestJSONHandler returns a jsonHandler writing to a buffer for testing.
 func newTestJSONHandler(buf *bytes.Buffer) *jsonHandler {
@@ -265,6 +318,28 @@ func TestPlainTextHandlerSanitizesControls(t *testing.T) {
 type testSyslogWriter struct {
 	severity string
 	message  string
+}
+
+func TestSessionLoggerPreservesSyslogAndUsesJSONTransport(t *testing.T) {
+	t.Setenv("LOG_FORMAT", "plain")
+	var audit bytes.Buffer
+	sys := &testSyslogWriter{}
+	log := newSessionLogger(&audit, sys).With("user", "alice")
+	log.Warn("session_denied", "reason", "policy")
+	local := decodeJSON(t, audit.String())
+	remote := decodeJSON(t, sys.message)
+	if sys.severity != "warning" || remote["msg"] != "session_denied" || remote["_user"] != "alice" {
+		t.Fatalf("missing session syslog: %v", remote)
+	}
+	if local["event_id"] != remote["event_id"] {
+		t.Fatal("destinations received different events")
+	}
+	audit.Reset()
+	sys.message = ""
+	log.Debug("db_connect")
+	if audit.Len() != 0 || sys.message != "" {
+		t.Fatal("debug bootstrap log reached durable outputs")
+	}
 }
 
 func (w *testSyslogWriter) Err(message string) error {

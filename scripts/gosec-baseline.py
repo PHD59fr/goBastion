@@ -63,6 +63,20 @@ def read_report(path: Path) -> tuple[Counter[tuple[str, str, str]], dict[tuple[s
         driver = tool.get("driver", {}) if isinstance(tool, dict) else {}
         if not isinstance(driver, dict) or driver.get("name") != "gosec":
             raise ReportError("report is not from Gosec")
+        if "invocations" in run:
+            invocations = run["invocations"]
+            if not isinstance(invocations, list) or not invocations:
+                raise ReportError("report has invalid execution metadata")
+            for invocation in invocations:
+                if not isinstance(invocation, dict) or invocation.get("executionSuccessful") is not True:
+                    raise ReportError("report records an unsuccessful scan")
+                for name in ("toolExecutionNotifications", "toolConfigurationNotifications"):
+                    notifications = invocation.get(name, [])
+                    if not isinstance(notifications, list) or any(
+                        not isinstance(item, dict) or item.get("level") == "error"
+                        for item in notifications
+                    ):
+                        raise ReportError("report records scanner errors")
         results = run.get("results")
         if not isinstance(results, list):
             raise ReportError("report is missing its results")
@@ -86,6 +100,42 @@ def read_report(path: Path) -> tuple[Counter[tuple[str, str, str]], dict[tuple[s
             if isinstance(line, int) and line > 0:
                 first_line.setdefault(key, line)
     return findings, first_line
+
+
+def validate_scan(path: Path, exit_code: int, finding_count: int) -> None:
+    """SARIF omits Go loading errors; require the same scan's native JSON too."""
+    if exit_code not in (0, 1):
+        raise ReportError("scanner exited unexpectedly")
+    try:
+        with path.open("rb") as report:
+            raw = report.read(MAX_REPORT_BYTES + 1)
+    except OSError:
+        raise ReportError("native scan report is missing or unreadable") from None
+    if len(raw) > MAX_REPORT_BYTES:
+        raise ReportError("native scan report exceeds the 32 MiB comparison limit")
+    try:
+        document = json.loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        raise ReportError("native scan report is not valid JSON") from None
+    if not isinstance(document, dict) or document.get("GosecVersion") != "2.30.0":
+        raise ReportError("native scan report is not from Gosec 2.30.0")
+    if document.get("Golang errors") != {}:
+        raise ReportError("native scan report has Go loading errors or missing error metadata")
+    stats = document.get("Stats")
+    issues = document.get("Issues")
+    if not isinstance(stats, dict) or not isinstance(issues, list):
+        raise ReportError("native scan report is missing scan statistics or issues")
+    if any(type(stats.get(name)) is not int or stats[name] <= 0 for name in ("files", "lines")):
+        raise ReportError("native scan report contains no scanned source")
+    if type(stats.get("found")) is not int or stats["found"] != len(issues) or len(issues) != finding_count:
+        raise ReportError("native and SARIF finding counts disagree")
+    if any(not isinstance(issue, dict) for issue in issues):
+        raise ReportError("native scan report contains invalid issues")
+    # With -nosec=true and no severity filtering, status 1 means findings or
+    # loading errors. Loading errors were rejected above; zero findings must
+    # therefore have status 0. Never turn an unexplained failure into success.
+    if exit_code != int(finding_count > 0):
+        raise ReportError("scanner exit status disagrees with scan findings")
 
 
 def read_inventory(path: Path) -> Counter[tuple[str, str, str]]:
@@ -117,9 +167,11 @@ def read_inventory(path: Path) -> Counter[tuple[str, str, str]]:
     return findings
 
 
-def summarize(report: Path, inventory: Path, max_rows: int) -> tuple[str, int]:
+def summarize(report: Path, inventory: Path, max_rows: int,
+              scan_report: Path, scanner_exit_code: int) -> tuple[str, int]:
     try:
         current, first_line = read_report(report)
+        validate_scan(scan_report, scanner_exit_code, sum(current.values()))
         baseline = read_inventory(inventory)
     except (ReportError, InventoryError) as exc:
         return (
@@ -135,7 +187,7 @@ def summarize(report: Path, inventory: Path, max_rows: int) -> tuple[str, int]:
         "",
         f"{sum(current.values())} Gosec findings; {sum(baseline.values())} in the inventory; "
         f"{sum(new.values())} new; {sum(missing.values())} not reproduced.",
-        "The scanner step is report-only; this comparison fails only on findings absent from the inventory.",
+        "Reviewed findings are report-only; scanner errors and findings absent from the inventory fail this check.",
     ]
     if missing:
         lines.extend([
@@ -164,6 +216,9 @@ def summarize(report: Path, inventory: Path, max_rows: int) -> tuple[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
+    parser.add_argument("--scan-report", type=Path, required=True,
+                        help="Native JSON emitted by the same Gosec invocation as the SARIF report")
+    parser.add_argument("--scanner-exit-code", type=int, required=True)
     parser.add_argument(
         "--inventory",
         type=Path,
@@ -174,7 +229,8 @@ def main() -> int:
     if not 1 <= args.max_rows <= 500:
         parser.error("--max-rows must be between 1 and 500")
 
-    summary, status = summarize(args.report, args.inventory, args.max_rows)
+    summary, status = summarize(args.report, args.inventory, args.max_rows,
+                                args.scan_report, args.scanner_exit_code)
     print(summary, end="")
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:

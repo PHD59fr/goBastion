@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS users (
     username        text NOT NULL,
     role            text NOT NULL,
     enabled         boolean NOT NULL DEFAULT true,
+    revocation_epoch bigint NOT NULL DEFAULT 0,
     system_user     boolean NOT NULL DEFAULT false,
     osh_only        boolean NOT NULL DEFAULT false,
     super_owner     boolean NOT NULL DEFAULT false,

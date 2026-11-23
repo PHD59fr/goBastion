@@ -16,6 +16,31 @@ import (
 	"goBastion/internal/utils/totp"
 )
 
+func TestAttemptValidOnlyInsideReservationWindow(t *testing.T) {
+	start := time.Unix(1800000000, 0)
+	attempt := &Attempt{start: start.Unix()}
+	for _, check := range []struct {
+		at   time.Time
+		want bool
+	}{
+		{start.Add(-time.Second), false},
+		{start, true},
+		{start.Add(AttemptWindow - time.Second), true},
+		{start.Add(AttemptWindow), false},
+	} {
+		if got := attempt.Valid(check.at); got != check.want {
+			t.Fatalf("Valid(%s) = %v, want %v", check.at, got, check.want)
+		}
+	}
+	attempt.completed = true
+	if attempt.Valid(start) {
+		t.Fatal("completed reservation remained valid")
+	}
+	if (*Attempt)(nil).Valid(start) {
+		t.Fatal("nil reservation was valid")
+	}
+}
+
 func TestTOTPConsumedOnceAcrossConnections(t *testing.T) {
 	db, user := newBackupCodeTestUser(t)
 	const secret = "JBSWY3DPEHPK3PXP"

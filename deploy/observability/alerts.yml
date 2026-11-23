@@ -11,6 +11,15 @@ groups:
           summary: goBastion metrics endpoint is not scrapeable
           description: Check process state, loopback network namespace, bearer credential file, and exporter readiness. This does not measure SSH session establishment availability.
 
+      - alert: GoBastionLocalSyncUnhealthy
+        expr: gobastion_local_sync_healthy == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: goBastion local reconciliation marker is absent or invalid
+          description: Inspect the root sync worker and local healthcheck. This marker does not establish SSH admission or cluster convergence.
+
       - alert: GoBastionRegisteredSessionsPresent
         expr: gobastion_sessions_active > 0
         for: 10m
@@ -64,6 +73,33 @@ groups:
         annotations:
           summary: goBastion recording archival failures were observed
           description: Check archive storage and recovery logs. Review recording retention and access controls before remediation.
+
+      - alert: GoBastionRecordingIntegrityFailuresObserved
+        expr: increase(gobastion_recording_integrity_failures_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: goBastion observed a recording integrity failure
+          description: Inspect the corresponding local audit event and isolate the affected recording before recovery. This counter does not prove integrity of all recordings.
+
+      - alert: GoBastionRevocationCleanupTimeoutObserved
+        expr: increase(gobastion_session_revocation_cleanup_timeouts_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: goBastion could not confirm timely local registry cleanup
+          description: Inspect the local session and database state. A revocation event does not confirm transport termination across nodes.
+
+      - alert: GoBastionLocalRevocationObserved
+        expr: increase(gobastion_session_revocations_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: goBastion detected a local actor revocation
+          description: Correlate the audit event with the affected session. This counter is a detection signal, not a distributed termination acknowledgment.
 
       - alert: GoBastionPendingRecordingAgeHigh
         expr: gobastion_recording_oldest_pending_age_seconds > 3600

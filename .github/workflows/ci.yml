@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   IMAGE_NAME: phd59fr/gobastion
 
@@ -21,14 +25,14 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
       # Build the linter with the Go version selected above so its toolchain
       # always matches the module's target version.
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@db9de0fc1a667e1a49d2291a1a042dff081d78f6 # v9
         with:
           version: v2.15.0
           install-mode: goinstall
@@ -38,8 +42,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -47,7 +51,7 @@ jobs:
         run: go test -race -coverprofile=coverage.out -count=1 ./...
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage
           path: coverage.out
@@ -59,8 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -73,57 +77,167 @@ jobs:
     name: Docker
     runs-on: ubuntu-latest
     needs: build
+    outputs:
+      default_digest: ${{ steps.build-default.outputs.digest }}
+      full_digest: ${{ steps.build-full.outputs.digest }}
     # Build on every PR to master; build + push on master commits and weekly schedule.
     if: |
       github.ref == 'refs/heads/master' ||
       github.event_name == 'pull_request' ||
       github.event_name == 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Extract metadata (default image)
-        id: meta-default
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=sha,format=short
-
-      - name: Extract metadata (full image)
-        id: meta-full
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=full
-            type=sha,format=short,prefix=full-
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
         if: github.ref == 'refs/heads/master' || github.event_name == 'schedule'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push default image
-        uses: docker/build-push-action@v6
+        id: build-default
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           target: final
           push: ${{ github.ref == 'refs/heads/master' || github.event_name == 'schedule' }}
-          tags: ${{ steps.meta-default.outputs.tags }}
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Build and push full image
-        uses: docker/build-push-action@v6
+        id: build-full
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           target: final-full
           push: ${{ github.ref == 'refs/heads/master' || github.event_name == 'schedule' }}
-          tags: ${{ steps.meta-full.outputs.tags }}
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.IMAGE_NAME }}:full-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  sign:
+    name: Scan and sign published image digests
+    runs-on: ubuntu-latest
+    needs: [docker, security-gate]
+    if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Set up Buildx for digest promotion
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Scan exact default candidate digest
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: docker.io/${{ env.IMAGE_NAME }}@${{ needs.docker.outputs.default_digest }}
+          grype-version: v0.121.2
+          fail-build: true
+          severity-cutoff: medium
+          only-fixed: false
+          output-format: sarif
+          output-file: ${{ runner.temp }}/candidate-default.sarif
+      - name: Scan exact full candidate digest
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: docker.io/${{ env.IMAGE_NAME }}@${{ needs.docker.outputs.full_digest }}
+          grype-version: v0.121.2
+          fail-build: true
+          severity-cutoff: medium
+          only-fixed: false
+          output-format: sarif
+          output-file: ${{ runner.temp }}/candidate-full.sarif
+      - name: Preserve candidate scan reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate-scans
+          path: ${{ runner.temp }}/candidate-*.sarif
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Sign and verify exact digests
+        env:
+          IMAGE: docker.io/${{ env.IMAGE_NAME }}
+          DEFAULT_DIGEST: ${{ needs.docker.outputs.default_digest }}
+          FULL_DIGEST: ${{ needs.docker.outputs.full_digest }}
+          CERT_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}
+        run: |
+          for digest in "$DEFAULT_DIGEST" "$FULL_DIGEST"; do
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo 'Missing or invalid image digest' >&2
+              exit 1
+            fi
+            cosign sign --yes "${IMAGE}@${digest}"
+            cosign verify "${IMAGE}@${digest}" \
+              --certificate-identity "$CERT_IDENTITY" \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+          done
+      - name: Publish signed tags for the current master commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: docker.io/${{ env.IMAGE_NAME }}
+          DEFAULT_DIGEST: ${{ needs.docker.outputs.default_digest }}
+          FULL_DIGEST: ${{ needs.docker.outputs.full_digest }}
+        run: |
+          current_master=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')
+          if [ "$current_master" != "$GITHUB_SHA" ]; then
+            echo 'Master advanced; leaving signed candidates without changing release tags' >&2
+            exit 0
+          fi
+          short_sha=${GITHUB_SHA:0:7}
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${IMAGE}:latest" --tag "${IMAGE}:sha-${short_sha}" \
+            "${IMAGE}@${DEFAULT_DIGEST}"
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${IMAGE}:full" --tag "${IMAGE}:full-${short_sha}" \
+            "${IMAGE}@${FULL_DIGEST}"
+
+  security-gate:
+    name: Require security scans for release source
+    runs-on: ubuntu-latest
+    needs: docker
+    if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+    timeout-minutes: 65
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for the matching Security workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          for attempt in {1..120}; do
+            runs=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/security.yml/runs" \
+              -f "head_sha=${GITHUB_SHA}" -f "event=${GITHUB_EVENT_NAME}" -f per_page=100)
+            state=$(jq -r --arg sha "$GITHUB_SHA" --arg event "$GITHUB_EVENT_NAME" --arg today "$today" '
+              [.workflow_runs[] | select(.head_sha == $sha) |
+                select($event != "schedule" or (.created_at | startswith($today)))] |
+              sort_by(.run_number) | last |
+              if . == null then "pending" else "\(.status):\(.conclusion)" end
+            ' <<< "$runs")
+            case "$state" in
+              completed:success) exit 0 ;;
+              completed:*) echo "Security workflow finished without success: $state" >&2; exit 1 ;;
+            esac
+            echo "Waiting for Security workflow on ${GITHUB_SHA}: $state ($attempt/120)"
+            sleep 30
+          done
+          echo 'Security workflow did not finish successfully before the release gate deadline' >&2
+          exit 1

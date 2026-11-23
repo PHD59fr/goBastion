@@ -1,11 +1,9 @@
 package dbConnector
 
 import (
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -20,6 +18,7 @@ import (
 	"goBastion/internal/dbsandbox"
 	"goBastion/internal/models"
 	"goBastion/internal/recording"
+	"goBastion/internal/recording/archive"
 	"goBastion/internal/telemetry"
 	"goBastion/internal/utils"
 	"goBastion/internal/utils/cryptokey"
@@ -37,7 +36,6 @@ const (
 	scoreDBSelfWildcard  = 2
 	scoreDBGroupExact    = 3
 	scoreDBSelfExact     = 4
-	ttyrecPollInterval   = 100 * time.Millisecond
 )
 
 type dbCandidate struct {
@@ -88,6 +86,14 @@ func Connect(db *gorm.DB, user models.User, access models.DBAccessRight) error {
 	return ConnectContext(context.Background(), db, user, access)
 }
 func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access models.DBAccessRight) (resultErr error) {
+	policy, err := recording.LoadLivePolicy()
+	if err != nil {
+		return err
+	}
+	defer policy.Close()
+	if policy != nil && !config.Get().TTYRec.Enabled {
+		return errors.New("encrypted recording policy requires recording to be enabled")
+	}
 	protocol := access.Protocol
 	if protocol == "postgres" {
 		protocol = "postgresql"
@@ -193,7 +199,11 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeDBUser, safeHost, access.Port, timestamp, filenameSuffix)
 	recordingName := filepath.Base(ttyrecFile) + ".gz"
+	if policy != nil {
+		recordingName = filepath.Base(ttyrecFile) + ".gobrec"
+	}
 	published := false
+	retainSpool := false
 	var lock *os.File
 	defer func() {
 		defer func() {
@@ -201,6 +211,10 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 				_ = lock.Close()
 			}
 		}()
+		if retainSpool {
+			slog.Error("db_recording_retained", "spool", dbSpool.Path, "user", user.Username, "target", access.Host)
+			return
+		}
 		if !published {
 			if st, err := os.Stat(ttyrecFile); err == nil && st.Size() > 0 {
 				// The root-owned 0700 spool stays outside the jail and the
@@ -215,7 +229,7 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 		}
 	}()
 
-	lock, err = recording.Prepare(spool, filepath.Join(safeUser, safeHost, recordingName), ttyrecFile)
+	lock, err = recording.PrepareCapture(spool, filepath.Join(safeUser, safeHost, recordingName), ttyrecFile, policy != nil)
 	if err != nil {
 		return fmt.Errorf("prepare DB recording: %w", err)
 	}
@@ -230,88 +244,54 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 	}
 	defer func() { _ = tmpGz.Close() }()
 	tmpGzPath := tmpGz.Name()
-	gzipWriter := gzip.NewWriter(tmpGz)
-	defer func() { _ = gzipWriter.Close() }()
+	gzipWriter, err := recording.NewCaptureWriter(tmpGz, policy, archive.Provenance{SessionID: sessionID, BastionID: config.InstanceID(), Protocol: protocol, Account: user.Username, Target: access.Host, StartedAt: time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	defer gzipWriter.Abort()
 
 	cmdDone := make(chan struct{})
+	abortCapture := make(chan struct{})
 	done := make(chan error, 1)
-	go func() {
-		var f *os.File
-		var openErr error
-		for {
-			f, openErr = os.Open(ttyrecFile)
-			if openErr == nil {
-				break
-			}
-			select {
-			case <-cmdDone:
-				done <- nil
-				return
-			default:
-				time.Sleep(ttyrecPollInterval)
-			}
-		}
-		defer func() { _ = f.Close() }()
-
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := f.Read(buf)
-			if n > 0 {
-				if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
-					done <- fmt.Errorf("gzip write error: %w", werr)
-					return
-				}
-			}
-			if readErr == io.EOF {
-				select {
-				case <-cmdDone:
-					for {
-						n, drainErr := f.Read(buf)
-						if n > 0 {
-							if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
-								done <- fmt.Errorf("gzip write error: %w", werr)
-								return
-							}
-						}
-						if drainErr != nil {
-							if drainErr == io.EOF {
-								done <- nil
-							} else {
-								done <- fmt.Errorf("file drain error: %w", drainErr)
-							}
-							return
-						}
-					}
-				default:
-					time.Sleep(ttyrecPollInterval)
-					continue
-				}
-			}
-			if readErr != nil {
-				done <- fmt.Errorf("file read error: %w", readErr)
-				return
-			}
-		}
-	}()
+	recordingCtx, stopRecording := context.WithCancel(runCtx)
+	defer stopRecording()
 
 	ttyrecArgs := append([]string{"-f", ttyrecFile, "--", sandbox.Path}, sandbox.Args[1:]...)
-	cmd := exec.CommandContext(runCtx, "ttyrec", ttyrecArgs...)
+	cmd := exec.CommandContext(recordingCtx, "ttyrec", ttyrecArgs...)
 	cmd.Env = sandbox.Env
 	cmd.ExtraFiles = sandbox.ExtraFiles
 	cmd.SysProcAttr = sandbox.SysProcAttr
-	recording.ConfigureRecorder(cmd, lock)
+	completion, err := recording.ConfigureRecorder(cmd, lock)
+	if err != nil {
+		return fmt.Errorf("configure DB recorder: %w", err)
+	}
+	defer completion.Close()
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	go func() {
+		done <- recording.StreamRaw(ttyrecFile, gzipWriter, cmdDone, abortCapture, stopRecording)
+	}()
 
 	cmdErr := cmd.Run()
+	completionErr := completion.Wait(recording.RecorderExitTimeout)
+	if completionErr != nil {
+		retainSpool = true
+		close(abortCapture)
+	}
 	close(cmdDone)
 	gzipErr := <-done
+	if completionErr != nil {
+		return fmt.Errorf("DB recorder did not finish cleanly: %w", completionErr)
+	}
 	if gzipErr != nil {
 		return fmt.Errorf("error compressing ttyrec output: %w", gzipErr)
 	}
-	if err := gzipWriter.Close(); err != nil {
+	if err := gzipWriter.CloseAfterRecorder(cmdErr, runCtx.Err()); err != nil {
 		return fmt.Errorf("close compressed recording: %w", err)
+	}
+	if err := tmpGz.Sync(); err != nil {
+		return fmt.Errorf("sync recording: %w", err)
 	}
 	if err := tmpGz.Close(); err != nil {
 		return fmt.Errorf("close recording: %w", err)
@@ -330,7 +310,7 @@ func ConnectContext(ctx context.Context, db *gorm.DB, user models.User, access m
 		case "exit status 100", "exit status 130", "signal: interrupt":
 			return nil
 		}
-		return fmt.Errorf("db client ttyrec execution error: %v", cmdErr)
+		return fmt.Errorf("DB client session failed: %w", cmdErr)
 	}
 
 	updateLastConnection(db, access)

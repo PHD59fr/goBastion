@@ -1,3 +1,5 @@
-# Historical four-character dummy PEM body, verified not to encode a private key.
-# Exact commit/file/rule/line only; evidence: docs/security/SCANNER_TRIAGE.md.
+# Test-only deterministic keys in export lifecycle fixtures; not real credentials.
+34f2291e6161bbed762b14fed6a17044ab4838c9:internal/db/export_lifecycle_test.go:generic-api-key:26
+34f2291e6161bbed762b14fed6a17044ab4838c9:internal/db/export_upgrade_test.go:generic-api-key:22
+# Historical test fixture (fake OPENSSH private key string) in old commit; not a real credential.
 0b32b4a8ff036556b7979b3f0ca904d66afa896e:internal/utils/cryptokey/cryptokey_test.go:private-key:38

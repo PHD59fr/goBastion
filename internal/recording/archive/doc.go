@@ -15,6 +15,13 @@
 // library generates the nonces. A data key is limited to 2^20 frames, well below
 // NewGCMWithRandomNonce's 2^32 limit. Chunks are at most 1 MiB, and only the last
 // chunk may be short. AAD binds the complete header hash, index, and length.
+// Options.Streaming explicitly selects V2: the same envelope and cryptographic
+// primitives, with version 2 in the authenticated header and signed context.
+// Every data frame still contains 1..ChunkSize plaintext bytes, but intermediate
+// frames may be short, allowing Flush during capture. Version 1 Flush refuses
+// a nonempty partial buffer. V1 remains the default; older readers reject V2.
+// The existing domain labels are retained: the complete header hash binds the
+// format version to frame AAD and wrapped keys, and the signature covers it.
 // The manifest frame is byte 2, big-endian uint32 manifest length, canonical
 // JSON manifest, and a 64-byte Ed25519 signature. Trailing bytes are rejected.
 //

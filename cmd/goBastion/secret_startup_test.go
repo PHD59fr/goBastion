@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 func TestStartupRejectsMissingOrInvalidEncryptionBeforeOpeningDB(t *testing.T) {
 	if os.Getenv("GOB_STARTUP_KEY_HELPER") == "1" {
+		newStartupLogger = func() *slog.Logger { return slog.New(slog.NewJSONHandler(os.Stderr, nil)) }
 		cfg := config.DefaultConfig()
 		cfg.Paths.LogFile = filepath.Join(os.Getenv("GOB_STARTUP_TEST_DIR"), "startup.log")
 		config.SetForTesting(cfg)

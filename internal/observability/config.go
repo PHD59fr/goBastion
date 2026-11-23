@@ -25,6 +25,7 @@ type Config struct {
 	ShutdownTimeout  time.Duration
 	RecordingSpool   string
 	PendingCollector func(context.Context) (PendingStats, error)
+	SyncHealthy      func() bool
 }
 
 func DefaultConfig() Config {

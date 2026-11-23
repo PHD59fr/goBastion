@@ -33,7 +33,7 @@ type processAdapter struct {
 }
 
 func (a *processAdapter) ExecCommand(name string, args ...string) (string, error) {
-	if name != "pgrep" {
+	if name != "/usr/bin/pgrep" {
 		return "", errors.New("unexpected command: " + name)
 	}
 	a.args = append([]string{name}, args...)
@@ -123,7 +123,7 @@ func TestSyncRemovesOnlyIdleOrphanAccounts(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(adapter.args, []string{"pgrep", "-u", "orphan"}) {
+			if !reflect.DeepEqual(adapter.args, []string{"/usr/bin/pgrep", "-u", "orphan"}) {
 				t.Fatalf("incorrect pgrep argv: %q", adapter.args)
 			}
 			if got := len(adapter.DeletedUsers) > 0; got != tc.remove {

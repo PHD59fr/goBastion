@@ -9,10 +9,30 @@ import (
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestSecureSSHDirRejectsOutOfRangeIdentity(t *testing.T) {
+	for _, ids := range [][2]int{{-1, 1000}, {1000, -1}} {
+		_, _, _, err := secureSSHDirFrom(-1, "fixture", ids[0], ids[1], 0)
+		if err == nil || !strings.Contains(err.Error(), "invalid OS user or group ID") {
+			t.Fatalf("identity %v was not rejected before directory access: %v", ids, err)
+		}
+	}
+	if uint64(^uint(0)>>1) > uint64(^uint32(0)) {
+		tooLarge := uint64(^uint32(0)) + 1
+		over := int(tooLarge)
+		for _, ids := range [][2]int{{over, 1000}, {1000, over}} {
+			_, _, _, err := secureSSHDirFrom(-1, "fixture", ids[0], ids[1], 0)
+			if err == nil || !strings.Contains(err.Error(), "invalid OS user or group ID") {
+				t.Fatalf("identity %v was not rejected before directory access: %v", ids, err)
+			}
+		}
+	}
+}
 
 func secureTestHome(t *testing.T) (string, string) {
 	t.Helper()

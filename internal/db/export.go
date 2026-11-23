@@ -531,7 +531,38 @@ func exportTableRows(db *gorm.DB, sch *schema.Schema, log *slog.Logger) ([]map[s
 	// Quote identifiers so columns that are MySQL/Postgres reserved words
 	// (e.g. ingress_keys.key) do not break the SELECT.
 	quoted := make([]string, 0, len(sch.DBNames))
+	var userColumns map[string]bool
+	if sch.Table == "users" {
+		// Offline secret migration backs up the previous schema before root
+		// startup adds new columns. Inspect the snapshot itself, propagating
+		// metadata errors rather than treating them as an absent column.
+		rows, err := db.Unscoped().Table(sch.Table).Select("*").Limit(0).Rows()
+		if err != nil {
+			return nil, err
+		}
+		columns, err := rows.Columns()
+		closeErr := rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		userColumns = make(map[string]bool, len(columns))
+		for _, column := range columns {
+			userColumns[column] = true
+		}
+	}
 	for _, col := range sch.DBNames {
+		if userColumns != nil && !userColumns[col] {
+			if col != "revocation_epoch" {
+				return nil, fmt.Errorf("required users column %s is missing", col)
+			}
+			// Pre-epoch accounts have never recorded an epoch transition.
+			// Supply the migration default without mutating the source schema.
+			quoted = append(quoted, "0 AS "+quoteIdent(col, db.Name()))
+			continue
+		}
 		quoted = append(quoted, quoteIdent(col, db.Name()))
 	}
 	query := db.Unscoped().Table(sch.Table).Select(quoted)

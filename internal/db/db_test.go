@@ -38,6 +38,29 @@ func TestInit_SQLite_InMemory(t *testing.T) {
 	}
 }
 
+func TestMigrationAddsRevocationEpochToExistingUsers(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "legacy-users.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`CREATE TABLE users (id uuid PRIMARY KEY, username text NOT NULL, role text NOT NULL, enabled boolean NOT NULL DEFAULT true, deleted_at datetime)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`INSERT INTO users (id, username, role, enabled) VALUES (?, ?, ?, ?)`, "11111111-1111-1111-1111-111111111111", "legacy", models.RoleUser, true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(database, "sqlite"); err != nil {
+		t.Fatal(err)
+	}
+	var user models.User
+	if err := database.First(&user, "username = ?", "legacy").Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.RevocationEpoch != 0 {
+		t.Fatalf("legacy account revocation epoch = %d, want 0", user.RevocationEpoch)
+	}
+}
+
 func TestInit_SQLite_DefaultDriver(t *testing.T) {
 	_ = os.Unsetenv("DB_DRIVER")
 	// Use a temp dir so the test doesn't need /var/lib/goBastion.
@@ -55,6 +78,32 @@ func TestInit_SQLite_DefaultDriver(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0660 {
 		t.Fatalf("SQLite permissions = %04o, want 0660", got)
+	}
+}
+
+func TestEnsureSQLitePermissionsRejectsSymlink(t *testing.T) {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		t.Run(suffix, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "target")
+			if err := os.WriteFile(target, []byte("unchanged"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "bastion.db")
+			if err := os.Symlink(target, path+suffix); err != nil {
+				t.Fatal(err)
+			}
+			if err := ensureSQLitePermissions(path); err == nil {
+				t.Fatal("SQLite permission repair followed a symlink")
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0600 {
+				t.Fatalf("symlink target mode changed to %04o", got)
+			}
+		})
 	}
 }
 

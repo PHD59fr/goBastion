@@ -17,6 +17,24 @@ func privateTestArchive(t *testing.T) string {
 	return archive
 }
 
+func TestArchiveDirectoryRejectsOutOfRangeOwner(t *testing.T) {
+	owners := []int{-1}
+	if uint64(^uint(0)>>1) > uint64(^uint32(0)) {
+		tooLarge := uint64(^uint32(0)) + 1
+		owners = append(owners, int(tooLarge))
+	}
+	for _, owner := range owners {
+		if dir, err := openArchiveDirectory("/nonexistent-recording-archive", ".", owner); err == nil {
+			_ = dir.Close()
+			t.Fatalf("archive owner %d accepted", owner)
+		}
+		if dir, err := openArchiveSubdirectory(nil, ".", owner); err == nil {
+			_ = dir.Close()
+			t.Fatalf("subdirectory owner %d accepted", owner)
+		}
+	}
+}
+
 func TestOpenArchiveDirectoryRejectsSymlinkComponents(t *testing.T) {
 	for _, position := range []string{"first", "middle", "archive", "account", "server"} {
 		t.Run(position, func(t *testing.T) {

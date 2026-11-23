@@ -3,7 +3,6 @@ package self
 import (
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 
 	"goBastion/internal/commands/account"
@@ -79,7 +78,7 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 		return fmt.Errorf("attestation and intermediate certificate files are required")
 	}
 
-	attestPEM, err := os.ReadFile(attestFile)
+	attestPEM, err := piv.ReadCertificateFile(attestFile)
 	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add PIV Ingress Key",
@@ -89,7 +88,7 @@ func AddIngressKeyPIV(db *gorm.DB, currentUser *models.User, args []string) erro
 		return fmt.Errorf("cannot read attest file: %w", err)
 	}
 
-	intermediatePEM, err := os.ReadFile(intermediateFile)
+	intermediatePEM, err := piv.ReadCertificateFile(intermediateFile)
 	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add PIV Ingress Key",

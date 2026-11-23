@@ -62,3 +62,26 @@ func TestAddTrustAnchor_MissingArgs(t *testing.T) {
 		t.Fatalf("expected no trust anchor created, got %d", count)
 	}
 }
+
+func TestAddTrustAnchorRejectsOversizedCertificateBeforeWrite(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	path := filepath.Join(t.TempDir(), "large.pem")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(64<<10 + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddTrustAnchor(db, admin, []string{"--name", "large-ca", "--cert", path}); err == nil {
+		t.Fatal("oversized certificate accepted")
+	}
+	var count int64
+	if err := db.Model(&models.PIVTrustAnchor{}).Where("name = ?", "large-ca").Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("rejected certificate was persisted: count=%d, err=%v", count, err)
+	}
+}

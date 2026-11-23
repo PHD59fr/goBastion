@@ -290,6 +290,12 @@ func observeEvent(ctx context.Context, r slog.Record, pre []slog.Attr) error {
 		metric = "gobastion_recording_archival_failures_total"
 	case "realm_authentication_failed":
 		metric = "gobastion_realm_auth_failures_total"
+	case "session_revoked":
+		metric = "gobastion_session_revocations_total"
+	case "session_revocation_cleanup_timeout":
+		metric = "gobastion_session_revocation_cleanup_timeouts_total"
+	case "recording_integrity_failed":
+		metric = "gobastion_recording_integrity_failures_total"
 	}
 	if attributeString(attrs, "reason") == "access_denied" {
 		metric = "gobastion_access_denied_total"

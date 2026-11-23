@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"os"
 
 	"goBastion/internal/models"
 	"goBastion/internal/utils/console"
+	"goBastion/internal/utils/piv"
 	"goBastion/internal/utils/validation"
 
 	"gorm.io/gorm"
@@ -44,7 +44,7 @@ func AddTrustAnchor(db *gorm.DB, currentUser *models.User, args []string) error 
 		return fmt.Errorf("invalid trust anchor name: %s", name)
 	}
 
-	certBytes, err := os.ReadFile(certFile)
+	certBytes, err := piv.ReadCertificateFile(certFile)
 	if err != nil {
 		console.DisplayBlock(console.ContentBlock{
 			Title:     "Add PIV Trust Anchor",

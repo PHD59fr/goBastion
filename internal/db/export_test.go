@@ -99,13 +99,15 @@ func TestExportUsesOneConsistentSnapshot(t *testing.T) {
 	}
 
 	insertErr := error(nil)
-	if err := source.Callback().Query().After("gorm:query").Register("test:export_snapshot", func(tx *gorm.DB) {
-		if tx.Statement.Table != "users" || insertErr != nil {
+	inserted := false
+	if err := source.Callback().Row().Before("gorm:row").Register("test:export_snapshot", func(tx *gorm.DB) {
+		if tx.Statement.Table != "groups" || inserted {
 			return
 		}
 		// Commit a new user and one of its accesses after the export has
 		// already read the users table. A non-transactional export would read
 		// the access but not its user, producing an unrestorable dump.
+		inserted = true
 		insertErr = writer.Transaction(func(tx *gorm.DB) error {
 			user := models.User{Username: "concurrent", Role: models.RoleUser, Enabled: true}
 			if err := tx.Create(&user).Error; err != nil {
@@ -125,6 +127,9 @@ func TestExportUsesOneConsistentSnapshot(t *testing.T) {
 	}
 	if insertErr != nil {
 		t.Fatalf("concurrent write failed: %v", insertErr)
+	}
+	if !inserted {
+		t.Fatal("export did not reach the concurrent write fixture")
 	}
 
 	var env exportEnvelope

@@ -101,6 +101,9 @@ func secureSSHDirAt(base, name string, uid, gid int, trustedUID uint32) (int, in
 }
 
 func secureSSHDirFrom(root int, name string, uid, gid int, trustedUID uint32) (int, int, int, error) {
+	if uid < 0 || gid < 0 || uint64(uid) > uint64(^uint32(0)) || uint64(gid) > uint64(^uint32(0)) {
+		return -1, 0, 0, fmt.Errorf("invalid OS user or group ID")
+	}
 	if err := checkSSHDir(root, trustedUID, true); err != nil {
 		return -1, 0, 0, fmt.Errorf("home base: %w", err)
 	}

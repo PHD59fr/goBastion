@@ -504,7 +504,7 @@ func Load() *Config {
 		// backend is resolved later from env/db.conf in db.Init() and logged
 		// as db_connect. We do not log db_driver to avoid implying the bastion
 		// is running on SQLite.
-		slog.Info("config_bootstrap_loaded",
+		logLoadDiagnostic("config_bootstrap_loaded",
 			slog.String("instance_id", instanceID),
 		)
 	})
@@ -546,7 +546,7 @@ func LoadFromDB(db *gorm.DB) error {
 	models.SetRestrictedCmdsEnabled(cfg.RestrictedCmds.Enabled)
 	models.SetGroupVisibilityMode(cfg.Security.GroupVisibility.Mode)
 	models.SetEgressKeyVisibilityMode(cfg.Security.EgressKeyVisibility.Mode)
-	slog.Info("config_loaded_from_db", slog.String("instance_id", boot.InstanceID))
+	logLoadDiagnostic("config_loaded_from_db", slog.String("instance_id", boot.InstanceID))
 	return nil
 }
 
@@ -972,4 +972,13 @@ func ResetForTesting() {
 	models.SetRestrictedCmdsEnabled(true)
 	models.SetGroupVisibilityMode("open")
 	models.SetEgressKeyVisibilityMode("discoverable")
+}
+
+// Successful session bootstrap diagnostics do not require durable audit writes.
+func logLoadDiagnostic(message string, args ...any) {
+	if os.Geteuid() != 0 {
+		slog.Debug(message, args...)
+		return
+	}
+	slog.Info(message, args...)
 }

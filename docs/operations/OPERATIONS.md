@@ -10,6 +10,21 @@ Operational behavior and procedures for configuring, upgrading, and recovering a
 - Persisted field encryption covers application secrets such as egress private keys, DB access passwords, SSH host private keys, and TOTP secrets. It does not encrypt database files/WAL, physical backups, recordings, or storage media. `DB_EXPORT_KEY` separately protects logical export/import data.
 - Optional AppArmor/seccomp behavior depends on host and container runtime support. See `profiles/Readme.md` and the deployment instructions in the repository README.
 
+## Published images
+
+The CI workflow builds distinct candidate tags for the default and full images,
+attaches SBOM and provenance metadata, and configures Grype scans, keyless
+signing and verification of their exact digests before promoting `latest` and
+`full`. Promotion applies only while the build commit is still the head of
+`master`. Verify the
+published digest and the expected GitHub workflow identity when selecting an
+image for deployment; pin the digest instead of relying on a mutable tag. The
+two release tags are separate registry writes, so a failed promotion can leave
+them at different signed versions. Promotion waits for a successful Security
+workflow run for the same source commit and event. That workflow builds its own
+images; the separate digest scans in CI check the published candidates.
+These release controls still need an observed CI run before operational reliance.
+
 ## Secret migration and key rotation
 
 Use `secret-migrate` for explicit plaintext conversion, historical-key migration, rotation, and encrypted logical backup/restore. Drain and stop every instance before apply. The active-session count check is point-in-time and does not block new admissions. Do not use `docker exec`; run the image's root-only maintenance binary with the normal entrypoint overridden.
@@ -68,6 +83,13 @@ attempt budget, and older session records have no process identity.
 
 Root startup, periodic sync, manual root sync, and the privileged single-user helper use the node-local `/run/gobastion/reconcile.lock`. It has a 30-second acquisition timeout; failure prevents that reconciliation from applying. Do not unlink or replace the lock inode while a process may use it. It does not coordinate nodes or close SSH admission.
 
+For reliable shutdown of recorded SSH session children on revocation, deploy the
+Go binary, root helpers, and `ttyrec` built with the pinned `ovh-ttyrec` source
+and [`scripts/patches/ovh-ttyrec-parent-hup.patch`](../../scripts/patches/ovh-ttyrec-parent-hup.patch)
+together. Drain affected instances and stop or restart established sessions as
+part of the upgrade so they run the coordinated versions. This local behavior
+does not provide atomic revocation across nodes.
+
 The container retries a failed periodic sync after `SYNC_RETRY_SECONDS` (default 10, range 1–60) and resumes the normal `SYNC_INTERVAL_SECONDS` delay after success. It removes `/run/gobastion/sync.healthy` on failure and recreates it after a successful pass. `/run/gobastion/sync.last_success` records the Unix timestamp of the last successful pass. The Compose healthcheck requires the marker and a running `sshd`; an unexpected sync-worker exit stops the container. These files report local reconciliation health only, not successful SSH admission or cluster-wide policy convergence.
 
 Privileged SSH key/known-host publication requires an absolute home base with root-owned, non-symlink, non-group/other-writable components. Managed account UIDs must be 1000–64999. Each home and `.ssh` directory must belong to the resolved UID and not be group/other writable; `.ssh` should be mode `0700`. Unsafe existing ownership or modes fail closed. Repair only verified account directories with an explicit administrator procedure; do not recursively chown untrusted trees.
@@ -78,9 +100,28 @@ The image build helper replaces conflicting global SSH directives and refuses ac
 
 ## Recordings
 
-Production recording storage uses an isolated layout: `root:gobastion 0751` for the archive root, `account:gobastion-auditors 02750` for account/server directories, and `account:gobastion-auditors 0640` for published files. The auditor group contains enabled nonsystem administrators; its GID must differ from `gobastion` and must not be any account's primary group. ACLs are unsupported. Live captures remain plaintext and require separate storage/backup protection.
+Production recording storage uses an isolated layout: `root:gobastion 0751` for the archive root, `account:gobastion-auditors 02750` for account/server directories, and `account:gobastion-auditors 0640` for published files. The auditor group contains enabled nonsystem administrators; its GID must differ from `gobastion` and must not be any account's primary group. ACLs are unsupported. Raw live spools remain plaintext and require separate storage/backup protection. Published captures default to gzip; optional encrypted DB capture is described below.
 
 Startup and sync check recording storage integrity before accepting sessions. If an inconsistency is detected, startup attempts a safe automatic metadata repair when possible: it creates a root-only backup outside the archive, applies the repair, and rolls back that account if the repair fails. Automatic repair backups are stored under `/var/lib/goBastion/recording-migrations/`. If repair is incomplete or unsafe, startup fails and details are logged server-side; session errors are generic to clients.
+
+### Optional encrypted DB capture
+
+A root-owned `/etc/gobastion/recording-live.json` policy enables authenticated encryption for captures made by the privileged DB recorder. It requires recording to be enabled. The policy applies globally: ordinary SSH connections, including transfers, are refused while it exists because the account process cannot safely hold the signing key. Enable this only on a dedicated DB node. Missing policy preserves gzip capture; an invalid or inaccessible policy refuses the connection.
+
+```json
+{
+  "version": 1,
+  "signing_key": "/etc/gobastion/recording-signing.pem",
+  "recipients": ["/etc/gobastion/recording-recipient.pem"],
+  "chunk_size": 1048576
+}
+```
+
+Use a dedicated Ed25519 PKCS#8 private signing key and RSA public recipients in PKIX PEM format, independent of the database encryption keys. Files must contain one canonical PEM block. The signing key must be root-owned with mode `0600`; policy and public keys may use `0644`. Every ancestor must be root-owned and not group/world-writable; symlinks and ACLs are refused. Keep the corresponding private recipient keys separately for decryption and retain historical verification/decryption keys.
+
+Encrypted published files use `.gobrec`. `ttyList`/`ttyPlay` support gzip recordings; verify and decrypt encrypted files with `recording-admin` into protected offline storage before playback. A recorder error or cancelled context produces an interrupted-prefix outcome; this does not assert capture completeness. The raw ttyrec spool is still plaintext. Encryption does not protect it or prove the truth of terminal content.
+
+Automatic recovery deliberately retains encrypted pending spools and reports that administrative recovery is required, even after policy removal. Stop all writers before inspecting or copying the root-owned spool. Preserve its manifest and partial ciphertext. Recoverable raw material may be sealed offline as a new imported archive; do not label it as the original complete capture. Automatic remote archival is unavailable.
 
 ### Manual offline repair
 
@@ -127,3 +168,7 @@ Deploy the Go binary and helper scripts together. Legacy adduser/password/chown/
 ## Observability
 
 See [Observability](OBSERVABILITY.md) for exporter settings, endpoint authentication, metric coverage, tracing, and deployment-template limits. Exporter readiness is not SSH readiness or a drain signal for user sessions. Optional tracing uses bounded queues and can drop telemetry during outages; it is not an audit-delivery mechanism.
+
+### Local audit collector
+
+`audit-writer` owns `/goBastion.log` as `root:root 0600`. Session processes submit framed JSON over `/run/gobastion-audit/audit.sock` and wait for durable local storage confirmation. The collector attaches kernel peer credentials; application-supplied user names and event fields remain claims by the sender. This does not establish trusted event provenance or remote retention. Routine successful SSH bootstrap timings are Debug diagnostics to avoid serial disk synchronization before the greeting; security and session events retain durable acknowledgment. Collector records use JSON regardless of `LOG_FORMAT`, preserving peer metadata; root direct logging still honors that setting. Syslog remains a separate best-effort destination.

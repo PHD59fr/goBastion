@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS users (
     username        longtext NOT NULL,
     role            longtext NOT NULL,
     enabled         tinyint(1) NOT NULL DEFAULT 1,
+    revocation_epoch bigint NOT NULL DEFAULT 0,
     system_user     tinyint(1) NOT NULL DEFAULT 0,
     osh_only        tinyint(1) NOT NULL DEFAULT 0,
     super_owner     tinyint(1) NOT NULL DEFAULT 0,

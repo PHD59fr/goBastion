@@ -157,6 +157,28 @@ func TestAdmissionDenialSummaryDoesNotCountAsSecondDecision(t *testing.T) {
 	}
 }
 
+func TestRevocationAndRecordingIntegrityEventsFeedDurableCounters(t *testing.T) {
+	for _, item := range []struct{ event, metric string }{
+		{"session_revoked", "gobastion_session_revocations_total"},
+		{"session_revocation_cleanup_timeout", "gobastion_session_revocation_cleanup_timeouts_total"},
+		{"recording_integrity_failed", "gobastion_recording_integrity_failures_total"},
+	} {
+		t.Run(item.event, func(t *testing.T) {
+			observer := &testObserver{}
+			SetEventObserver(observer)
+			t.Cleanup(func() { SetEventObserver(nil) })
+			var output bytes.Buffer
+			slog.New(&multiHandler{handlers: []slog.Handler{newJSONHandler(&output)}}).Warn(item.event, "user", "sensitive-user")
+			if observer.metric != item.metric || observer.count != 1 {
+				t.Fatalf("event %s observed as %s count %d", item.event, observer.metric, observer.count)
+			}
+			if strings.Contains(observer.metric, "sensitive-user") {
+				t.Fatal("counter name included a user identity")
+			}
+		})
+	}
+}
+
 func TestSyslogAndJSONShareEventIdentityAndRedaction(t *testing.T) {
 	var output bytes.Buffer
 	remote := &testSyslogWriter{}

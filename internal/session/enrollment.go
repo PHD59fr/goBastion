@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"goBastion/internal/config"
+	"goBastion/internal/mfa"
 	"goBastion/internal/models"
 
 	"golang.org/x/crypto/bcrypt"
@@ -24,23 +26,34 @@ func enrollmentRequest(args []string) bool {
 func checkMFAForRequest(db *gorm.DB, u *models.User, log *slog.Logger, args []string) bool {
 	if config.Get().RequireMFA.Enabled && !u.TOTPEnabled && enrollmentRequest(args) {
 		// Preserve the independent password factor; only the missing TOTP check is waived.
-		return checkPasswordMFA(u, log)
+		return checkPasswordMFA(db, u, log)
 	}
 	return checkMFA(db, u, log)
 }
 
-func checkPasswordMFA(u *models.User, log *slog.Logger) bool {
+func checkPasswordMFA(db *gorm.DB, u *models.User, log *slog.Logger) bool {
 	if u.PasswordHash == "" {
 		return true
+	}
+	reservation, err := mfa.ReserveAttempt(db, u, config.Get().MFA.MaxAttempts, time.Now())
+	if err != nil {
+		log.Warn("enrollment_password_mfa_denied", "user", u.Username, "reason", "attempt_budget_unavailable")
+		fmt.Fprintln(os.Stderr, "Password MFA unavailable or attempt limit reached.")
+		return false
 	}
 	fmt.Print("Enter password: ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	defer clear(password)
 	fmt.Println()
-	ok := err == nil && bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), password) == nil
+	ok := err == nil && reservation.Valid(time.Now()) && bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), password) == nil
 	if !ok {
 		fmt.Fprintln(os.Stderr, "Password MFA verification failed.")
 		log.Warn("enrollment_password_mfa_denied", "user", u.Username)
+		return false
 	}
-	return ok
+	if err := reservation.Success(); err != nil {
+		log.Warn("enrollment_password_mfa_denied", "user", u.Username, "reason", "attempt_completion_failed")
+		return false
+	}
+	return true
 }

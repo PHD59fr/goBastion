@@ -30,6 +30,15 @@ func TestLinuxAdapterChownDirRejectsOtherPaths(t *testing.T) {
 	}
 }
 
+func TestLinuxAdapterRejectsUnapprovedExecutables(t *testing.T) {
+	adapter := &LinuxAdapter{}
+	for _, name := range []string{"/bin/sh", "/usr/bin/ssh", "getent", "pgrep"} {
+		if _, err := adapter.ExecCommand(name); err == nil {
+			t.Fatalf("unapproved executable %q was accepted", name)
+		}
+	}
+}
+
 func TestRootLegacySudoersRemoval(t *testing.T) {
 	if os.Getenv("GOB_TEST_ROOT_SSH_SPOOL") != "1" {
 		t.Skip("requires disposable root container")

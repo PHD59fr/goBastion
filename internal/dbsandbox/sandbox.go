@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -38,10 +39,7 @@ func Command(ctx context.Context, host string, port int64, bin string, args, env
 	if bin != "psql" && bin != "mariadb" && bin != "redis-cli" {
 		return nil, nil, fmt.Errorf("unsupported DB client")
 	}
-	if err := os.MkdirAll("/run/gobastion-db", 0711); err != nil {
-		return nil, nil, err
-	}
-	if err := os.Chmod("/run/gobastion-db", 0711); err != nil {
+	if err := prepareSandboxRoot("/run"); err != nil {
 		return nil, nil, err
 	}
 	var dir string
@@ -180,6 +178,49 @@ func Command(ctx context.Context, host string, port int64, bin string, args, env
 	}()
 	go auth.serve(parent)
 	return cmd, clean, nil
+}
+
+// prepareSandboxRoot refuses a replaced or writable runtime parent before
+// granting the reserved jail UIDs traverse access to the broker directory.
+func prepareSandboxRoot(parent string) error {
+	base, err := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open DB sandbox runtime parent: %w", err)
+	}
+	defer func() { _ = unix.Close(base) }()
+	var st unix.Stat_t
+	if err := unix.Fstat(base, &st); err != nil {
+		return err
+	}
+	owner, err := boundedHostUID(os.Geteuid())
+	if err != nil {
+		return err
+	}
+	if st.Uid != owner || st.Mode&0022 != 0 {
+		return fmt.Errorf("unsafe DB sandbox runtime parent")
+	}
+	if err := unix.Mkdirat(base, "gobastion-db", 0711); err != nil && err != unix.EEXIST {
+		return fmt.Errorf("create DB sandbox directory: %w", err)
+	}
+	dir, err := unix.Openat(base, "gobastion-db", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open DB sandbox directory: %w", err)
+	}
+	defer func() { _ = unix.Close(dir) }()
+	if err := unix.Fstat(dir, &st); err != nil {
+		return err
+	}
+	if st.Uid != owner || st.Mode&0022 != 0 {
+		return fmt.Errorf("unsafe DB sandbox directory")
+	}
+	return unix.Fchmod(dir, 0711)
+}
+
+func boundedHostUID(uid int) (uint32, error) {
+	if uid < 0 || uint64(uid) > math.MaxUint32 {
+		return 0, fmt.Errorf("invalid DB sandbox runtime owner")
+	}
+	return uint32(uid), nil
 }
 
 // Worker runs only inside the jail. It cannot name a destination in the broker protocol.

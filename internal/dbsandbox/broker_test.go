@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -30,6 +33,44 @@ func TestMySQLAccountSwitchCannotReachDatabase(t *testing.T) {
 	_ = copyMySQLCommands(&forwarded, &wire)
 	if forwarded.String() != want {
 		t.Fatal("ordinary SQL command was changed")
+	}
+}
+
+func TestWriteMySQLPacketRejectsLengthOverflow(t *testing.T) {
+	var wire bytes.Buffer
+	if err := writeMySQLPacket(&wire, 0, make([]byte, 1<<24)); err == nil {
+		t.Fatal("oversized packet was accepted")
+	}
+	if wire.Len() != 0 {
+		t.Fatal("oversized packet wrote a truncated header")
+	}
+}
+
+type shortPacketWriter struct{}
+
+func (shortPacketWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestWriteMySQLPacketRejectsShortWrite(t *testing.T) {
+	if err := writeMySQLPacket(shortPacketWriter{}, 0, []byte{1, 2}); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write returned %v, want ErrShortWrite", err)
+	}
+}
+
+func TestPostgresCancelRequestBounds(t *testing.T) {
+	for _, size := range []int{4, 32, 4096} {
+		secret := bytes.Repeat([]byte{0x5a}, size)
+		request, err := postgresCancelRequest(42, secret)
+		if err != nil {
+			t.Fatalf("secret length %d: %v", size, err)
+		}
+		if len(request) != 12+size || binary.BigEndian.Uint32(request[:4]) != uint32(len(request)) || binary.BigEndian.Uint32(request[4:8]) != 80877102 || binary.BigEndian.Uint32(request[8:12]) != 42 || !bytes.Equal(request[12:], secret) {
+			t.Fatalf("invalid cancellation request for secret length %d", size)
+		}
+	}
+	for _, size := range []int{0, 3, 4097} {
+		if request, err := postgresCancelRequest(42, make([]byte, size)); err == nil || request != nil {
+			t.Fatalf("invalid secret length %d accepted", size)
+		}
 	}
 }
 

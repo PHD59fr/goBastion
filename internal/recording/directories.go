@@ -43,7 +43,7 @@ func ValidateArchive(archive string) error {
 // by root and cannot be reserved by sessions. Self-owned 0700 archives support
 // standalone private recording without enabling a shared-directory fallback.
 func openArchiveDirectory(archive, relative string, owner int) (*os.File, error) {
-	if owner < 0 || !filepath.IsAbs(archive) || (relative != "." && !filepath.IsLocal(relative)) {
+	if owner < 0 || uint64(owner) > uint64(^uint32(0)) || !filepath.IsAbs(archive) || (relative != "." && !filepath.IsLocal(relative)) {
 		return nil, fmt.Errorf("invalid recording directory")
 	}
 	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
@@ -122,7 +122,7 @@ func validRecordingComponent(part string) bool {
 }
 
 func openArchiveSubdirectory(base *os.File, relative string, owner int) (*os.File, error) {
-	if relative != "." && !filepath.IsLocal(relative) {
+	if owner < 0 || uint64(owner) > uint64(^uint32(0)) || relative != "." && !filepath.IsLocal(relative) {
 		return nil, fmt.Errorf("invalid recording parent")
 	}
 	isolated, err := archiveIsolation(base)

@@ -38,7 +38,11 @@ func GenerateCode(secret string, t time.Time) (string, error) {
 		}
 	}
 
-	counter := uint64(t.Unix()) / 30
+	seconds := t.Unix()
+	if seconds < 0 {
+		return "", fmt.Errorf("TOTP time precedes the Unix epoch")
+	}
+	counter := uint64(seconds) / 30
 	msg := make([]byte, 8)
 	binary.BigEndian.PutUint64(msg, counter)
 

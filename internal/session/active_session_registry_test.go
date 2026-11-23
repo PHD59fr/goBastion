@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"goBastion/internal/config"
 	"goBastion/internal/models"
@@ -11,6 +12,18 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func createAdmissionActor(t *testing.T, db *gorm.DB) *models.User {
+	t.Helper()
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatal(err)
+	}
+	u := &models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	if err := db.Create(u).Error; err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
 
 func TestRegisterActiveSessionEnforcesInstanceLimitAndCleansStaleRows(t *testing.T) {
 	_ = config.Load()
@@ -28,7 +41,7 @@ func TestRegisterActiveSessionEnforcesInstanceLimitAndCleansStaleRows(t *testing
 		t.Fatalf("migrate active sessions: %v", err)
 	}
 
-	user := &models.User{Username: "alice"}
+	user := createAdmissionActor(t, db)
 	stale := models.ActiveSession{
 		SessionID:  "stale-session",
 		InstanceID: config.InstanceID(),
@@ -56,6 +69,102 @@ func TestRegisterActiveSessionEnforcesInstanceLimitAndCleansStaleRows(t *testing
 
 	if _, err := registerActiveSession(db, user, "blocked-session", "db"); err == nil {
 		t.Fatal("expected concurrency limit error, got nil")
+	}
+	release()
+	release() // Interactive teardown and its deferred cleanup may both run.
+	if err := db.Model(&models.ActiveSession{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("released session registration remains")
+	}
+}
+
+func TestActiveSessionReleaseIsBoundedByBlockedDatabase(t *testing.T) {
+	_ = config.Load()
+	t.Cleanup(config.ResetForTesting)
+	db, pool := revocationFixture(t)
+	actor := createAdmissionActor(t, db)
+	release, err := registerActiveSession(db, actor, "finished-session", "ssh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := pool.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		release()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(activeSessionCleanupTimeout + 2*time.Second):
+		t.Fatal("normal session release was blocked by the saturated database pool")
+	}
+	if elapsed := time.Since(started); elapsed > activeSessionCleanupTimeout+time.Second {
+		t.Fatalf("normal session release took %v", elapsed)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&models.ActiveSession{}).Where("session_id = ?", "finished-session").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("timed-out cleanup should retain the registration for stale-process cleanup")
+	}
+	release()
+	if err := db.Model(&models.ActiveSession{}).Where("session_id = ?", "finished-session").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("cleanup retry did not remove the registration")
+	}
+}
+
+func TestActiveSessionReleaseDoesNotWaitForCancellationIgnoringCallback(t *testing.T) {
+	db, _ := revocationFixture(t)
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	finished := make(chan struct{})
+	defer close(unblock)
+	if err := db.Callback().Delete().Before("gorm:begin_transaction").Register("test:block_session_release", func(*gorm.DB) {
+		close(entered)
+		<-unblock
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Delete().After("gorm:commit_or_rollback_transaction").Register("test:finish_session_release", func(*gorm.DB) {
+		close(finished)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		releaseActiveSession(db, "revoked-session", 100*time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not reach the blocking callback")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup waited for a callback that ignored cancellation")
+	}
+	// Release the callback and join the worker before the fixture closes its pool.
+	unblock <- struct{}{}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup worker did not finish after the callback was released")
 	}
 }
 

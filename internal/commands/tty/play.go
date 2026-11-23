@@ -18,6 +18,7 @@ import (
 	"goBastion/internal/utils/console"
 	"goBastion/internal/utils/validation"
 
+	"golang.org/x/sys/unix"
 	"gorm.io/gorm"
 )
 
@@ -110,7 +111,17 @@ func Play(db *gorm.DB, u *models.User, args []string) error {
 		},
 	})
 
-	zcatCmd := exec.Command("zcat", ttyFile)
+	recordingFile, err := os.OpenFile(ttyFile, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return fmt.Errorf("open recording for playback: %w", err)
+	}
+	defer func() { _ = recordingFile.Close() }()
+	info, err := recordingFile.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("invalid recording for playback")
+	}
+	zcatCmd := exec.Command("zcat")
+	zcatCmd.Stdin = recordingFile
 	playCmd := exec.Command("ttyplay")
 
 	pipe, err := zcatCmd.StdoutPipe()

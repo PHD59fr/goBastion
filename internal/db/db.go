@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"goBastion/internal/config"
@@ -86,6 +87,14 @@ func resolveDBConfig() (driver, dsn string) {
 // When runMigrate is false (ForceCommand sessions), schema migration and index
 // creation are skipped — only the master process (root) should run them.
 func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
+	// Routine connection timings must not add durable audit round trips to SSH login.
+	var diagnostic func(string, ...any)
+	if log != nil {
+		diagnostic = log.Info
+		if os.Geteuid() != 0 {
+			diagnostic = log.Debug
+		}
+	}
 	t0 := time.Now()
 	cfg := config.Get()
 	driver, dsn := resolveDBConfig()
@@ -156,7 +165,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 		}
 	}
 	if log != nil {
-		log.Info("db_connect", slog.String("driver", driver), slog.Duration("took", time.Since(tConn)))
+		diagnostic("db_connect", slog.String("driver", driver), slog.Duration("took", time.Since(tConn)))
 	}
 
 	tMig := time.Now()
@@ -168,7 +177,7 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 			log.Info("db_migrate", slog.String("driver", driver), slog.Duration("took", time.Since(tMig)))
 		}
 	} else if log != nil {
-		log.Info("db_migrate_skip", slog.String("reason", "non-root session"))
+		diagnostic("db_migrate_skip", slog.String("reason", "non-root session"))
 	}
 
 	tCfg := time.Now()
@@ -181,11 +190,11 @@ func Init(log *slog.Logger, runMigrate bool) (*gorm.DB, error) {
 		}
 	}
 	if log != nil {
-		log.Info("db_configure", slog.Duration("took", time.Since(tCfg)))
+		diagnostic("db_configure", slog.Duration("took", time.Since(tCfg)))
 	}
 
 	if log != nil {
-		log.Info("db_init_done", slog.Duration("total", time.Since(t0)))
+		diagnostic("db_init_done", slog.Duration("total", time.Since(t0)))
 	}
 
 	initialized = true
@@ -202,18 +211,28 @@ func ensureSQLitePermissions(dsn string) error {
 		return nil
 	}
 	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
-		info, err := os.Stat(candidate)
+		file, err := os.OpenFile(candidate, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("inspect SQLite permissions on %s: %w", candidate, err)
+			return fmt.Errorf("open SQLite file for permission check on %s: %w", candidate, err)
+		}
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			_ = file.Close()
+			return fmt.Errorf("invalid SQLite file for permission check on %s", candidate)
 		}
 		if info.Mode().Perm() == 0660 {
+			_ = file.Close()
 			continue
 		}
-		if err := os.Chmod(candidate, 0660); err != nil {
+		if err := file.Chmod(0660); err != nil {
+			_ = file.Close()
 			return fmt.Errorf("set SQLite permissions on %s: %w", candidate, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close SQLite permission check on %s: %w", candidate, err)
 		}
 	}
 	return nil

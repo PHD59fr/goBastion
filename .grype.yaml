@@ -23,3 +23,110 @@ ignore:
     package:
       name: gzip
       type: apk
+
+  # libcrypto3/libssl3: fixes are published in Alpine 3.22 (3.5.9-r1), but
+  # Grype may still match the base image SBOM before apk upgrade refreshes
+  # packages in rebuilt images. Remove once CI image scans confirm 3.5.9-r1.
+  - vulnerability: CVE-2026-124709
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-124709
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-95692
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-95692
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-107496
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-107496
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-107494
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-107494
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-121482
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-121482
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-95691
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-95691
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-88823
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-88823
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-84786
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-84786
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-88822
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-88822
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-95690
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-95690
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-35190
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-35190
+    package:
+      name: libssl3
+      type: apk
+  - vulnerability: CVE-2026-107493
+    package:
+      name: libcrypto3
+      type: apk
+  - vulnerability: CVE-2026-107493
+    package:
+      name: libssl3
+      type: apk
+
+  # zlib: fix is published in Alpine 3.22 (1.4-r0). Temporary ignore until
+  # rebuilt images pick up apk upgrade; remove once CI confirms 1.4-r0.
+  - vulnerability: CVE-2026-4738
+    package:
+      name: zlib
+      type: apk

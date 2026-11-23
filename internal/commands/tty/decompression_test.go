@@ -14,6 +14,30 @@ func TestRegressionPlaybackPropagatesDecompressionError(t *testing.T) {
 		t.Run(fmt.Sprint(failed), func(t *testing.T) { testPlaybackResult(t, failed) })
 	}
 }
+
+func TestPlaybackRejectsRecordingSymlink(t *testing.T) {
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	cfg := config.DefaultConfig()
+	cfg.Paths.TtyrecDir = t.TempDir()
+	config.SetForTesting(cfg)
+	user := models.User{Username: "alice", Role: models.RoleUser, Enabled: true}
+	name := "deploy.fixture:22_2026-11-07_00-00-00.ttyrec.gz"
+	dir := filepath.Join(cfg.Paths.TtyrecDir, "alice", "fixture")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.gz")
+	if err := os.WriteFile(target, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Play(nil, &user, []string{"--file", name}); err == nil {
+		t.Fatal("playback followed a recording symlink")
+	}
+}
 func testPlaybackResult(t *testing.T, failed bool) {
 	config.ResetForTesting()
 	_ = config.Load()

@@ -3,6 +3,7 @@ package account
 import (
 	"errors"
 	"goBastion/internal/models"
+	"math"
 	"testing"
 )
 
@@ -95,5 +96,49 @@ func TestUnexpireReconcilesAfterEnabling(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("helper calls %d", calls)
+	}
+}
+
+func TestExpireUnexpireKeepsMonotoneRevocationEpoch(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	target := newRegularUser(t, db, "alice")
+	prior := syncModifiedAccount
+	t.Cleanup(func() { syncModifiedAccount = prior })
+	syncModifiedAccount = func(string) error { return nil }
+
+	for round := int64(1); round <= 2; round++ {
+		if err := Expire(db, admin, []string{"--user", target.Username}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Unexpire(db, admin, []string{"--user", target.Username}); err != nil {
+			t.Fatal(err)
+		}
+		var fresh models.User
+		if err := db.First(&fresh, "id = ?", target.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !fresh.Enabled || fresh.RevocationEpoch != round {
+			t.Fatalf("round %d: enabled=%t epoch=%d", round, fresh.Enabled, fresh.RevocationEpoch)
+		}
+	}
+}
+
+func TestExpireRefusesRevocationEpochOverflow(t *testing.T) {
+	db := newTestDB(t)
+	admin := newAdminUser(t, db, "admin")
+	target := newRegularUser(t, db, "alice")
+	if err := db.Model(target).Update("revocation_epoch", math.MaxInt64).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Expire(db, admin, []string{"--user", target.Username}); err == nil {
+		t.Fatal("epoch overflow must deny expiration")
+	}
+	var fresh models.User
+	if err := db.First(&fresh, "id = ?", target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.Enabled || fresh.RevocationEpoch != math.MaxInt64 {
+		t.Fatalf("overflow changed account state: enabled=%t epoch=%d", fresh.Enabled, fresh.RevocationEpoch)
 	}
 }

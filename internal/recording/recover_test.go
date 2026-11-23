@@ -176,7 +176,7 @@ func TestRecoveryRejectsSymlinksAndDestinationEscape(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "manifest escape":
-				data, _ := json.Marshal(Manifest{"../../escape.ttyrec.gz", raw})
+				data, _ := json.Marshal(Manifest{Destination: "../../escape.ttyrec.gz", Raw: raw})
 				if err := os.WriteFile(filepath.Join(spool, "manifest.json"), data, 0600); err != nil {
 					t.Fatal(err)
 				}

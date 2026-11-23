@@ -222,6 +222,11 @@ func (l *LinuxAdapter) ChownDir(user models.User, dir string) error {
 }
 
 func (l *LinuxAdapter) ExecCommand(name string, args ...string) (string, error) {
+	switch name {
+	case "/usr/bin/sudo", "/usr/bin/getent", "/usr/bin/pkill", "/usr/bin/pgrep", "/usr/bin/passwd", "/usr/sbin/adduser", "/usr/sbin/addgroup", "/usr/sbin/delgroup":
+	default:
+		return "", errors.New("unsupported OS command")
+	}
 	cmd := exec.Command(name, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err

@@ -34,13 +34,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -ldflags "-s -w" -o /app/db-worker ./cmd/dbworker/ && \
     go build -ldflags "-s -w" -o /app/secret-migrate ./cmd/secret-migrate/ && \
     go build -ldflags "-s -w" -o /app/observability ./cmd/observability/ && \
-    go build -ldflags "-s -w" -o /app/recording-admin ./cmd/recording-admin/
+    go build -ldflags "-s -w" -o /app/recording-admin ./cmd/recording-admin/ && \
+    go build -ldflags "-s -w" -o /app/audit-writer ./cmd/audit-writer/
 
 RUN set -eu; \
     case "$UPX_MODE" in \
       off) exit 0 ;; \
-      cold) bins="/app/secret-migrate /app/observability /app/recording-admin" ;; \
-      all) bins="/app/goBastion /app/db-worker /app/secret-migrate /app/observability /app/recording-admin" ;; \
+      cold) bins="/app/secret-migrate /app/observability /app/recording-admin /app/audit-writer" ;; \
+      all) bins="/app/goBastion /app/db-worker /app/secret-migrate /app/observability /app/recording-admin /app/audit-writer" ;; \
       *) echo "UPX_MODE must be off, cold or all" >&2; exit 1 ;; \
     esac; \
     apk add --no-cache upx; \
@@ -63,12 +64,15 @@ ARG TTYREC_REF=a1da2fe7c8f33748770768533a33ee7a9988e92c
 
 RUN apk add --no-cache build-base autoconf automake libtool git upx
 
+COPY scripts/patches/ovh-ttyrec-parent-hup.patch /tmp/ovh-ttyrec-parent-hup.patch
+
 RUN git init /tmp/ovh-ttyrec && \
     cd /tmp/ovh-ttyrec && \
     git remote add origin https://github.com/ovh/ovh-ttyrec.git && \
     git fetch --depth 1 origin "$TTYREC_REF" && \
     git checkout --detach FETCH_HEAD && \
-    ./configure && \
+    git apply /tmp/ovh-ttyrec-parent-hup.patch && \
+    sh ./configure && \
     make && make install && \
     strip /usr/local/bin/ttyrec /usr/local/bin/ttyplay && \
     (upx --best --lzma /usr/local/bin/ttyrec /usr/local/bin/ttyplay || \
@@ -133,6 +137,7 @@ COPY --from=go-builder --chown=0:0 --chmod=0755 /app/goBastion /app/goBastion
 COPY --from=go-builder --chown=0:0 --chmod=0700 /app/secret-migrate /app/secret-migrate
 COPY --from=go-builder --chown=0:0 --chmod=0700 /app/observability /app/observability
 COPY --from=go-builder --chown=0:0 --chmod=0700 /app/recording-admin /app/recording-admin
+COPY --from=go-builder --chown=0:0 --chmod=0700 /app/audit-writer /app/audit-writer
 COPY --from=ttyrec-builder /usr/local/bin/ttyrec /usr/local/bin/ttyrec
 COPY --from=ttyrec-builder /usr/local/bin/ttyplay /usr/local/bin/ttyplay
 COPY --from=redis-client --chmod=0755 /out/redis-cli /usr/bin/redis-cli
@@ -155,7 +160,7 @@ RUN printf '%%gobastion ALL=(root) NOPASSWD: /usr/local/sbin/gobastion-session *
     mkdir -p /var/lib/goBastion /app/ttyrec && \
     chown root:gobastion /var/lib/goBastion /app/ttyrec && \
     chmod 2770 /var/lib/goBastion && chmod 0751 /app/ttyrec && \
-    touch /goBastion.log && chown root:gobastion /goBastion.log && chmod 0620 /goBastion.log
+    touch /goBastion.log && chown root:root /goBastion.log && chmod 0600 /goBastion.log
 
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 

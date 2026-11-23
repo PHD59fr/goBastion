@@ -53,6 +53,19 @@ func TestKnownHostsPreservesDistinctCanonicalAccountNames(t *testing.T) {
 	if len(entries) != 1 || entries[0].Entry != "new literal host" {
 		t.Fatalf("wrong account imported: %+v", entries)
 	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(aliasFile, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.KnownHostsEntriesFromSystemToDb(&account); err == nil {
+		t.Fatal("known_hosts import followed a symlink")
+	}
+	entries = nil
+	if err := database.Where("user_id = ?", account.ID).Find(&entries).Error; err != nil || len(entries) != 1 || entries[0].Entry != "new literal host" {
+		t.Fatalf("symlink import changed database entries: %+v, %v", entries, err)
+	}
 	for _, name := range []string{"realm/alice", "../alice", "ALICE", "gobastion-session"} {
 		invalid := models.User{Username: name}
 		if err := syncer.KnownHostsFromDB(&invalid); err == nil {

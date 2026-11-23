@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,11 +13,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"goBastion/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 // slogLevelToGelf maps a slog level to a GELF syslog severity number.
@@ -108,7 +111,10 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err = h.w.Write(data)
+	n, err := h.w.Write(data)
+	if err == nil && n != len(data) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
@@ -153,14 +159,16 @@ func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
 			}
 		}
 	}
+	var failures []error
 	for _, handler := range h.handlers {
 		if handler.Enabled(ctx, r.Level) {
 			if err := handler.Handle(ctx, r.Clone()); err != nil {
 				fmt.Fprintf(os.Stderr, "log_handler_failed handler=%T error=%v\n", handler, err)
+				failures = append(failures, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // WithAttrs propagates the given attributes to all underlying handlers.
@@ -304,7 +312,11 @@ func (h *plainTextHandler) Handle(_ context.Context, r slog.Record) error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err := h.w.Write([]byte(b.String()))
+	data := []byte(b.String())
+	n, err := h.w.Write(data)
+	if err == nil && n != len(data) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
@@ -327,8 +339,15 @@ func (h *plainTextHandler) WithGroup(_ string) slog.Handler { return h }
 //   - "plain": human-readable timestamped text — useful for local debugging
 func NewLogger() *slog.Logger {
 	cfg := config.DefaultConfig()
-	f, err := os.OpenFile(cfg.Paths.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	if os.Geteuid() != 0 && cfg.Paths.LogFile == config.DefaultLogFilePath() {
+		// Sessions may submit records, but never open the root-owned audit file.
+		// The collector adds kernel-authenticated sender metadata. Business
+		// attributes still describe claims made by the sending process.
+		return newSessionLogger(auditSocketWriter{path: AuditSocketPath}, openSyslog())
+	}
+	f, err := openLogFile(cfg.Paths.LogFile)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "audit_log_unavailable")
 		f = os.Stderr
 	}
 
@@ -342,11 +361,49 @@ func NewLogger() *slog.Logger {
 
 	handlers := []slog.Handler{fileHandler}
 
-	if sysWriter, sysErr := syslog.New(syslog.LOG_INFO|syslog.LOG_USER, "goBastion"); sysErr == nil {
+	if sysWriter := openSyslog(); sysWriter != nil {
 		handlers = append(handlers, &syslogHandler{writer: sysWriter, level: slog.LevelInfo})
 	}
 
 	return slog.New(&multiHandler{handlers: handlers})
+}
+
+func openSyslog() syslogWriter {
+	writer, err := syslog.New(syslog.LOG_INFO|syslog.LOG_USER, "goBastion")
+	if err != nil {
+		return nil
+	}
+	return writer
+}
+
+func newSessionLogger(audit io.Writer, sysWriter syslogWriter) *slog.Logger {
+	// The collector protocol always transports JSON, independently of the
+	// root process's local LOG_FORMAT setting.
+	handlers := []slog.Handler{newJSONHandler(audit)}
+	if sysWriter != nil {
+		handlers = append(handlers, &syslogHandler{writer: sysWriter, level: slog.LevelInfo})
+	}
+	return slog.New(&multiHandler{handlers: handlers})
+}
+
+func openLogFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("invalid audit log file")
+	}
+	if path == config.DefaultConfig().Paths.LogFile {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 || stat.Nlink != 1 || info.Mode().Perm() != 0600 {
+			_ = file.Close()
+			return nil, fmt.Errorf("invalid audit log ownership or mode")
+		}
+	}
+	return file, nil
 }
 
 // NewGormLogger wraps a slog.Logger as a standard log.Logger for use with GORM.

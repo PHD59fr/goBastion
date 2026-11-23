@@ -116,6 +116,10 @@ func recoverOne(archive string, spool *os.Root, path string, isSSH bool, log *sl
 	if json.Unmarshal(data, &m) != nil || !filepath.IsLocal(m.Destination) || filepath.Base(m.Raw) != m.Raw || !strings.HasSuffix(m.Raw, ".ttyrec") {
 		return
 	}
+	if m.Encoding != "" || strings.HasSuffix(m.Destination, ".gobrec") {
+		log.Error("recording_recovery_failed", "spool", path, "reason", "encrypted_capture_requires_administrative_recovery")
+		return
+	}
 	if isSSH && m.Destination != filepath.Join(filepath.Dir(path), m.Raw+".gz") {
 		return
 	}

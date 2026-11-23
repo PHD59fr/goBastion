@@ -1,17 +1,17 @@
 package sshConnector
 
 import (
-	"compress/gzip"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,16 +21,13 @@ import (
 	"goBastion/internal/models"
 	"goBastion/internal/osadapter"
 	"goBastion/internal/recording"
+	"goBastion/internal/recording/archive"
 	bastionSync "goBastion/internal/utils/sync"
 	"goBastion/internal/utils/transfer"
 	"goBastion/internal/utils/validation"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-)
-
-const (
-	ttyrecPollInterval = 100 * time.Millisecond
 )
 
 // isNonInteractiveCmd reports whether cmd is a binary file-transfer protocol
@@ -71,10 +68,97 @@ func isCleanInteractiveSessionExit(err error) bool {
 	return errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 && exitErr.ExitCode() != 255
 }
 
+type sshClientErrorCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *sshClientErrorCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	const max = 4096
+	if c.buf.Len() < max {
+		remaining := max - c.buf.Len()
+		if len(p) > remaining {
+			_, _ = c.buf.Write(p[:remaining])
+		} else {
+			_, _ = c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (c *sshClientErrorCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+func formatSSHClientFailure(err error, capture *sshClientErrorCapture, target string) error {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 255 {
+		return fmt.Errorf("remote SSH session failed: %w", err)
+	}
+	msg := ""
+	if capture != nil {
+		msg = capture.String()
+	}
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "operation timed out"), strings.Contains(lower, "connection timed out"), strings.Contains(lower, "timed out"):
+		return fmt.Errorf("unable to reach %s: connection timed out", target)
+	case strings.Contains(lower, "connection refused"):
+		return fmt.Errorf("unable to reach %s: connection refused", target)
+	case strings.Contains(lower, "no route to host"):
+		return fmt.Errorf("unable to reach %s: no route to host", target)
+	case strings.Contains(lower, "network is unreachable"):
+		return fmt.Errorf("unable to reach %s: network is unreachable", target)
+	case strings.Contains(lower, "could not resolve hostname"), strings.Contains(lower, "name or service not known"), strings.Contains(lower, "nodename nor servname provided"):
+		return fmt.Errorf("unable to reach %s: host name could not be resolved", target)
+	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "authentication failed"):
+		return fmt.Errorf("authentication failed for %s", target)
+	case strings.Contains(lower, "host key verification failed"), strings.Contains(lower, "remote host identification has changed"):
+		return fmt.Errorf("host key verification failed for %s", target)
+	case strings.Contains(lower, "broken pipe"), strings.Contains(lower, "connection reset"):
+		return fmt.Errorf("connection to %s was interrupted", target)
+	default:
+		line := lastSSHDiagnosticLine(msg)
+		if line != "" {
+			return fmt.Errorf("unable to connect to %s: %s: %w", target, line, err)
+		}
+		return fmt.Errorf("unable to connect to %s: SSH client exited with status 255: %w", target, err)
+	}
+}
+
+func lastSSHDiagnosticLine(msg string) string {
+	for _, raw := range strings.Split(strings.ReplaceAll(msg, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "Warning:") || strings.HasPrefix(line, "Pseudo-terminal will not be allocated") {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(line, "ssh: "))
+	}
+	return ""
+}
+
 // SshConnection writes the egress key to a temp file and executes an SSH session via ttyrec.
 // For non-interactive binary protocols (sftp, scp, rsync) ttyrec is bypassed to avoid
 // PTY corruption of binary data. It performs TOFU host key verification before connecting.
 func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) error {
+	policy, err := recording.LoadLivePolicy()
+	if err != nil {
+		return err
+	}
+	defer policy.Close()
+	if policy != nil && (!config.Get().TTYRec.Enabled || isNonInteractiveCmd(access.RemoteCmd)) {
+		return errors.New("encrypted recording policy requires a recorded interactive transport")
+	}
 	access.Server = validation.UnbracketHost(access.Server)
 	if err := CheckAndUpdateHostKey(db, user, access.Server, access.Port); err != nil {
 		return err
@@ -122,6 +206,10 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			"-o", fmt.Sprintf("ChannelTimeout=session=%ds", seconds),
 		)
 	}
+	// Ignore account-controlled ~/.ssh/config, which can execute local commands
+	// through Match exec, ProxyCommand or LocalCommand. A generated jump config
+	// replaces this fixed file and is inherited by ProxyJump subprocesses.
+	sshConfigPath := "/dev/null"
 	// SSH ProxyJump chain: -J hop1,hop2,... (bastion-to-bastion forwarding)
 	if len(access.JumpHosts) > 0 {
 		configuration, aliases, err := jumpConfig(db, user, access.JumpHosts, tmpFilePath, knownHostsFile)
@@ -129,8 +217,10 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			return fmt.Errorf("prepare SSH jumps: %w", err)
 		}
 		defer func() { _ = os.Remove(configuration) }()
-		sshArgs = append(sshArgs, "-F", configuration, "-J", strings.Join(aliases, ","))
+		sshConfigPath = configuration
+		sshArgs = append(sshArgs, "-J", strings.Join(aliases, ","))
 	}
+	sshArgs = append([]string{"-F", sshConfigPath}, sshArgs...)
 	sshArgs = append(sshArgs,
 		"-p", strconv.FormatInt(access.Port, 10), "-l", access.Username,
 		"--", access.Server,
@@ -142,9 +232,13 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	// Binary protocols must not go through ttyrec: the PTY would corrupt the data stream.
 	if access.RemoteCmd != "" && isNonInteractiveCmd(access.RemoteCmd) {
 		sshCmd := exec.CommandContext(runCtx, "ssh", sshArgs...)
+		// Revocation can exit the session process without running its defers.
+		// Ask the kernel to stop SSH as well so it cannot retain the transport.
+		sshCmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGHUP}
 		sshCmd.Stdin = os.Stdin
 		sshCmd.Stdout = os.Stdout
-		sshCmd.Stderr = os.Stderr
+		capture := &sshClientErrorCapture{}
+		sshCmd.Stderr = capture
 		if cmdErr := sshCmd.Run(); cmdErr != nil {
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
@@ -152,7 +246,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			if isExpectedSessionStop(cmdErr) {
 				return nil
 			}
-			return fmt.Errorf("ssh execution error: %w", cmdErr)
+			return formatSSHClientFailure(cmdErr, capture, access.Server)
 		}
 		return nil
 	}
@@ -161,9 +255,11 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	// the session duration limit via runCtx.
 	if !config.Get().TTYRec.Enabled {
 		sshCmd := exec.CommandContext(runCtx, "ssh", sshArgs...)
+		sshCmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGHUP}
 		sshCmd.Stdin = os.Stdin
 		sshCmd.Stdout = os.Stdout
-		sshCmd.Stderr = os.Stderr
+		capture := &sshClientErrorCapture{}
+		sshCmd.Stderr = capture
 		if cmdErr := sshCmd.Run(); cmdErr != nil {
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("⛔ Session ended: maximum session duration reached")
@@ -174,7 +270,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 			if isExpectedSessionStop(cmdErr) {
 				return nil
 			}
-			return fmt.Errorf("ssh execution error: %w", cmdErr)
+			return formatSSHClientFailure(cmdErr, capture, access.Server)
 		}
 		return nil
 	}
@@ -203,6 +299,9 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 	ttyrecFile := fmt.Sprintf("%s%s.%s:%d_%s%s.ttyrec", dir, safeAccessUser, safeServer, access.Port, timestamp, filenameSuffix)
 	ttyrecGzFile := ttyrecFile + ".gz"
+	if policy != nil {
+		ttyrecGzFile = ttyrecFile + ".gobrec"
+	}
 	spool, err := recording.NewSSHSpool(config.Get().Paths.TtyrecDir, filepath.Join(safeUser, safeServer))
 	if err != nil {
 		if strings.Contains(err.Error(), "unsafe recording") || strings.Contains(err.Error(), "provision an isolated archive") || strings.Contains(err.Error(), "recording account provisioning requires") {
@@ -219,6 +318,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 	}
 	ttyrecFile = filepath.Join(spool.WorkPath, filepath.Base(ttyrecFile))
 	published := false
+	retainSpool := false
 	var lock *os.File
 	defer func() {
 		defer func() {
@@ -226,6 +326,13 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 				_ = lock.Close()
 			}
 		}()
+		if retainSpool {
+			slog.Error("ssh_recording_retained", "user", user.Username, "spool", spool.Path, "destination", ttyrecGzFile)
+			if err := spool.Close(false); err != nil {
+				slog.Warn("ssh_spool_close_failed", "error", err)
+			}
+			return
+		}
 		if !published {
 			info, statErr := os.Stat(ttyrecFile)
 			if (statErr == nil && info.Size() > 0) || (statErr != nil && !os.IsNotExist(statErr)) {
@@ -241,7 +348,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		}
 	}()
 
-	lock, err = recording.Prepare(spool.WorkPath, filepath.Join(safeUser, safeServer, filepath.Base(ttyrecGzFile)), ttyrecFile)
+	lock, err = recording.PrepareCapture(spool.WorkPath, filepath.Join(safeUser, safeServer, filepath.Base(ttyrecGzFile)), ttyrecFile, policy != nil)
 	if err != nil {
 		return fmt.Errorf("prepare SSH recording: %w", err)
 	}
@@ -257,100 +364,58 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		return fmt.Errorf("setting recording permissions: %w", err)
 	}
 	tmpGzPath := tmpGz.Name()
-	gzipWriter := gzip.NewWriter(tmpGz)
-	defer func() { _ = gzipWriter.Close() }()
+	gzipWriter, err := recording.NewCaptureWriter(tmpGz, policy, archive.Provenance{SessionID: sessionID, BastionID: config.InstanceID(), Protocol: "ssh", Account: user.Username, Target: access.Server, StartedAt: time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	defer gzipWriter.Abort()
 
-	// cmdDone is signaled when ttyrec exits, so the gzip goroutine knows
-	// no more data will be written and can drain to EOF.
+	// cmdDone is signaled when ttyrec exits. A capture failure cancels the
+	// command immediately so the SSH client cannot continue unrecorded.
+	recordingCtx, stopRecording := context.WithCancel(runCtx)
+	defer stopRecording()
 	cmdDone := make(chan struct{})
+	abortCapture := make(chan struct{})
 	done := make(chan error, 1)
-	go func() {
-		var f *os.File
-		// Wait for ttyrec to create the file.
-		var openErr error
-		for {
-			f, openErr = os.Open(ttyrecFile)
-			if openErr == nil {
-				break
-			}
-			select {
-			case <-cmdDone:
-				// ttyrec exited before creating the file — nothing to compress.
-				done <- nil
-				return
-			default:
-				time.Sleep(ttyrecPollInterval)
-			}
-		}
-		defer func() { _ = f.Close() }()
 
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := f.Read(buf)
-			if n > 0 {
-				if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
-					done <- fmt.Errorf("gzip write error: %w", werr)
-					return
-				}
-			}
-			if readErr == io.EOF {
-				select {
-				case <-cmdDone:
-					// ttyrec finished, no more writes expected. Drain once more
-					// then exit.
-					for {
-						n, drainErr := f.Read(buf)
-						if n > 0 {
-							if _, werr := gzipWriter.Write(buf[:n]); werr != nil {
-								done <- fmt.Errorf("gzip write error: %w", werr)
-								return
-							}
-						}
-						if drainErr != nil {
-							if drainErr == io.EOF {
-								done <- nil
-							} else {
-								done <- fmt.Errorf("file drain error: %w", drainErr)
-							}
-							return
-						}
-					}
-				default:
-					// ttyrec still running, wait for more data.
-					time.Sleep(ttyrecPollInterval)
-					continue
-				}
-			}
-			if readErr != nil {
-				done <- fmt.Errorf("file read error: %w", readErr)
-				return
-			}
-		}
-	}()
-
-	cmd := exec.CommandContext(runCtx, "ttyrec", append([]string{"-f", ttyrecFile, "--", "ssh"}, sshArgs...)...)
-	recording.ConfigureRecorder(cmd, lock)
+	cmd := exec.CommandContext(recordingCtx, "ttyrec", append([]string{"-f", ttyrecFile, "--", "ssh"}, sshArgs...)...)
+	completion, err := recording.ConfigureRecorder(cmd, lock)
+	if err != nil {
+		return fmt.Errorf("configure SSH recorder: %w", err)
+	}
+	defer completion.Close()
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	capture := &sshClientErrorCapture{}
+	cmd.Stderr = capture
+	go func() {
+		done <- recording.StreamRaw(ttyrecFile, gzipWriter, cmdDone, abortCapture, stopRecording)
+	}()
 
 	fmt.Println("Connecting ...")
 
 	cmdErr := cmd.Run()
+	completionErr := completion.Wait(recording.RecorderExitTimeout)
 
-	// Signal the goroutine that ttyrec has exited, then wait for it to finish draining.
+	// All inherited recorder lock copies must close before the final drain.
+	if completionErr != nil {
+		retainSpool = true
+		close(abortCapture)
+	}
 	close(cmdDone)
 	gzipErr := <-done
+	if completionErr != nil {
+		return fmt.Errorf("recorder did not finish cleanly: %w", completionErr)
+	}
 
-	gzipCloseErr := gzipWriter.Close()
+	if gzipErr != nil {
+		return fmt.Errorf("recording stream error: %w", gzipErr)
+	}
+	gzipCloseErr := gzipWriter.CloseAfterRecorder(cmdErr, runCtx.Err())
 	syncErr := tmpGz.Sync()
 	closeErr := tmpGz.Close()
 	if err := errors.Join(gzipCloseErr, syncErr, closeErr); err != nil {
 		return fmt.Errorf("finalizing SSH recording: %w", err)
-	}
-
-	if gzipErr != nil {
-		return fmt.Errorf("gzip compression error: %w", gzipErr)
 	}
 
 	// Atomic rename from temp to final path
@@ -369,7 +434,7 @@ func SshConnection(db *gorm.DB, user models.User, access models.AccessRight) err
 		if isExpectedSessionStop(cmdErr) {
 			return nil
 		}
-		return fmt.Errorf("ttyrec execution error: %w", cmdErr)
+		return formatSSHClientFailure(cmdErr, capture, access.Server)
 	}
 
 	return nil
@@ -430,7 +495,7 @@ func CheckAndUpdateHostKey(db *gorm.DB, user models.User, server string, port in
 	}
 
 	// Run ssh-keyscan only when host is unknown or entries are stale.
-	out, err := exec.Command("ssh-keyscan", "-p", portStr, "-T", fmt.Sprintf("%d", int(time.Duration(config.Get().SSH.KeyscanTimeout).Seconds())), server).Output()
+	out, err := exec.Command("ssh-keyscan", "-p", portStr, "-T", fmt.Sprintf("%d", int(time.Duration(config.Get().SSH.KeyscanTimeout).Seconds())), "--", server).Output()
 	if err != nil || len(out) == 0 {
 		// Can't scan (unreachable, firewall…) - let SSH fail naturally.
 		return nil

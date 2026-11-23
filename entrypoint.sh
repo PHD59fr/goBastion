@@ -9,6 +9,7 @@ SYNC_PID=""
 SSHD_PID=""
 AWK_PID=""
 OBS_PID=""
+AUDIT_PID=""
 SSHD_LOG_PIPE="/run/gobastion/sshd.log"
 
 drain_sessions() {
@@ -53,11 +54,13 @@ cleanup() {
 	fi
 	[ -z "$SYNC_PID" ] || kill "$SYNC_PID" 2>/dev/null || true
 	[ -z "$OBS_PID" ] || kill -TERM "$OBS_PID" 2>/dev/null || true
+	[ -z "$AUDIT_PID" ] || kill -TERM "$AUDIT_PID" 2>/dev/null || true
 	[ -z "$TAIL_PID" ] || kill "$TAIL_PID" 2>/dev/null || true
 	[ -z "$AWK_PID" ] || kill "$AWK_PID" 2>/dev/null || true
 	[ -z "$SSHD_PID" ] || wait "$SSHD_PID" 2>/dev/null || true
 	[ -z "$SYNC_PID" ] || wait "$SYNC_PID" 2>/dev/null || true
 	[ -z "$OBS_PID" ] || wait "$OBS_PID" 2>/dev/null || true
+	[ -z "$AUDIT_PID" ] || wait "$AUDIT_PID" 2>/dev/null || true
 	[ -z "$TAIL_PID" ] || wait "$TAIL_PID" 2>/dev/null || true
 	[ -z "$AWK_PID" ] || wait "$AWK_PID" 2>/dev/null || true
 	rm -f "$SSHD_LOG_PIPE"
@@ -153,8 +156,9 @@ periodic_sync() {
 # images. Database access is still a separate control-plane hardening gap.
 # The recording account namespace is root-controlled; only the authoritative
 # Go reconciliation assigns the dedicated recording-auditors group.
-chown root:gobastion /goBastion.log /var/lib/goBastion /app/ttyrec
-chmod 0620 /goBastion.log
+chown root:gobastion /var/lib/goBastion /app/ttyrec
+chown root:root /goBastion.log
+chmod 0600 /goBastion.log
 chmod 2770 /var/lib/goBastion
 chmod 0751 /app/ttyrec
 find /var/lib/goBastion -type d -exec chmod 2770 {} \;
@@ -179,6 +183,20 @@ done
 touch /goBastion.log
 tail -f /goBastion.log &
 TAIL_PID=$!
+
+# Sessions send framed JSON to the root collector. The log itself is never
+# writable by the bastion group. Wait for its socket before admitting users.
+/app/audit-writer &
+AUDIT_PID=$!
+audit_wait=0
+while [ ! -S /run/gobastion-audit/audit.sock ]; do
+	if ! kill -0 "$AUDIT_PID" 2>/dev/null || [ "$audit_wait" -ge 50 ]; then
+		echo '{"event_type":"audit_collector_startup_failed","decision":"error"}' >&2
+		exit 1
+	fi
+	audit_wait=$((audit_wait + 1))
+	sleep 0.1
+done
 
 # ── First install ────────────────────────────────────────────────────────────
 # Auto startup: syncs DB state to OS if present.
@@ -476,6 +494,10 @@ AWK_PID=$!
 /usr/sbin/sshd -D -e > "$SSHD_LOG_PIPE" 2>&1 &
 SSHD_PID=$!
 while kill -0 "$SSHD_PID" 2>/dev/null; do
+	if ! kill -0 "$AUDIT_PID" 2>/dev/null; then
+		echo '{"event_type":"audit_collector_failed","decision":"error"}' >&2
+		cleanup 1
+	fi
 	if ! kill -0 "$SYNC_PID" 2>/dev/null; then
 		echo '{"event_type":"periodic_sync_worker_failed","decision":"error"}' >&2
 		cleanup 1

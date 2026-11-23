@@ -71,7 +71,7 @@ func scan(src io.Reader, trusted []ed25519.PublicKey, onHeader func(headerData, 
 		}
 		switch kind[0] {
 		case 1:
-			if short || segments >= MaxSegments {
+			if short && header.Context.Version == Version || segments >= MaxSegments {
 				return Manifest{}, ErrInvalidArchive
 			}
 			var prefix [frameHeaderBytes]byte

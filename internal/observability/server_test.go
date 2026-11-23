@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +138,12 @@ func TestMetricsExposeRealScopedDataAndFixedNames(t *testing.T) {
 	if err := store.Record(context.Background(), MFAFailuresTotal, 2); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Record(context.Background(), SessionRevocationsTotal, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(context.Background(), RecordingIntegrityFailuresTotal, 3); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.ObserveSyncDuration(context.Background(), 125*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +160,12 @@ func TestMetricsExposeRealScopedDataAndFixedNames(t *testing.T) {
 	if response.Code != 200 || response.Header().Get("Content-Type") != "text/plain; version=0.0.4; charset=utf-8" {
 		t.Fatal("incorrect Prometheus response")
 	}
-	for _, sample := range []string{"gobastion_sessions_active 1\n", "gobastion_sessions_total 4\n", "gobastion_mfa_failures_total 2\n", "gobastion_sync_duration_seconds_count 1\n", "gobastion_sync_duration_seconds_sum 0.125000000\n", "gobastion_recording_pending_bytes 42\n"} {
+	for _, sample := range []string{"gobastion_sessions_active 1\n", "gobastion_sessions_total 4\n", "gobastion_mfa_failures_total 2\n", "gobastion_session_revocations_total 1\n", "gobastion_recording_integrity_failures_total 3\n", "gobastion_sync_duration_seconds_count 1\n", "gobastion_sync_duration_seconds_sum 0.125000000\n", "gobastion_recording_pending_bytes 42\n", "gobastion_local_sync_healthy 0\n"} {
 		if !strings.Contains(body, sample) {
 			t.Fatalf("missing real sample %q", sample)
 		}
 	}
-	if strings.Count(body, "# TYPE ") != 12 || !strings.HasSuffix(body, "\n") {
+	if strings.Count(body, "# TYPE ") != 16 || !strings.HasSuffix(body, "\n") {
 		t.Fatal("incorrect fixed metric family inventory")
 	}
 	for _, private := range []string{testAuthToken, "private-username", "sensitive-instance", "{"} {
@@ -169,6 +177,36 @@ func TestMetricsExposeRealScopedDataAndFixedNames(t *testing.T) {
 	response = request(service, http.MethodGet, "/metrics", "Bearer "+testAuthToken)
 	if response.Code != 200 || strings.Contains(response.Body.String(), "# TYPE gobastion_recording_pending_bytes") || strings.Contains(response.Body.String(), "# TYPE gobastion_recording_oldest_pending_age_seconds") {
 		t.Fatal("unknown pending scan was replaced with a false zero")
+	}
+}
+
+func TestLocalSyncHealthRequiresOwnedRegularMarker(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "sync.healthy")
+	if localSyncHealthy(marker, uint32(os.Geteuid())) {
+		t.Fatal("missing marker reported healthy")
+	}
+	if err := os.WriteFile(marker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !localSyncHealthy(marker, uint32(os.Geteuid())) {
+		t.Fatal("owned regular marker reported unhealthy")
+	}
+	if localSyncHealthy(marker, uint32(os.Geteuid()+1)) {
+		t.Fatal("wrong owner reported healthy")
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(marker, link); err != nil {
+		t.Fatal(err)
+	}
+	if localSyncHealthy(link, uint32(os.Geteuid())) || localSyncHealthy(dir, uint32(os.Geteuid())) {
+		t.Fatal("symlink or directory reported healthy")
+	}
+	service, _ := testServer(t)
+	service.cfg.SyncHealthy = func() bool { return true }
+	response := request(service, http.MethodGet, "/metrics", "Bearer "+testAuthToken)
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "gobastion_local_sync_healthy 1\n") {
+		t.Fatal("healthy local marker not exposed")
 	}
 }
 

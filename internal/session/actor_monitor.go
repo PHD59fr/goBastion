@@ -13,14 +13,15 @@ import (
 )
 
 type actorAuthState struct {
-	enabled      bool
-	systemUser   bool
-	role         string
-	oshOnly      bool
-	superOwner   bool
-	passwordHash string
-	totpEnabled  bool
-	totpSecret   string
+	enabled         bool
+	revocationEpoch int64
+	systemUser      bool
+	role            string
+	oshOnly         bool
+	superOwner      bool
+	passwordHash    string
+	totpEnabled     bool
+	totpSecret      string
 }
 
 const sessionRevocationCleanupTimeout = 2 * time.Second
@@ -30,14 +31,15 @@ func snapshotActorAuthState(u *models.User) actorAuthState {
 		return actorAuthState{}
 	}
 	return actorAuthState{
-		enabled:      u.Enabled,
-		systemUser:   u.SystemUser,
-		role:         u.Role,
-		oshOnly:      u.OSHOnly,
-		superOwner:   u.SuperOwner,
-		passwordHash: u.PasswordHash,
-		totpEnabled:  u.TOTPEnabled,
-		totpSecret:   u.TOTPSecret,
+		enabled:         u.Enabled,
+		revocationEpoch: u.RevocationEpoch,
+		systemUser:      u.SystemUser,
+		role:            u.Role,
+		oshOnly:         u.OSHOnly,
+		superOwner:      u.SuperOwner,
+		passwordHash:    u.PasswordHash,
+		totpEnabled:     u.TOTPEnabled,
+		totpSecret:      u.TOTPSecret,
 	}
 }
 
@@ -45,7 +47,7 @@ func (s actorAuthState) revokedAgainst(fresh models.User) bool {
 	if !fresh.Enabled || fresh.SystemUser {
 		return true
 	}
-	if s.enabled != fresh.Enabled || s.systemUser != fresh.SystemUser || s.role != fresh.Role || s.oshOnly != fresh.OSHOnly || s.superOwner != fresh.SuperOwner {
+	if s.enabled != fresh.Enabled || s.revocationEpoch != fresh.RevocationEpoch || s.systemUser != fresh.SystemUser || s.role != fresh.Role || s.oshOnly != fresh.OSHOnly || s.superOwner != fresh.SuperOwner {
 		return true
 	}
 	if s.passwordHash != fresh.PasswordHash || s.totpEnabled != fresh.TOTPEnabled || s.totpSecret != fresh.TOTPSecret {
@@ -101,6 +103,9 @@ func startSessionActorMonitor(ctx context.Context, db *gorm.DB, actorID uuid.UUI
 				queryCtx, qcancel := context.WithTimeout(ctx, time.Second)
 				var fresh models.User
 				err := db.WithContext(queryCtx).First(&fresh, "id = ?", actorID).Error
+				if err == nil {
+					err = queryCtx.Err()
+				}
 				qcancel()
 				if ctx.Err() != nil {
 					return

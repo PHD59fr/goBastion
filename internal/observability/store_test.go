@@ -70,7 +70,7 @@ func TestDurableCountersAndActiveSessionsAreScopedToInstance(t *testing.T) {
 	if err != nil || snapshot.Counters[SessionsTotal] != 3 || snapshot.ActiveSessions != 2 {
 		t.Fatalf("incorrect persisted instance snapshot: %+v, %v", snapshot, err)
 	}
-	if len(snapshot.Counters) != 8 || snapshot.Counters[MFAFailuresTotal] != 0 {
+	if len(snapshot.Counters) != len(counterNames) || snapshot.Counters[MFAFailuresTotal] != 0 || snapshot.Counters[RecordingIntegrityFailuresTotal] != 0 {
 		t.Fatal("initial fixed counters are missing")
 	}
 	if err := first.ObserveSyncDuration(context.Background(), 125*time.Millisecond); err != nil {

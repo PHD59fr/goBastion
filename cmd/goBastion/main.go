@@ -213,7 +213,16 @@ func main() {
 	os.Exit(code)
 }
 
+// newStartupLogger allows subprocess tests to capture early fail-closed diagnostics.
+var newStartupLogger = logger.NewLogger
+
 func runMain() int {
+	// Session processes keep database credentials and encryption keys in
+	// memory. Refuse startup if the kernel core-file limit cannot be disabled.
+	if err := disableCoreDumps(); err != nil {
+		fmt.Fprintln(os.Stderr, "cannot disable core dumps")
+		return 1
+	}
 	tStart := time.Now()
 	if username, ok := authorizedKeysArg(); ok {
 		return runAuthorizedKeys(username)
@@ -222,8 +231,12 @@ func runMain() int {
 	// Install the logger first so bootstrap logs (config.Load) are written to
 	// the log file, not the client console. NewLogger uses the default config
 	// path and does not trigger Load(), so this runs before bootstrap.
-	log := logger.NewLogger()
+	log := newStartupLogger()
 	slog.SetDefault(log)
+	diagnostic := log.Info
+	if os.Geteuid() != 0 {
+		diagnostic = log.Debug
+	}
 
 	// G1: accept bootstrap secrets from an inherited fd (wrapper passes
 	// --bootstrap-fd=N) so they do not appear in the process's initial
@@ -321,7 +334,7 @@ func runMain() int {
 				log.Info("config_not_initialized")
 			}
 		}
-		log.Info("config_loaded", slog.Duration("took", time.Since(tCfg)))
+		diagnostic("config_loaded", slog.Duration("took", time.Since(tCfg)))
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "--dbSession" {
@@ -342,6 +355,6 @@ func runMain() int {
 	// mosh-server). Re-affirm crypto materialization for the session path.
 	_ = cryptokey.Enabled()
 
-	log.Info("startup_total", slog.Duration("took", time.Since(tStart)))
+	diagnostic("startup_total", slog.Duration("took", time.Since(tStart)))
 	return session.Run(db, log)
 }

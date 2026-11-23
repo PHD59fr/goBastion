@@ -195,10 +195,19 @@ func readMySQLPacket(conn net.Conn) ([]byte, byte, error) {
 }
 
 func writeMySQLPacket(conn io.Writer, sequence byte, body []byte) error {
+	if len(body) > (1<<24)-1 {
+		return fmt.Errorf("MySQL packet body exceeds 24-bit length limit")
+	}
 	data := []byte{byte(len(body)), byte(len(body) >> 8), byte(len(body) >> 16), sequence}
 	data = append(data, body...)
-	_, err := conn.Write(data)
-	return err
+	n, err := conn.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func mysqlError(conn net.Conn, sequence byte, message string) error {

@@ -75,6 +75,9 @@ func NewWriter(dst io.Writer, provenance Provenance, recipients []*rsa.PublicKey
 	}
 	provenance.StartedAt = provenance.StartedAt.UTC()
 	context := contextData{Version, hex.EncodeToString(archiveID[:]), "AES-256-GCM", "RSA-OAEP-SHA256", "Ed25519", "ttyrec", options.Compression, options.ChunkSize, signerID, ids, provenance}
+	if options.Streaming {
+		context.Version = StreamingVersion
+	}
 	if err := validateContext(context); err != nil {
 		return nil, err
 	}
@@ -198,6 +201,25 @@ func (w *Writer) flush() error {
 	w.ciphertext += uint64(len(prefix) + len(encoded))
 	clear(w.buffer)
 	w.buffer = w.buffer[:0]
+	return nil
+}
+
+// Flush encrypts and writes the buffered plaintext without finalizing the
+// archive. Version 2 permits short intermediate frames. Version 1 refuses
+// a nonempty partial buffer without changing the stream or writer state.
+func (w *Writer) Flush() error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.closed {
+		return ErrClosed
+	}
+	if w.context.Version == Version && len(w.buffer) != 0 {
+		return ErrInvalidArchive
+	}
+	if err := w.flush(); err != nil {
+		return w.fail(err)
+	}
 	return nil
 }
 

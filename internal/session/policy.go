@@ -50,13 +50,17 @@ func refreshSessionUser(db *gorm.DB, user *models.User) error {
 // Authentication was performed against this snapshot. Role changes take effect
 // immediately; changes to the factors themselves require a fresh authentication.
 func refreshAuthenticatedUser(db *gorm.DB, u *models.User) error {
-	before := *u
-	if err := refreshSessionUser(db, u); err != nil {
+	if u == nil {
+		return fmt.Errorf("missing session account")
+	}
+	var fresh models.User
+	if err := db.First(&fresh, "id = ?", u.ID).Error; err != nil {
 		return err
 	}
-	if before.PasswordHash != u.PasswordHash || before.TOTPEnabled != u.TOTPEnabled || before.TOTPSecret != u.TOTPSecret {
-		return fmt.Errorf("authentication factors changed; reconnect")
+	if !fresh.Enabled || fresh.SystemUser || u.RevocationEpoch != fresh.RevocationEpoch || u.PasswordHash != fresh.PasswordHash || u.TOTPEnabled != fresh.TOTPEnabled || u.TOTPSecret != fresh.TOTPSecret {
+		return fmt.Errorf("account authorization changed; reconnect")
 	}
+	*u = fresh
 	return nil
 }
 func validateSessionAdmission(db *gorm.DB, u *models.User, command string, args []string) (resultErr error) {

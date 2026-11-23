@@ -63,8 +63,8 @@ func TestIPv6HostKeyScanAndChangeDetection(t *testing.T) {
 				t.Fatal(err)
 			}
 			args, err := os.ReadFile(argsFile)
-			if err != nil || !strings.HasSuffix(string(args), "\n2001:db8::1\n") {
-				t.Fatalf("keyscan must receive bare IPv6: args=%q, err=%v", args, err)
+			if err != nil || !strings.HasSuffix(string(args), "\n--\n2001:db8::1\n") {
+				t.Fatalf("keyscan must receive bare IPv6 after end-of-options: args=%q, err=%v", args, err)
 			}
 			knownHosts, err := os.ReadFile(filepath.Join(dir, user.Username, ".ssh", "known_hosts"))
 			if err != nil || string(knownHosts) != entry {

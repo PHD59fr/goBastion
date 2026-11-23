@@ -10,10 +10,19 @@ remove direct session access to database credentials and encryption keys.
 Direct `--db` ForceCommand requests instead enter the existing root database
 supervisor before the unprivileged session process receives the bootstrap. Other
 session and administrative paths still retain the control-plane access above.
+The binary sets the soft and hard core-file size limits to zero before loading
+bootstrap secrets and refuses startup if this fails. Linux may still send a
+core dump to a pipe collector configured through `core_pattern`; this limit
+does not isolate process memory or remove database/key access.
 
 This local-code/filesystem threat is distinct from an SSH client restricted to
 the ForceCommand protocol. Isolation of the database and keys from session
 processes is not implemented.
+
+The local `/goBastion.log` file is provisioned as `root:gobastion 0620` so
+session processes can append events. A compromised member of that group can
+inject log content; the local file alone does not provide tamper-resistant
+audit evidence. Trusted remote retention is not implemented.
 
 ## SSH and privileged operations
 
@@ -30,8 +39,8 @@ Session policy is refreshed before command dispatch. Authentication supports the
 configured password, TOTP, PIV and recovery-code flows; an enabled TOTP profile
 with an empty seed is refused. Accepted TOTP time steps are consumed atomically
 in the shared database, and password/TOTP challenges use a bounded per-account
-attempt budget. Enrollment confirmation checks a newly generated seed before
-it is activated.
+attempt budget, including the password check during mandatory TOTP enrollment.
+Enrollment confirmation checks a newly generated seed before it is activated.
 
 Privileged helpers delegate account requests to root reconciliation, which reads
 database policy under a node-local lock. Root creation uses fixed native
@@ -82,7 +91,9 @@ broker rather than the native client's environment, arguments or configuration.
 Upstream TLS verifies the original target identity; there is no plaintext or
 unverified fallback.
 
-Actor monitoring cancels a session on missing, disabled or system account state,
+Registration rereads the authenticated actor inside a bounded database
+transaction and refuses authorization changes already visible there. Actor
+monitoring cancels a session on missing, disabled or system account state,
 account authorization or selected database-grant changes, query failure or
 timeout. Cancellation also returns failure when a connector suppresses the
 cancellation error. Drivers must honor context cancellation. Polling the shared
@@ -98,6 +109,13 @@ published files are account:gobastion-auditors 0640. Only enabled nonsystem
 administrators join the separate auditor group; SuperOwner alone does not grant
 playback. Unsupported ACLs, unsafe ownership and shared legacy layouts cause
 refusal. Permission migration is an explicit offline operation.
+The streaming compressor flushes each block and requests client termination on
+capture read/write failure or missing recorder output. It waits for an
+inherited completion pipe to close before the final drain while retaining the
+spool's exclusion lock. Final sync and
+publication errors fail the session after the client exits; incomplete spools
+are retained for recovery. This has not been exercised under an actual full
+recording volume.
 
 Auditor revocation removes group membership and terminates/verifies old UID
 processes, with a durable local retry journal. Account retirement requires zero
@@ -107,8 +125,11 @@ not protect captures from their own UID or root, nor make admission atomic.
 
 `recording-admin` provides offline authenticated encryption, Ed25519 signatures,
 hash verification and decryption using recording keys independent of the egress
-key. The encrypted format is not integrated with live capture. Automatic remote
-S3/WORM archival, trusted capture provenance and retention enforcement are absent.
+key. Optional root-supervised DB captures can use that format through the live policy
+described in the [operations guide](../operations/OPERATIONS.md). The policy
+refuses ordinary SSH connections; raw spools remain plaintext, and automatic
+encrypted crash recovery is unavailable. Automatic remote S3/WORM archival,
+trusted capture provenance and retention enforcement are absent.
 
 ## Audit and telemetry
 
@@ -128,8 +149,9 @@ log delivery and end-to-end telemetry retention are not established. See
 Active-active consistency, coordinated drain/failover, transparent session
 migration, scoped JIT SCP/SFTP tickets and authenticated realm federation are
 not implemented. Realm relay metadata does not authenticate qualified remote
-identities. Cross-dialect TOTP replay verification and complete host-profile,
-protocol, disaster-recovery and multi-node testing remain incomplete.
+identities. TOTP replay and shared attempt-budget checks have passed on SQLite,
+PostgreSQL and MariaDB (the MySQL dialect). Complete host-profile, protocol,
+disaster-recovery and multi-node testing remain incomplete.
 
 The [threat model](THREAT_MODEL.md) identifies assets and assumptions.
 [Scanner triage](SCANNER_TRIAGE.md) and the
